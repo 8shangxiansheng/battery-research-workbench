@@ -1,0 +1,27 @@
+ultrasound:
+  basic_features:
+    - peak
+    - peak_to_peak
+    - mean
+    - std
+    - rms
+    - energy
+    - skewness
+    - kurtosis
+    - peak_index
+    - envelope_peak_index
+    - relative_cross_correlation_shift_samples
+
+  physical_frequency_features:
+    enabled: false
+    reason: "Requires confirmed waveform sampling frequency."
+
+electrical:
+  basic_features:
+    - voltage
+    - current
+    - capacity
+    - soc
+    - temperature
+    - dqdv
+    - contact_resistance

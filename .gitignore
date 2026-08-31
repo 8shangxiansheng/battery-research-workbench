@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.workflow/
+.env
+.DS_Store
+
+# Immutable/private research raw data
+data/raw/batteries/**
+!data/raw/batteries/**/
+!data/raw/batteries/**/.gitkeep
+
+# Manifests are intentionally version-controlled.
+# They should contain metadata/paths, not raw signal content.
+
+# Derived research data
+data/processed/**
+data/features/**
+data/artifacts/**
+!data/processed/**/
+!data/processed/**/.gitkeep
+!data/features/**/
+!data/features/**/.gitkeep
+!data/artifacts/.gitkeep
+
+mlruns/
+*.db
+*.sqlite
+*.sqlite3

@@ -1,0 +1,28 @@
+brw003:
+  required_sheets:
+    - record
+    - cycle
+    - step
+
+  optional_sheets:
+    - auxTemp
+    - auxVol
+
+  output:
+    format: parquet
+    root: data/processed/electrical
+
+  validation:
+    require_timestamp: true
+    require_cycle_index: true
+    raw_file_immutable: true
+    detect_timestamp_overlap: true
+    silently_skip_invalid_rows: false
+
+  provenance:
+    include_battery_id: true
+    include_experiment_id: true
+    include_asset_id: true
+    include_source_file: true
+    include_source_sheet: true
+    include_source_row_index: true

@@ -1,0 +1,69 @@
+{
+  "electrical_example": {
+    "filename": "小-1-1-264.xlsx",
+    "sha256": "8536d3959db6efc73cdbc30903b33f8c6a429385663597832e4d918459dbc608",
+    "sheets": {
+      "unit": {
+        "rows": 7,
+        "columns": 9
+      },
+      "test": {
+        "rows": 18,
+        "columns": 23
+      },
+      "cycle": {
+        "rows": 3,
+        "columns": 39
+      },
+      "step": {
+        "rows": 19,
+        "columns": 41
+      },
+      "record": {
+        "rows": 39997,
+        "columns": 29
+      },
+      "log": {
+        "rows": 3,
+        "columns": 5
+      },
+      "idle": {
+        "rows": 1,
+        "columns": 8
+      },
+      "auxVol": {
+        "rows": 39998,
+        "columns": 4
+      },
+      "auxTemp": {
+        "rows": 39998,
+        "columns": 4
+      },
+      "curve": {
+        "rows": 1,
+        "columns": 1
+      }
+    }
+  },
+  "ultrasound_example": {
+    "filename": "export - 2024.01.06 - 21.03.01.txt",
+    "sha256": "8e196837bf13637d4c0d2244a403c018b3bbd81b5b1b81ac5c08df2007be5acb",
+    "frames": 3999,
+    "semicolon_fields_per_frame": [
+      6
+    ],
+    "waveform_samples_per_frame": [
+      1250
+    ],
+    "tail_values_per_frame": [
+      16
+    ],
+    "first_frame_id": 0,
+    "last_frame_id": 3998,
+    "first_elapsed_s": 0.031217,
+    "last_elapsed_s": 39980.03,
+    "median_frame_interval_s": 10.0,
+    "min_frame_interval_s": 9.998999999999796,
+    "max_frame_interval_s": 10.000004000000004
+  }
+}

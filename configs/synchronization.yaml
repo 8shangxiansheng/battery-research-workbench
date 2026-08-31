@@ -1,0 +1,26 @@
+synchronization:
+  primary_key: timestamp
+  strategy: nearest_timestamp
+
+  # Cycle/Step are labels inherited AFTER time alignment.
+  map_cycle_after_alignment: true
+  map_step_after_alignment: true
+
+  time_anchor:
+    prefer_asset_file_start_time: true
+    allow_experiment_start_fallback: true
+
+  clock_model:
+    mode: offset_only
+    offset_s: 0.0
+    rate: 1.0
+
+  quality:
+    target_match_rate: 0.99
+    max_allowed_sync_error_s: 0.75
+    boundary_tolerance_s: 1.0
+    expose_sync_error: true
+
+  drift_detection:
+    enabled: true
+    correction_enabled: false

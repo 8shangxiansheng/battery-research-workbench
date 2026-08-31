@@ -1,0 +1,22 @@
+project:
+  name: battery-research-workbench
+  architecture_version: "1.1"
+
+storage:
+  raw_root: data/raw
+  processed_root: data/processed
+  feature_root: data/features
+  artifact_root: data/artifacts
+  electrical_format: parquet
+  ultrasound_format: zarr
+
+manifests:
+  batteries: data/raw/manifests/batteries.csv
+  experiments: data/raw/manifests/experiments.csv
+  data_assets: data/raw/manifests/data_assets.csv
+
+scientific_rules:
+  raw_data_immutable: true
+  preserve_unknown_metadata: true
+  require_sampling_rate_for_absolute_tof: true
+  require_sampling_rate_for_frequency_hz: true

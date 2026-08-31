@@ -1,0 +1,49 @@
+{
+  "asset_id": "E001",
+  "checks": [
+    {
+      "source_row_index": 2,
+      "record_index_raw": 1,
+      "cycle_index_raw": 1,
+      "step_index_raw": 1,
+      "step_type_raw": "恒流充电",
+      "timestamp": "2024-01-06T09:52:31",
+      "current_a": 4.9724,
+      "voltage_v": 3.345,
+      "capacity_ah": 0.0
+    },
+    {
+      "source_row_index": 20947,
+      "record_index_raw": 20946,
+      "cycle_index_raw": 1,
+      "step_index_raw": 5,
+      "step_type_raw": "搁置",
+      "timestamp": "2024-01-06T15:41:31",
+      "current_a": 0.0,
+      "voltage_v": 3.2712,
+      "capacity_ah": 0.0
+    },
+    {
+      "source_row_index": 20948,
+      "record_index_raw": 20947,
+      "cycle_index_raw": 2,
+      "step_index_raw": 1,
+      "step_type_raw": "恒流充电",
+      "timestamp": "2024-01-06T15:41:31",
+      "current_a": 4.9918,
+      "voltage_v": 3.3437,
+      "capacity_ah": 0.0
+    },
+    {
+      "source_row_index": 39997,
+      "record_index_raw": 39996,
+      "cycle_index_raw": 2,
+      "step_index_raw": 5,
+      "step_type_raw": "搁置",
+      "timestamp": "2024-01-06T20:58:54",
+      "current_a": 0.0,
+      "voltage_v": 3.0906,
+      "capacity_ah": 0.0
+    }
+  ]
+}
