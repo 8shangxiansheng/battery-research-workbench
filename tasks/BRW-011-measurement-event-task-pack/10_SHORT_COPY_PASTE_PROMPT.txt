@@ -1,0 +1,47 @@
+先阅读仓库根目录 `AGENTS.md`，然后阅读 `tasks/BRW-011/01_MASTER_PROMPT.md`。
+
+执行 BRW-011 — MeasurementEvent Canonical Multimodal Layer，但这一轮只做 Inspect，不修改代码。
+
+请读取真实：
+
+- BRW-010 `aligned_ultrasound_frames.parquet`
+- BRW-010 `synchronization_candidates.parquet`
+- BRW-003 `records.parquet`
+- BRW-005 waveform locator schema / Zarr structure
+- 当前 synchronization / domain 源码
+
+报告：
+
+1. aligned row count、candidate row count、electrical row count；
+2. aligned 中 unique / ambiguous / out-of-tolerance / timestamp unavailable 的真实数量；
+3. 真实 ambiguous frames，尤其 691 / 1914 / 2094 / 3998 是否仍存在；
+4. selected electrical locator 字段名和唯一性；
+5. records.parquet 中用 selected locator 精确 join 是否 1:1；
+6. electrical canonical 可用于 enrichment 的字段：cycle/step/type/voltage/current/capacity/charge-discharge capacity/energy/power/temperature/SOC-DOD/contact resistance/dQdV；
+7. 哪些字段不存在或需要从 aux parquet 关联；
+8. waveform locator 是否足以定位 Zarr waveform；
+9. 推荐 deterministic measurement_event_id；
+10. 推荐 MeasurementEvent schema；
+11. 推荐 electrical enrichment whitelist；
+12. 推荐 event_quality_status / analysis_eligible 规则；
+13. ambiguous / OOT / unavailable event 如何保留；
+14. 如何保证 BRW-011 完全不重新做 timestamp matching；
+15. 推荐 measurement_event_candidates.parquet schema；
+16. frame 0/1000/2000/3000/3998 的 match status、selected locator、可精确 join 的 cycle/step/voltage/current/capacity；
+17. 输入 SHA256 应校验哪些；
+18. 按 `05_TEST_PLAN.md` 建议新增哪些 tests；
+19. 建议新增/修改哪些代码文件。
+
+严格不要：
+
+- 修改代码
+- merge_asof
+- nearest timestamp
+- 重新计算 sync_error_s
+- ambiguous candidate 选 first/last
+- drift/interpolation
+- waveform feature extraction
+- SOC/SOH modeling
+- ML / Agent / UI
+
+输出 Inspect Report 后停止。

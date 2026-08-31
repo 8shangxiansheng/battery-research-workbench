@@ -1,0 +1,27 @@
+# BRW-011 Acceptance Criteria
+
+- [ ] one event per aligned ultrasound frame
+- [ ] deterministic unique event id
+- [ ] row order preserved
+- [ ] unique selected locator exact-joins one electrical row
+- [ ] no timestamp re-matching
+- [ ] electrical whitelist only
+- [ ] soc_dod_percent semantics preserved
+- [ ] dq_dv remains raw
+- [ ] ambiguous event preserved
+- [ ] ambiguous electrical state null
+- [ ] candidate evidence preserved
+- [ ] candidate count invariant
+- [ ] OOT event preserved
+- [ ] timestamp unavailable event preserved
+- [ ] waveform locator preserved
+- [ ] waveform samples not duplicated
+- [ ] event quality deterministic
+- [ ] analysis_eligible deterministic
+- [ ] measurement_events.parquet
+- [ ] measurement_event_candidates.parquet
+- [ ] measurement_event_manifest.json
+- [ ] JSON/HTML report
+- [ ] inputs unchanged
+- [ ] frame 3998 ambiguity preserved
+- [ ] pytest / ruff / format / mypy / git diff
