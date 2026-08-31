@@ -1,6 +1,34 @@
 synchronization:
+  version: "0.1.0"
+
+  # Legacy/primary-key metadata retained for the synchronization architecture.
   primary_key: timestamp
   strategy: nearest_timestamp
+
+  # V1 nearest-record matching policy.
+  matching:
+    method: "nearest"
+    max_sync_error_s: 1.0
+    tie_tolerance_s: 0.000000001
+    ambiguous_selection: "none"
+
+  boundary:
+    duplicate_timestamp_is_boundary: true
+    detect_cycle_transition: true
+    detect_step_transition: true
+    use_explicit_start_end_marker_if_available: true
+
+  reporting:
+    sync_error_p95: true
+    required_figures: 4
+
+  scientific_guards:
+    allow_drift_correction: false
+    allow_interpolation: false
+    allow_cycle_based_matching: false
+    allow_step_based_matching: false
+    allow_measurement_event: false
+    allow_verified_sync_upgrade: false
 
   # Cycle/Step are labels inherited AFTER time alignment.
   map_cycle_after_alignment: true
