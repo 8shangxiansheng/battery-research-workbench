@@ -1,0 +1,27 @@
+ultrasound_qa:
+  version: "0.1.0"
+  temporal:
+    large_gap_factor: 2.5
+  outlier:
+    method: mad
+    mad_k: 8.0
+  waveform:
+    all_zero_is_critical: true
+    constant_frame_is_warning: true
+  correlation:
+    low_adjacent_warning: 0.80
+  saturation:
+    adc_min: null
+    adc_max: null
+    extreme_plateau_warning_fraction: 0.05
+  figures:
+    overlay_frames: 30
+    heatmap_max_frames: 1000
+    format: png
+    dpi: 150
+  scientific_guards:
+    allow_filtering: false
+    allow_alignment: false
+    allow_feature_dataset: false
+    require_sampling_rate_for_absolute_tof: true
+    require_sampling_rate_for_frequency_hz: true

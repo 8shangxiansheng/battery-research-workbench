@@ -147,6 +147,31 @@ write_ultrasound_experiment(parsed, Path("data/processed/ultrasound"))
 
 Parser 保留 raw frame ID、unknown metadata 与整数 waveform，不执行滤波、FFT、TOF 或 Electrical 同步。当前没有可靠 sampling rate，输出中保持 `null`。
 
+## Ultrasound QA
+
+BRW-006 对 BRW-005 的 canonical `frames.parquet`、`waveforms.zarr` 和
+`parser_manifest.json` 执行只读质量检查：
+
+```python
+from pathlib import Path
+
+from battery_workbench.ultrasound.qa import UltrasoundQAConfig, run_ultrasound_qa
+
+config = UltrasoundQAConfig.from_yaml("configs/ultrasound_qa.yaml")
+report = run_ultrasound_qa(
+    "CELL_001",
+    "EXP_001",
+    Path("data/processed/ultrasound/CELL_001/EXP_001"),
+    Path("data/artifacts/CELL_001/EXP_001/ultrasound_qa"),
+    config,
+)
+print(report.status)
+```
+
+QA 会生成 JSON、HTML、3 张 CSV 表和 8 张诊断图，不会修改 processed 输入或波形。
+当前 `sampling_rate_hz=null`，因此图表横轴保持 sample index，且不报告绝对 TOF
+或物理频率。
+
 ## Run tests
 
 ```bash

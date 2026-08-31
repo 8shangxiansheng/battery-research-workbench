@@ -5,10 +5,13 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
+
+from battery_workbench.storage.zarr_store import write_waveform_array_verified
 
 RECORD_HEADERS = [
     "数据序号",
@@ -381,5 +384,89 @@ def ultrasound_txt_factory(tmp_path: Path) -> Callable[..., Path]:
         path = tmp_path / name
         path.write_text("".join(lines), encoding="utf-8")
         return path
+
+    return factory
+
+
+@pytest.fixture
+def ultrasound_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
+    """Write a minimal canonical BRW-005 output bundle for QA tests."""
+
+    def factory(
+        *,
+        waveforms: np.ndarray | None = None,
+        elapsed_times: list[float] | None = None,
+        missing_column: str | None = None,
+    ) -> Path:
+        input_dir = tmp_path / f"qa-input-{len(list(tmp_path.iterdir()))}"
+        input_dir.mkdir()
+        if waveforms is None:
+            phase = np.linspace(0, 4 * np.pi, 1250)
+            base = np.rint(1000 * np.sin(phase)).astype(np.int32)
+            values = np.stack([base] * 5)
+        else:
+            values = np.asarray(waveforms, dtype=np.int32)
+        elapsed = elapsed_times or [float(index * 10) for index in range(len(values))]
+        frames = pd.DataFrame(
+            {
+                "battery_id": ["CELL_TEST"] * len(values),
+                "experiment_id": ["EXP_TEST"] * len(values),
+                "ultrasound_asset_id": ["U_TEST"] * len(values),
+                "source_file": ["test.txt"] * len(values),
+                "source_line_index": list(range(1, len(values) + 1)),
+                "frame_index_raw": list(range(len(values))),
+                "elapsed_time_s": elapsed,
+                "unknown_field_1": ["0"] * len(values),
+                "unknown_meta_0": ["unknown"] * len(values),
+                "unknown_meta_1": ["unknown"] * len(values),
+                "unknown_tail": [json.dumps(["0"] * 16)] * len(values),
+                "waveform_store_uri": ["waveforms.zarr"] * len(values),
+                "waveform_group": ["U_TEST/waveform"] * len(values),
+                "waveform_row_index": list(range(len(values))),
+                "waveform_sample_count": [values.shape[1]] * len(values),
+                "file_start_time": [pd.Timestamp("2024-01-01")] * len(values),
+                "absolute_timestamp": [
+                    pd.Timestamp("2024-01-01") + pd.Timedelta(seconds=value) for value in elapsed
+                ],
+                "event_order_index": list(range(len(values))),
+            }
+        )
+        if missing_column is not None:
+            frames = frames.drop(columns=[missing_column])
+        frames.to_parquet(input_dir / "frames.parquet", index=False)
+        write_waveform_array_verified(
+            values,
+            input_dir / "waveforms.zarr",
+            group_name="U_TEST",
+            attrs={
+                "asset_id": "U_TEST",
+                "frame_count": len(values),
+                "sample_count": values.shape[1],
+                "parser_version": "0.1.0",
+                "source_sha256": "synthetic",
+                "sampling_rate_hz": None,
+            },
+        )
+        manifest = {
+            "battery_id": "CELL_TEST",
+            "experiment_id": "EXP_TEST",
+            "parser": "custom_txt",
+            "parser_version": "0.1.0",
+            "source_assets": ["U_TEST"],
+            "source_sha256": {"U_TEST": "synthetic"},
+            "assets": [
+                {
+                    "asset_id": "U_TEST",
+                    "frame_count": len(values),
+                    "waveform_sample_counts": [values.shape[1]],
+                    "waveform_dtype": "int32",
+                    "sampling_rate_hz": None,
+                }
+            ],
+            "row_counts": {"frames": len(values)},
+            "warnings": [],
+        }
+        (input_dir / "parser_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return input_dir
 
     return factory
