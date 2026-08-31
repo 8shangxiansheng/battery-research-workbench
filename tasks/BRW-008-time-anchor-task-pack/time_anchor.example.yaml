@@ -1,0 +1,15 @@
+time_anchor:
+  version: "0.1.0"
+
+  plausibility:
+    max_start_residual_s: 60.0
+    max_end_residual_s: 60.0
+    min_overlap_fraction: 0.95
+
+  scientific_guards:
+    allow_verified_sync_status: false
+    allow_filename_time_inference: false
+    allow_timezone_inference: false
+    allow_cycle_based_anchor: false
+    allow_drift_fit: false
+    allow_record_matching: false

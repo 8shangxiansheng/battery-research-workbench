@@ -1,0 +1,22 @@
+time_anchor:
+  version: "0.1.0"
+
+  plausibility:
+    # Diagnostics only: meeting these thresholds yields PLAUSIBLE, never VERIFIED.
+    max_start_residual_s: 60.0
+    max_end_residual_s: 60.0
+    min_overlap_fraction: 0.95
+
+  scientific_guards:
+    # BRW-008 never promotes an anchor to verified synchronization.
+    allow_verified_sync_status: false
+    # Filename time tokens are hints only; never infer meaning or promote.
+    allow_filename_time_inference: false
+    # Datetimes are naive; never attach/convert a timezone.
+    allow_timezone_inference: false
+    # Cycle is not a cross-file alignment key.
+    allow_cycle_based_anchor: false
+    # No drift / clock model fitting in the anchor foundation.
+    allow_drift_fit: false
+    # No frame<->electrical record matching in the anchor foundation.
+    allow_record_matching: false

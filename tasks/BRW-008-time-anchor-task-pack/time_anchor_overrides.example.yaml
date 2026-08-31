@@ -1,0 +1,5 @@
+time_anchors:
+  U001:
+    anchor_datetime: "2024-01-06T09:52:31"
+    elapsed_time_s_at_anchor: 0.0
+    reason: "Example only: use only when independently confirmed"

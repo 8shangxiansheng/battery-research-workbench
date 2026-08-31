@@ -1,0 +1,12 @@
+# BRW-008 manual time-anchor overrides (example).
+#
+# These override manifest file_start_time with higher priority. They are NOT
+# written back to raw manifests. Provenance is preserved in the report.
+#
+# The override is only applied to the listed asset_id; leave empty to disable.
+
+time_anchors:
+  # U001:
+  #   anchor_datetime: "2024-01-06T09:52:31"
+  #   elapsed_time_s_at_anchor: 0.0
+  #   reason: "confirmed from instrument metadata (example)"
