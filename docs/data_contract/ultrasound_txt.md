@@ -18,10 +18,11 @@ tail[16]
 Current safe canonical names:
 
 ```text
-frame_index
+frame_index_raw
 unknown_field_1
 elapsed_time_s
-unknown_meta_pair[2]
+unknown_meta_0
+unknown_meta_1
 waveform[1250]
 unknown_tail[16]
 ```
@@ -63,3 +64,11 @@ until `fs` is known.
 3. Frame IDs and elapsed times must be monotonic.
 4. Unknown fields must survive round-trip metadata handling.
 5. Invalid lines must raise explicit validation errors; do not silently skip.
+
+## Canonical storage
+
+- `frames.parquet` stores provenance, raw metadata and a Zarr locator; waveform samples are not expanded into metadata columns.
+- `waveforms.zarr/{ultrasound_asset_id}/waveform` stores one `int32` frame × sample array per DataAsset.
+- Multiple DataAssets may restart `frame_index_raw` at zero; `ultrasound_asset_id` remains part of frame identity.
+- When manifest `file_start_time` is available, `absolute_timestamp` is mechanically calculated as `file_start_time + elapsed_time_s`. This is not validated multimodal synchronization.
+- `sampling_rate_hz` remains `null` until supported by reliable external evidence.

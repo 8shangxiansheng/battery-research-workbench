@@ -120,6 +120,33 @@ print(report.status)
 
 QA 不会删除重复 timestamp、修改异常值或回写 processed Parquet。
 
+## Ultrasound TXT Parser
+
+BRW-005 根据 DataAsset manifest 将一个 Experiment 下的一个或多个 Ultrasound TXT 转为 frame metadata 与独立的 raw waveform Zarr group：
+
+```python
+from pathlib import Path
+
+from battery_workbench.io.experiment.manifest_loader import load_data_assets, load_experiments
+from battery_workbench.io.ultrasound import parse_ultrasound_experiment, write_ultrasound_experiment
+
+raw_root = Path("data/raw")
+assets = [
+    asset
+    for asset in load_data_assets(raw_root / "manifests/data_assets.csv")
+    if asset.modality == "ultrasound" and asset.experiment_id == "EXP_001"
+]
+experiment = next(
+    item
+    for item in load_experiments(raw_root / "manifests/experiments.csv")
+    if item.experiment_id == "EXP_001"
+)
+parsed = parse_ultrasound_experiment(experiment, assets, raw_root)
+write_ultrasound_experiment(parsed, Path("data/processed/ultrasound"))
+```
+
+Parser 保留 raw frame ID、unknown metadata 与整数 waveform，不执行滤波、FFT、TOF 或 Electrical 同步。当前没有可靠 sampling rate，输出中保持 `null`。
+
 ## Run tests
 
 ```bash

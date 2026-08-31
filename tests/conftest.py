@@ -358,3 +358,28 @@ def electrical_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
         return input_dir
 
     return factory
+
+
+@pytest.fixture
+def ultrasound_txt_factory(tmp_path: Path) -> Callable[..., Path]:
+    def factory(
+        name: str = "ultrasound.txt",
+        *,
+        frame_ids: list[int] | None = None,
+        elapsed_times: list[float] | None = None,
+    ) -> Path:
+        ids = frame_ids or [0, 1, 2]
+        elapsed = elapsed_times or [0.031, 10.031, 20.031]
+        lines = []
+        for frame_id, elapsed_time in zip(ids, elapsed, strict=True):
+            waveform = " ".join(str(frame_id * 1000 + index) for index in range(1250))
+            tail = " ".join(str(index) for index in range(16))
+            lines.append(
+                f"{frame_id};unknown-{frame_id};{elapsed_time};"
+                f"meta-{frame_id} state-{frame_id};{waveform};{tail}\n"
+            )
+        path = tmp_path / name
+        path.write_text("".join(lines), encoding="utf-8")
+        return path
+
+    return factory

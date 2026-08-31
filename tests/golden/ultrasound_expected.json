@@ -1,0 +1,12 @@
+{
+  "asset_id": "U001",
+  "source_sha256": "8e196837bf13637d4c0d2244a403c018b3bbd81b5b1b81ac5c08df2007be5acb",
+  "frame_count": 3999,
+  "frames": [
+    {"frame_index_raw": 0, "source_line_index": 1, "elapsed_time_s": 0.031217, "waveform_checks": {"0": -15819, "10": -720, "1249": 9}},
+    {"frame_index_raw": 1000, "source_line_index": 1001, "elapsed_time_s": 10000.031, "waveform_checks": {"0": -15824, "10": -684, "1249": 13}},
+    {"frame_index_raw": 2000, "source_line_index": 2001, "elapsed_time_s": 20000.031, "waveform_checks": {"0": -15841, "10": -713, "1249": 6}},
+    {"frame_index_raw": 3000, "source_line_index": 3001, "elapsed_time_s": 30000.031, "waveform_checks": {"0": -15836, "10": -705, "1249": -2}},
+    {"frame_index_raw": 3998, "source_line_index": 3999, "elapsed_time_s": 39980.03, "waveform_checks": {"0": -15831, "10": -701, "1249": -14}}
+  ]
+}
