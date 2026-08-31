@@ -1,0 +1,46 @@
+先阅读仓库根目录 `AGENTS.md`，然后阅读 `tasks/BRW-012/01_MASTER_PROMPT.md`。
+
+执行 BRW-012 — Scientific Analysis Foundation / Condition Slice Engine，但这一轮只做 Inspect，不修改代码。
+
+读取真实：
+- data/processed/multimodal/CELL_001/EXP_001/measurement_events.parquet
+- measurement_event_manifest.json
+- 当前 multimodal/analysis 源码
+- 当前 tests
+
+报告：
+
+1. measurement_events row/column count；
+2. event_quality_status 各状态数量；
+3. analysis_eligible true/false；
+4. 以下字段实际列名、dtype、null：
+   cycle / step / step_type / voltage / current / capacity /
+   temperature / soc_dod_percent / sync_error_s / boundary_flag；
+5. cycle unique values；
+6. step index / step_type unique values；
+7. current min/max 和正负数量；
+8. voltage min/max；
+9. temperature min/max/null；
+10. soc_dod_percent min/max/null；
+11. sync_error min/median/max；
+12. boundary true count；
+13. waveform_group/waveform_row_index 是否存在；
+14. 推荐 ConditionSliceSpec；
+15. 推荐 deterministic slice-id normalization；
+16. READY_ALL 预计行数；
+17. CYCLE_1 预计行数；
+18. 用真实 step_type 定义 DISCHARGE slice；
+19. 判断 MID_SOC_DOD 40–60 是否可做；不可做则推荐 voltage fallback；
+20. 推荐源码文件；
+21. 推荐 tests。
+
+不要：
+- 修改代码
+- 重新同步
+- 重建 MeasurementEvent
+- waveform feature
+- TOF/FFT
+- 科研结论
+- ML/Agent/UI
+
+输出 Inspect Report 后停止。

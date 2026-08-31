@@ -1,0 +1,16 @@
+analysis_slice:
+  version: "0.1.0"
+
+  defaults:
+    # Default policy: exclude ineligible events unless explicitly overridden.
+    analysis_eligible_only: true
+    # Numeric-null rows are excluded by default under a numeric range filter.
+    include_null_numeric_values: false
+    # Boundary events are not excluded by default (boundary is not bad data).
+    exclude_boundaries: false
+
+  scientific_guards:
+    allow_resynchronization: false
+    allow_measurement_event_rebuild: false
+    allow_waveform_processing: false
+    allow_feature_extraction: false

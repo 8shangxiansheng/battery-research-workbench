@@ -1,0 +1,13 @@
+analysis_slice:
+  version: "0.1.0"
+
+  defaults:
+    analysis_eligible_only: true
+    include_null_numeric_values: false
+    exclude_boundaries: false
+
+  scientific_guards:
+    allow_resynchronization: false
+    allow_measurement_event_rebuild: false
+    allow_waveform_processing: false
+    allow_feature_extraction: false
