@@ -8,6 +8,7 @@ __pycache__/
 .coverage
 htmlcov/
 .workflow/
+tasks/
 .env
 .DS_Store
 
