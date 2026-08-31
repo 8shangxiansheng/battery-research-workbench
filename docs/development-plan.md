@@ -14,7 +14,7 @@
 
 ## M1 — Data Engines
 - BRW-003 Electrical XLSX Parser → standardized ElectricalExperiment / Parquet
-- BRW-004 Electrical QA
+- BRW-004 Electrical QA → read-only JSON / HTML / tables / figures（implemented）
 - BRW-005 Ultrasound TXT Parser → UltrasoundFrame / Zarr
 - BRW-006 Ultrasound Golden Validation
 - BRW-007 Ultrasound QA Viewer

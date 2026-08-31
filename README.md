@@ -98,6 +98,28 @@ src/battery_workbench/agent/
 
 不要在同步数据地基完成前优先开发 Agent/UI。
 
+## Electrical QA
+
+BRW-004 对 BRW-003 的标准化 Parquet 输出执行只读质量检查，并生成 canonical JSON、HTML、CSV 汇总与 8 张诊断图：
+
+```python
+from pathlib import Path
+
+from battery_workbench.electrical.qa import ElectricalQAConfig, run_electrical_qa
+
+config = ElectricalQAConfig.from_yaml("configs/electrical_qa.yaml")
+report = run_electrical_qa(
+    "CELL_001",
+    "EXP_001",
+    Path("data/processed/electrical/CELL_001/EXP_001"),
+    Path("data/artifacts/CELL_001/EXP_001/electrical_qa"),
+    config,
+)
+print(report.status)
+```
+
+QA 不会删除重复 timestamp、修改异常值或回写 processed Parquet。
+
 ## Run tests
 
 ```bash

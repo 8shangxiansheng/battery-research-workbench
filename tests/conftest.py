@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
@@ -219,5 +221,140 @@ def electrical_workbook_factory(tmp_path: Path) -> Callable[..., Path]:
             backwards_timestamp=backwards_timestamp,
             include_aux_voltage=include_aux_voltage,
         )
+
+    return factory
+
+
+@pytest.fixture
+def electrical_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
+    """Write a minimal BRW-003 output bundle without invoking the XLSX parser."""
+
+    def factory(
+        *,
+        duplicate: bool = False,
+        backwards: bool = False,
+        large_gap: bool = False,
+        missing_column: str | None = None,
+        missing_aux_temperature: bool = False,
+        cycle_mismatch: bool = False,
+        step_mismatch: bool = False,
+        voltage_outlier: bool = False,
+    ) -> Path:
+        input_dir = tmp_path / f"input-{len(list(tmp_path.iterdir()))}"
+        input_dir.mkdir()
+        start = pd.Timestamp("2024-01-01 00:00:00")
+        seconds = [0, 1, 2, 3]
+        if duplicate:
+            seconds[2] = 1
+        if backwards:
+            seconds[2] = 0
+        if large_gap:
+            seconds[2:] = [31, 32]
+        timestamps = [start + pd.Timedelta(seconds=value) for value in seconds]
+        cycles_raw = [1, 1, 2, 2]
+        if cycle_mismatch:
+            cycles_raw[-1] = 3
+        steps_raw = [1, 2, 1, 2]
+        if step_mismatch:
+            steps_raw[-1] = 9
+        records = pd.DataFrame(
+            {
+                "battery_id": ["CELL_TEST"] * 4,
+                "experiment_id": ["EXP_TEST"] * 4,
+                "electrical_asset_id": ["E_TEST"] * 4,
+                "source_file": ["test.xlsx"] * 4,
+                "source_sheet": ["record"] * 4,
+                "source_row_index": [2, 3, 4, 5],
+                "record_index_raw": [1, 2, 3, 4],
+                "cycle_index_raw": cycles_raw,
+                "step_index_raw": steps_raw,
+                "step_type_raw": ["CC", "REST", "CC", "REST"],
+                "timestamp": timestamps,
+                "current_a": [1.0, 0.0, 1.0, 0.0],
+                "voltage_v": [99.0 if voltage_outlier else 3.0, 3.1, 3.2, 3.3],
+                "capacity_ah": [0.0, 0.1, 0.0, 0.1],
+                "charge_capacity_ah": [0.0, 0.1, 0.0, 0.1],
+                "discharge_capacity_ah": [0.0] * 4,
+                "dqdv_mah_per_v": [0.0, 1.0, 0.0, 1.0],
+                "contact_resistance_mohm": [1.0] * 4,
+                "soc_dod_percent": [0.0, 10.0, 0.0, 10.0],
+            }
+        )
+        if missing_column:
+            records = records.drop(columns=[missing_column])
+        cycles = pd.DataFrame(
+            {
+                "battery_id": ["CELL_TEST"] * 2,
+                "experiment_id": ["EXP_TEST"] * 2,
+                "electrical_asset_id": ["E_TEST"] * 2,
+                "source_file": ["test.xlsx"] * 2,
+                "source_sheet": ["cycle"] * 2,
+                "source_row_index": [2, 3],
+                "cycle_index_raw": [1, 2],
+                "start_timestamp": [timestamps[0], timestamps[2]],
+                "end_timestamp": [timestamps[1], timestamps[3]],
+                "charge_capacity_ah": [0.1, 0.1],
+                "discharge_capacity_ah": [0.0, 0.0],
+            }
+        )
+        steps = pd.DataFrame(
+            {
+                "battery_id": ["CELL_TEST"] * 4,
+                "experiment_id": ["EXP_TEST"] * 4,
+                "electrical_asset_id": ["E_TEST"] * 4,
+                "source_file": ["test.xlsx"] * 4,
+                "source_sheet": ["step"] * 4,
+                "source_row_index": [2, 3, 4, 5],
+                "cycle_index_raw": [1, 1, 2, 2],
+                "step_index_raw": [1, 2, 1, 2],
+                "step_sequence_raw": [1, 2, 3, 4],
+                "step_type_raw": ["CC", "REST", "CC", "REST"],
+                "start_timestamp": timestamps,
+                "end_timestamp": timestamps,
+                "step_time_s": [0.0] * 4,
+            }
+        )
+        aux_common = {
+            "battery_id": ["CELL_TEST"] * 4,
+            "experiment_id": ["EXP_TEST"] * 4,
+            "electrical_asset_id": ["E_TEST"] * 4,
+            "source_file": ["test.xlsx"] * 4,
+            "source_row_index": [2, 3, 4, 5],
+            "record_index_raw": [1, 2, 3, 4],
+            "timestamp": timestamps,
+        }
+        if not missing_aux_temperature:
+            pd.DataFrame(
+                aux_common
+                | {
+                    "source_sheet": ["auxTemp"] * 4,
+                    "temperature_channel": ["T1"] * 4,
+                    "temperature_c": [25.0, 25.1, 25.2, 25.3],
+                }
+            ).to_parquet(input_dir / "aux_temperature.parquet", index=False)
+        pd.DataFrame(
+            aux_common
+            | {
+                "source_sheet": ["auxVol"] * 4,
+                "voltage_channel": ["V1"] * 4,
+                "voltage_v": [3.0, 3.1, 3.2, 3.3],
+            }
+        ).to_parquet(input_dir / "aux_voltage.parquet", index=False)
+        records.to_parquet(input_dir / "records.parquet", index=False)
+        cycles.to_parquet(input_dir / "cycles.parquet", index=False)
+        steps.to_parquet(input_dir / "steps.parquet", index=False)
+        (input_dir / "parser_manifest.json").write_text(
+            json.dumps(
+                {
+                    "battery_id": "CELL_TEST",
+                    "experiment_id": "EXP_TEST",
+                    "parser": "custom_excel",
+                    "parser_version": "0.1.0",
+                    "source_assets": ["E_TEST"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return input_dir
 
     return factory
