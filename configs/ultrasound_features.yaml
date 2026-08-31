@@ -1,0 +1,16 @@
+ultrasound_features:
+  version: "0.1.0"
+  feature_definition_version: "0.1.0"
+
+  xcorr:
+    # Per-asset reference = first valid event by event_order_index.
+    reference_policy: "first_valid_by_event_order"
+    mean_center_only: true
+
+  scientific_guards:
+    allow_resynchronization: false
+    allow_filtering: false
+    allow_alignment: false
+    allow_physical_tof: false
+    allow_frequency: false
+    allow_measurement_event_rebuild: false

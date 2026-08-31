@@ -30,6 +30,9 @@ data/artifacts/**
 !data/features/**/.gitkeep
 !data/artifacts/.gitkeep
 
+# Local scratch Zarr store created during feature-engine experiments
+/test.zarr/
+
 mlruns/
 *.db
 *.sqlite
