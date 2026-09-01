@@ -87,10 +87,13 @@ def write_label_payload(
     soc_valid_count: int,
     soc_ineligible_count: int,
     soh_state_count: int,
+    soh_readiness: Any,
     reference: ReferenceCapacity,
     vendor_diagnostic: dict[str, Any],
+    ce_diagnostic: dict[str, Any],
     config: LabelConfig,
     output_root: Path,
+    supersedes_label_set_id: str | None = None,
 ) -> LabelReport:
     output_root = Path(output_root)
     out_dir = output_root / "labels" / battery_id / experiment_id
@@ -127,8 +130,8 @@ def write_label_payload(
         },
         soc_method=config.soc.method,
         soc_formula_version=config.soc.formula_version,
-        soc_temporality="RETROSPECTIVE_FULL_CYCLE_REFERENCE",
-        soc_anchor="FULL_CHARGE_CV_END / EMPTY_DISCHARGE_END",
+        soc_temporality="RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE",
+        soc_anchor="CHARGE_SEGMENT_START(empty) / DISCHARGE_SEGMENT_START(full) / REST_PROPAGATED",
         soc_q_ref=reference.q_ref_ah,
         soc_valid_count=soc_valid_count,
         soc_null_count=soc_ineligible_count,
@@ -139,6 +142,8 @@ def write_label_payload(
         soh_reference_cycle=reference.reference_cycle_index,
         soh_reference_capacity_ah=reference.q_ref_ah,
         soh_independent_state_count=soh_state_count,
+        soh_model_readiness=soh_readiness.readiness,
+        supersedes_label_set_id=supersedes_label_set_id,
         frame_random_split_prohibited=config.leakage.frame_random_split_prohibited,
         group_fields=[
             "battery_group_id",
@@ -160,7 +165,8 @@ def write_label_payload(
         },
         warnings=[],
         limitations=[
-            "Q_ref uses same-cycle endpoint information (retrospective labels)",
+            "SOC V2 is RETROSPECTIVE_SEGMENT_NORMALIZED: denominators are segment totals known only after segment completion; not online-causal",
+            "SOH independent states are cycle-level; readiness=" + soh_readiness.readiness,
             "vendor soc_dod_percent is a mixed field and is never promoted",
         ],
     )
@@ -179,6 +185,7 @@ def write_label_payload(
         soc_ineligible_count=soc_ineligible_count,
         soh_independent_state_count=soh_state_count,
         vendor_diagnostic=vendor_diagnostic,
+        apparent_coulombic_efficiency=ce_diagnostic,
         frame_random_split_prohibited=config.leakage.frame_random_split_prohibited,
         warnings=[],
         limitations=manifest.limitations,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -71,7 +72,10 @@ def test_definitions_and_manifest_persisted_t48_t49(tmp_path: Path) -> None:
 
     m = json.loads((d / "label_manifest.json").read_text(encoding="utf-8"))
     assert m["frame_random_split_prohibited"] is True
-    assert m["soc_temporality"] == "RETROSPECTIVE_FULL_CYCLE_REFERENCE"
+    assert m["soc_temporality"] == "RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE"
+    assert m["soc_formula_version"] == "0.2.0"
+    assert "supersedes_label_set_id" in m
+    assert m["soh_model_readiness"] == "NOT_READY_FOR_ROBUST_SUPERVISED_LEARNING"
 
 
 @pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")
@@ -126,6 +130,17 @@ def test_real_soc_golden_t53(tmp_path: Path) -> None:
     assert first["soc_reference_percent"] == pytest.approx(100.0, abs=0.2)
     assert last["soc_reference_percent"] == pytest.approx(0.0, abs=0.2)
     assert (d1["soc_reference_quality"] == "VALID_REFERENCE").all()
+    # T35/T36: no valid SOC outside [0, 100] anywhere.
+    valid = out[out["soc_label_eligible"]]
+    assert (valid["soc_reference_percent"] >= 0).all() and (
+        valid["soc_reference_percent"] <= 100
+    ).all()
+    # T33: rest events now carry propagated SOC (post-charge ~100, post-discharge ~0).
+    rest_valid = out[(out["soc_direction"] == "REST") & out["soc_label_eligible"]]
+    assert len(rest_valid) > 0
+    assert (rest_valid["soc_reference_quality"] == "VALID_REFERENCE").all()
+    # Ambiguous frames keep direction REST-by-default but stay ineligible.
+    assert out["soc_label_eligible"].sum() == 3995
 
 
 @pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")
@@ -158,3 +173,63 @@ def test_no_ultrasound_features_in_labels(tmp_path: Path) -> None:
     out = pd.read_parquet(tmp_path / "labels" / "CELL_001" / "EXP_001" / "event_labels.parquet")
     for forbidden in ("rms", "p2p", "xcorr", "waveform", "tof", "fft"):
         assert not any(forbidden in c for c in out.columns)
+
+
+@pytest.mark.skipif(not (EVENTS.exists() and CYCLES.exists()), reason="inputs not present")
+def test_v2_supersedes_and_rest_golden(tmp_path: Path) -> None:
+    """V2: supersedes provenance + rest golden (T10/T12/T21-T23)."""
+    build_reference_labels(
+        measurement_events_path=EVENTS,
+        records_path=RECORDS,
+        cycles_path=CYCLES,
+        steps_path=STEPS,
+        ultrasound_manifest_path=ULTRA,
+        output_root=tmp_path,
+        config=CONFIG,
+        supersedes_label_set_id="LB::f58273be9319ad415b6f1cd8",
+    )
+    manifest = json.loads(
+        (tmp_path / "labels" / "CELL_001" / "EXP_001" / "label_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["supersedes_label_set_id"] == "LB::f58273be9319ad415b6f1cd8"
+    assert manifest["label_set_id"] != "LB::f58273be9319ad415b6f1cd8"
+    out = pd.read_parquet(tmp_path / "labels" / "CELL_001" / "EXP_001" / "event_labels.parquet")
+    steps_df = pd.read_parquet(EVENTS)[["measurement_event_id", "step_type"]]
+    merged = out.merge(steps_df, on="measurement_event_id")
+    # T10: post-charge rest == ~100; T12: post-discharge rest == ~0.
+    rest_cc = merged[
+        (merged["step_type"] == "搁置")
+        & (merged["cycle_index_raw"] == 1)
+        & (merged["event_order_index"] < 900)
+    ]
+    assert (rest_cc["soc_reference_percent"] > 99).all()
+    rest_dis = merged[
+        (merged["step_type"] == "搁置")
+        & (merged["cycle_index_raw"] == 1)
+        & (merged["event_order_index"] > 1900)
+    ]
+    assert (rest_dis["soc_reference_percent"] < 1).all()
+    # T21: formula version bumped on every row.
+    assert (out["soc_formula_version"] == "0.2.0").all()
+
+
+@pytest.mark.skipif(not (EVENTS.exists() and CYCLES.exists()), reason="inputs not present")
+def test_sync_ambiguity_regression_v2_t29_t30(tmp_path: Path) -> None:
+    """T29/T30: frames 691/1914/2094/3998 stay ambiguous/ineligible after V2."""
+    build_reference_labels(
+        measurement_events_path=EVENTS,
+        records_path=RECORDS,
+        cycles_path=CYCLES,
+        steps_path=STEPS,
+        ultrasound_manifest_path=ULTRA,
+        output_root=tmp_path,
+        config=CONFIG,
+    )
+    out = pd.read_parquet(tmp_path / "labels" / "CELL_001" / "EXP_001" / "event_labels.parquet")
+    for fi in (691, 1914, 2094, 3998):
+        row = out[out["measurement_event_id"] == f"ME::CELL_001::EXP_001::U001::{fi}"].iloc[0]
+        assert row["soc_reference_quality"] == "INCOMPLETE_CYCLE"
+        assert bool(row["soc_label_eligible"]) is False
+        assert pd.isna(row["soc_reference_percent"])

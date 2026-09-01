@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 from battery_workbench.io.experiment.manifest_loader import (

@@ -107,3 +107,35 @@ def build_cycle_soh_labels(
     out["soh_reference_method"] = "CAPACITY_BASELINE_RATIO"
     out["soh_formula_version"] = "0.1.0"
     return out
+
+
+@dataclass
+class SohModelReadiness:
+    independent_state_count: int
+    frame_count: int | None
+    readiness: str
+    suitable_for_supervised_learning: bool
+
+
+def soh_model_readiness(
+    *,
+    independent_state_count: int,
+    frame_count: int | None = None,
+    min_states: int = 20,
+) -> SohModelReadiness:
+    """Guard: SOH supervised-learning readiness from the TRUE state count.
+
+    Frame count is recorded but never substitutes for independent cycle-level
+    states. Diversity is a data-collection property — never manufactured.
+    """
+    ready = independent_state_count >= min_states
+    return SohModelReadiness(
+        independent_state_count=independent_state_count,
+        frame_count=frame_count,
+        readiness=(
+            "READY_FOR_SUPERVISED_LEARNING_CANDIDATE"
+            if ready
+            else "NOT_READY_FOR_ROBUST_SUPERVISED_LEARNING"
+        ),
+        suitable_for_supervised_learning=ready,
+    )

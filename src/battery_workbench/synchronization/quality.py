@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import statistics
 
 from battery_workbench.synchronization.schemas import SyncQualityReport

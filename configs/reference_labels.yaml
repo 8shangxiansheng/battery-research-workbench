@@ -1,10 +1,10 @@
 reference_labels:
-  version: "0.1.0"
-  label_definition_version: "0.1.0"
+  version: "0.2.0"
+  label_definition_version: "0.2.0"
 
   soc:
-    method: "COULOMB_COUNTING_PROTOCOL_ANCHORED"
-    formula_version: "0.1.0"
+    method: "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"
+    formula_version: "0.2.0"
     # The vendor SOC/DOD(%) field is a mixed field (0->100 in BOTH charge and
     # discharge); it is never promoted to a reference label.
     promote_vendor_soc_dod: false

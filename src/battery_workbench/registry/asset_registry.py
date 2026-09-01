@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from battery_workbench.domain.asset import DataAsset
 
 

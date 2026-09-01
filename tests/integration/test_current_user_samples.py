@@ -1,12 +1,11 @@
-from pathlib import Path
 import os
 import statistics
+from pathlib import Path
 
 import pytest
 
 from battery_workbench.io.electrical.custom_excel import inspect_electrical_workbook
 from battery_workbench.io.ultrasound.custom_txt import iter_ultrasound_frames
-
 
 DATA_DIR = os.getenv("BRW_SAMPLE_DATA_DIR")
 pytestmark = pytest.mark.integration

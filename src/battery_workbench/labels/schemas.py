@@ -24,7 +24,16 @@ SocQuality = Literal[
 ]
 SocTemporality = Literal[
     "RETROSPECTIVE_FULL_CYCLE_REFERENCE",
+    "RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE",
     "ONLINE_CAUSAL_REFERENCE",
+]
+
+SocAnchorQuality = Literal[
+    "VERIFIED_PROTOCOL_ANCHOR",
+    "REFERENCE_PROTOCOL_ANCHOR",
+    "ASSUMED_INITIAL_ANCHOR",
+    "PROPAGATED_REST_ANCHOR",
+    "ANCHOR_UNAVAILABLE",
 ]
 SocDirection = Literal["DISCHARGE", "CHARGE", "REST"]
 ReferenceScope = Literal[
@@ -44,9 +53,10 @@ SliceStatus = Literal["READY", "PASS_WITH_WARNINGS", "PARTIAL", "FAILED", "EMPTY
 
 
 class SocConfig(BaseModel):
-    method: str = "COULOMB_COUNTING_PROTOCOL_ANCHORED"
-    formula_version: str = "0.1.0"
+    method: str = "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"
+    formula_version: str = "0.2.0"
     promote_vendor_soc_dod: bool = False
+    boundary_tolerance_pct: float = 1e-6
 
 
 class SohConfig(BaseModel):
@@ -65,8 +75,8 @@ class TofConfig(BaseModel):
 
 
 class LabelConfig(BaseModel):
-    version: str = "0.1.0"
-    label_definition_version: str = "0.1.0"
+    version: str = "0.2.0"
+    label_definition_version: str = "0.2.0"
     soc: SocConfig = Field(default_factory=SocConfig)
     soh: SohConfig = Field(default_factory=SohConfig)
     leakage: LeakageConfig = Field(default_factory=LeakageConfig)
@@ -101,6 +111,8 @@ class EventLabel(BaseModel):
     soc_reference_quality: SocQuality | None = None
     soc_label_eligible: bool = False
     soc_formula_version: str | None = None
+    soc_anchor_quality: str | None = None
+    soc_integral_unbounded_percent: float | None = None
 
     # SOH (propagated from cycle labels by exact key join).
     soh_capacity_reference_percent: float | None = None
@@ -167,7 +179,7 @@ class LabelManifest(BaseModel):
     input_checksums: dict[str, str] = Field(default_factory=dict)
     soc_method: str | None = None
     soc_formula_version: str | None = None
-    soc_temporality: str | None = None
+    soc_temporality: str | None = "RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE"
     soc_anchor: str | None = None
     soc_q_ref: float | None = None
     soc_valid_count: int = 0
@@ -179,6 +191,8 @@ class LabelManifest(BaseModel):
     soh_reference_cycle: int | None = None
     soh_reference_capacity_ah: float | None = None
     soh_independent_state_count: int = 0
+    soh_model_readiness: str = "NOT_READY_FOR_ROBUST_SUPERVISED_LEARNING"
+    supersedes_label_set_id: str | None = None
     frame_random_split_prohibited: bool = True
     group_fields: list[str] = Field(default_factory=list)
     reference_scope: str | None = None
@@ -201,6 +215,7 @@ class LabelReport(BaseModel):
     soc_ineligible_count: int = 0
     soh_independent_state_count: int = 0
     vendor_diagnostic: dict[str, Any] = Field(default_factory=dict)
+    apparent_coulombic_efficiency: dict[str, Any] = Field(default_factory=dict)
     frame_random_split_prohibited: bool = True
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
