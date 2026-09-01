@@ -1,0 +1,12 @@
+dataset_builder:
+  version: "0.1.0"
+  role_schema_version: "0.1.0"
+  leakage_policy_version: "0.1.0"
+
+  predictor_policy: "ULTRASOUND_ONLY"
+
+  # BRW-015 parameter set is informational: current sample-domain features and
+  # capacity-based labels do not require any parameter from the registry.
+  parameter_dependency: "INFORMATIONAL"
+
+  min_soh_independent_states: 20
