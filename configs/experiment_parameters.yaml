@@ -1,0 +1,24 @@
+experiment_parameters:
+  version: "0.1.0"
+  resolution_policy_version: "0.1.0"
+  unit_policy_version: "0.1.0"
+
+  delay_policy: "SYSTEM_DELAY_TOTAL"
+
+  # User-supplied parameters go here. Per the registry principle, the user
+  # configures ONLY parameters that directly change scientific results AND
+  # cannot be reliably obtained from data (AUTO_READ_THEN_USER / USER_ONLY
+  # policies). AUTO_ONLY parameters (data-factual) are collected automatically
+  # and user entries for them are ignored.
+  #
+  # Real CELL_001 baseline: leave everything UNKNOWN. The example below shows
+  # the override shape and is intentionally commented out.
+  #
+  # user_parameters:
+  #   ultrasound.sampling_rate_hz:
+  #     value: 100.0
+  #     unit: "MHz"
+  #     verification_status: "UNVERIFIED"
+  #     evidence_note: "example only — confirm against the real instrument setup"
+
+  user_parameters: {}
