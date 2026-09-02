@@ -133,7 +133,7 @@ class PipelineOrchestrator:
                     node_id=node_id, state=NodeState.BLOCKED, reason="upstream blocked/waiting"
                 )
             else:
-                readiness = node.validate_readiness(plan, {})
+                readiness = node.validate_readiness(plan, dep_refs)
                 if readiness.ok:
                     result = NodeResult(node_id=node_id, state=NodeState.RUNNING, reason=reason)
                 elif readiness.user_action is not None:

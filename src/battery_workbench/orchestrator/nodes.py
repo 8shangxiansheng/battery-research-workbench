@@ -390,6 +390,10 @@ class SynchronizationNode(WorkflowNode):
     node_type = "SYNCHRONIZATION"
 
     def requirements(self, plan, inputs):
+        from battery_workbench.synchronization.sync_schemas import (
+            SYNCHRONIZATION_SCHEMA_VERSION,
+        )
+
         return ArtifactRequirements(
             artifact_type="SYNCHRONIZATION",
             manifest_name="synchronization_manifest.json",
@@ -399,6 +403,10 @@ class SynchronizationNode(WorkflowNode):
             output_rel_dir=f"synchronization/{plan.project.battery_id}/{plan.project.experiment_id}",
             version_key="sync_engine_version",
             expected_version=self.node_version,
+            # BRW-010R: the persisted output contract participates in artifact
+            # compatibility — a pre-0.2.0 sync artifact (no composite selected
+            # identity) is NOT reusable even with unchanged raw inputs.
+            extra_match={"schema_version": SYNCHRONIZATION_SCHEMA_VERSION},
         )
 
     def output_rel_dir(self, plan):
@@ -423,7 +431,7 @@ class SynchronizationNode(WorkflowNode):
             / plan.project.battery_id
             / plan.project.experiment_id
             / "records.parquet",
-            output_dir=exp_dir,
+            output_dir=Path(ctx.processed_root),
             config=SynchronizationConfig(),
         )
         return {
@@ -626,7 +634,7 @@ class ReferenceLabelsNode(WorkflowNode):
             / b
             / e
             / "parser_manifest.json",
-            output_root=Path(ctx.processed_root) / "labels",
+            output_root=Path(ctx.processed_root),
         )
         out_dir = Path(ctx.processed_root) / "labels" / b / e
         limitations = list(report.limitations) if hasattr(report, "limitations") else []

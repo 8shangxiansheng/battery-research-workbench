@@ -33,7 +33,7 @@ SplitUnit = Literal["CYCLE", "EXPERIMENT", "BATTERY"]
 
 
 class SplitSpec(BaseModel):
-    strategy: SplitStrategy
+    strategy: SplitStrategy = SplitStrategy.LEAVE_ONE_GROUP_OUT
     split_unit: SplitUnit = "CYCLE"
     group_column: str = "cycle_group_id"
     dataset_id: str = ""

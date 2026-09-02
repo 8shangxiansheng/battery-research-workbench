@@ -35,6 +35,8 @@ def _aligned_row(idx: int, status: str, locator=None, err: float = 0.03) -> dict
         "candidate_timestamp_count": 1,
         "candidate_record_count": 1,
         "sync_ambiguous": status == "MATCHED_AMBIGUOUS",
+        # new-schema composite selected identity (BRW-010R §2/§4)
+        "electrical_asset_id": ("E1" if status == "MATCHED_UNIQUE" else None),
         "ambiguity_type": "DUPLICATE_ELECTRICAL_TIMESTAMP"
         if status == "MATCHED_AMBIGUOUS"
         else "NONE",

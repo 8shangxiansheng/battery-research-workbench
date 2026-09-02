@@ -186,8 +186,13 @@ def test_t21_final_status_correct(tmp_path: Path) -> None:
 
 
 def _corrupted_run(tmp_path: Path) -> tuple[dict, PipelineOrchestrator, Path]:
+    """Corrupt the MEASUREMENT_EVENTS input so the node itself FAILs.
+
+    The sandbox carries new-schema sync artifacts; SYNCHRONIZATION is staged
+    so the engine re-runs it on the corrupt electrical input.
+    """
     sandbox = _sandbox(tmp_path)
-    victim = sandbox / "synchronization/CELL_001/EXP_001/aligned_ultrasound_frames.parquet"
+    victim = sandbox / "electrical/CELL_001/EXP_001/records.parquet"
     victim.write_bytes(b"corrupt")
     svc = PipelineOrchestrator(raw_root=RAW, processed_root=sandbox, runs_root=tmp_path / "runs")
     plan = svc.plan_run(
@@ -195,7 +200,7 @@ def _corrupted_run(tmp_path: Path) -> tuple[dict, PipelineOrchestrator, Path]:
         battery_id="CELL_001",
         experiment_id="EXP_001",
         dry_run=False,
-        stages=["MEASUREMENT_EVENTS", "PARAMETER_SET"],
+        stages=["SYNCHRONIZATION", "MEASUREMENT_EVENTS", "PARAMETER_SET"],
     )
     return svc.start_run(plan), svc, sandbox
 
@@ -230,12 +235,13 @@ def test_t22_t23_resume_after_user_action_no_upstream_recompute(tmp_path: Path) 
 def test_t24_retry_failed_node(tmp_path: Path) -> None:
     run, svc, sandbox = _corrupted_run(tmp_path)
     assert run["status"] == "FAILED"
-    # fix the corrupt input, then retry the failed node
-    victim_rel = "synchronization/CELL_001/EXP_001/aligned_ultrasound_frames.parquet"
+    # fix the corrupt input, then retry
+    victim_rel = "electrical/CELL_001/EXP_001/records.parquet"
     shutil.copy(PROCESSED / victim_rel, sandbox / victim_rel)
-    retried = svc.retry_node(run["run_id"], "MEASUREMENT_EVENTS", runs_root=tmp_path / "runs")
+    retried = svc.retry_node(run["run_id"], "SYNCHRONIZATION", runs_root=tmp_path / "runs")
     states = {n["node_id"]: n["state"] for n in retried["nodes"]}
-    assert states["MEASUREMENT_EVENTS"] in {"SUCCEEDED", "REUSED"}
+    assert states["SYNCHRONIZATION"] in {"SUCCEEDED", "REUSED"}
+    assert states["MEASUREMENT_EVENTS"] in {"SUCCEEDED", "REUSED", "RUNNING"}
     assert states["PARAMETER_SET"] in {"SUCCEEDED", "REUSED", "RUNNING"}
 
 
@@ -297,11 +303,17 @@ def test_t27_gate_change_only_downstream() -> None:
     assert states["FEATURE_LABEL_ANALYSIS"] == "RUNNING"
     # "相关 DATASET": this plan's dataset uses only non-gated features → reused
     assert states["DATASET"] == "REUSED"
+    assert states["SPLIT"] == "REUSED"
+    assert states["TOF_ACTIVATION"] == "REUSED"
+    # FEATURE_ANALYSIS consumes the FLA table → follows the gate change
+    assert states["FEATURE_ANALYSIS"] == "RUNNING"
     # upstream untouched
     assert states["MEASUREMENT_EVENTS"] == "REUSED"
     assert states["ANALYSIS_SLICE"] == "REUSED"
     assert states["ULTRASOUND_FEATURES"] == "REUSED"
     assert states["SYNCHRONIZATION"] == "REUSED"
+    # new stages (BRW-019/021 additions): gates change does not invalidate them
+    assert states["TOF_ACTIVATION"] == "REUSED"
 
 
 def test_t28_selected_feature_change_dataset_side_only() -> None:
@@ -313,6 +325,7 @@ def test_t28_selected_feature_change_dataset_side_only() -> None:
     assert states["GATED_FEATURES"] == "REUSED"
     assert states["ULTRASOUND_FEATURES"] == "REUSED"
     assert states["ANALYSIS_SLICE"] == "REUSED"
+    assert states["FEATURE_ANALYSIS"] == "REUSED"
 
 
 def test_t29_label_change_invalidates_analysis_and_dataset() -> None:

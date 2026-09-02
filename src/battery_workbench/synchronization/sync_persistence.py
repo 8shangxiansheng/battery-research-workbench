@@ -83,9 +83,18 @@ def _build_manifest(
     checksums: dict[str, str] | None,
 ) -> dict:
     checksums = checksums or {}
+    from battery_workbench.synchronization.sync_schemas import (
+        SYNCHRONIZATION_SCHEMA_VERSION,
+    )
+
     manifest: dict[str, Any] = {
         "sync_engine_name": "synchronization_engine",
         "sync_engine_version": sync_version,
+        "schema_version": SYNCHRONIZATION_SCHEMA_VERSION,
+        "selected_identity_contract": {
+            "composite": ["electrical_asset_id", "electrical_record_locator"],
+            "ambiguous_selected_identity": None,
+        },
         "battery_id": battery_id,
         "experiment_id": experiment_id,
         "matching_method": report.matching_method if report else "nearest",

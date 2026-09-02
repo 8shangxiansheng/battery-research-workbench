@@ -53,7 +53,7 @@ def _records_df() -> pd.DataFrame:
 def test_resolve_selected_exact_one_row() -> None:
     """selected locator resolves to exactly one record."""
     idx = build_electrical_index(_records_df())
-    rec = resolve_selected("3", idx)
+    rec = resolve_selected("3", idx, asset_id="E1")
     assert rec["source_row_index"] == 3
     assert rec["voltage_v"] == 3.1
 
@@ -65,7 +65,7 @@ def test_no_timestamp_fallback_rematch() -> None:
     earlier timestamp. BRW-011 must still use row A, never re-match by timestamp.
     """
     idx = build_electrical_index(_records_df())
-    rec = resolve_selected("4", idx)
+    rec = resolve_selected("4", idx, asset_id="E1")
     # Selected by locator, NOT by nearest timestamp.
     assert rec["source_row_index"] == 4
     assert rec["capacity_ah"] == 0.0
@@ -75,7 +75,7 @@ def test_resolve_missing_locator_integrity_error() -> None:
     """missing selected locator -> LocatorError (never timestamp fallback)."""
     idx = build_electrical_index(_records_df())
     with pytest.raises(LocatorError):
-        resolve_selected("999", idx)
+        resolve_selected("999", idx, asset_id="E1")
 
 
 def test_resolve_duplicated_locator_integrity_error() -> None:
@@ -103,6 +103,7 @@ def test_duplicated_locator_in_input_index() -> None:
 def _aux_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
+            "electrical_asset_id": ["E1", "E1", "E1"],
             "source_row_index": [3, 4, 5],
             "temperature_c": [25.0, 25.1, 25.2],
             "temperature_channel": ["T1", "T1", "T1"],
@@ -113,14 +114,14 @@ def _aux_df() -> pd.DataFrame:
 def test_aux_exact_join_success() -> None:
     """E Case1: record locator has an aux row -> temperature enriched."""
     aux = build_aux_index(_aux_df())
-    assert aux[3] == 25.0
-    assert aux[4] == 25.1
+    assert aux[("E1", 3)] == 25.0
+    assert aux[("E1", 4)] == 25.1
 
 
 def test_aux_missing_temperature_null() -> None:
     """E Case2: record locator has no aux row -> temperature null / limitation."""
     aux = build_aux_index(_aux_df())
-    assert 2 not in aux  # locator 2 has no aux row
+    assert ("E1", 2) not in aux  # locator 2 has no aux row
 
 
 def test_aux_duplicate_locator_integrity_error() -> None:

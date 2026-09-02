@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from battery_workbench.multimodal.electrical_index import (
+    LocatorError,
     build_aux_index,
     build_electrical_index,
     normalize_locator,
@@ -83,16 +84,23 @@ def build_candidate_relation(
     return out[cols]
 
 
-def _enrich(record: dict, aux_index: dict[int, float], locator: str | int | None) -> dict:
+def _enrich(
+    record: dict,
+    aux_index: dict[tuple[str, int], float],
+    locator: tuple[str, int] | str | int | None,
+) -> dict:
     """Exact electrical enrichment from a resolved record + auxiliary temp."""
     result: dict = {}
     for logical, source in _ENRICH_SOURCE.items():
         result[logical] = record.get(source)
-    # Auxiliary temperature exact join by source_row_index. A missing/invalid
-    # aux locator yields null temperature (a limitation), never a recompute.
+    # Auxiliary temperature exact join by composite (asset, locator). A
+    # missing/invalid aux identity yields null temperature, never a recompute.
     try:
-        loc = normalize_locator(locator)
-        result["temperature_c"] = aux_index.get(loc)
+        if isinstance(locator, tuple):
+            key = locator
+        else:
+            key = (str(record.get("electrical_asset_id")), normalize_locator(locator))
+        result["temperature_c"] = aux_index.get(key)
     except ValueError:
         result["temperature_c"] = None
     return result
@@ -156,21 +164,30 @@ def _build_event(row: dict, cfg: MeasurementEventConfig) -> CanonicalMeasurement
 def _apply_electrical(
     event: CanonicalMeasurementEvent,
     aligned_row: pd.Series,
-    electrical_index: dict[int, dict],
-    aux_index: dict[int, float],
+    electrical_index: dict[tuple[str, int], dict],
+    aux_index: dict[tuple[str, int], float],
 ) -> CanonicalMeasurementEvent:
-    """Exact-join the selected electrical record only for READY-compatible rows."""
+    """Exact-join via composite (electrical_asset_id, locator); no rematch."""
     if event.match_status != "MATCHED_UNIQUE":
         return event
     locator = aligned_row.get("electrical_record_locator")
     if locator is None or pd.isna(locator) or str(locator).strip() == "":
         return event
-    record = resolve_selected(str(locator), electrical_index)
-    enrichment = _enrich(record, aux_index, locator)
+    # G2: composite identity is mandatory under the new sync contract — a
+    # unique match without an asset id is an integrity error, never a
+    # locator-only fallback.
+    asset_id = aligned_row.get("electrical_asset_id")
+    if asset_id is None or pd.isna(asset_id) or str(asset_id).strip() == "":
+        raise LocatorError(
+            f"MATCHED_UNIQUE row {event.measurement_event_id} has no "
+            "electrical_asset_id (composite selected identity contract)"
+        )
+    record = resolve_selected(str(locator), electrical_index, asset_id=str(asset_id))
+    enrichment = _enrich(record, aux_index, (str(asset_id), locator))
     # Apply selected-identity + enriched state; quality stays deterministically READY.
     for field, value in enrichment.items():
         setattr(event, field, value)
-    event.electrical_asset_id = record.get("electrical_asset_id")
+    event.electrical_asset_id = str(asset_id)
     event.electrical_record_locator = str(locator)
     event.electrical_row_index = record.get("record_index_raw")
     event.electrical_timestamp = record.get("timestamp")
@@ -194,7 +211,7 @@ def build_measurement_events(
     records = pd.read_parquet(electrical_records_path)
 
     electrical_index = build_electrical_index(records)
-    aux_index: dict[int, float] = {}
+    aux_index: dict[tuple[str, int], float] = {}
     if aux_temperature_path is not None and Path(aux_temperature_path).exists():
         aux = pd.read_parquet(aux_temperature_path)
         aux_index = build_aux_index(aux)

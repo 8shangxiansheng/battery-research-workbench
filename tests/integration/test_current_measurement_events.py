@@ -171,6 +171,8 @@ def test_manifest_and_report_contract(tmp_path: Path) -> None:
             "boundary_reason": [None],
             "electrical_record_locator": ["1"],
             "electrical_timestamp": pd.to_datetime(["2024-01-06T10:00:00"]),
+            # new-schema composite selected identity (BRW-010R)
+            "electrical_asset_id": ["E1"],
             "anchor_id": ["U001-manifest"],
             "anchor_status": ["PROVISIONAL"],
             "validated_sync": [False],

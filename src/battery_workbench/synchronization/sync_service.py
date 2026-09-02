@@ -77,11 +77,15 @@ def align_frames(
             "anchor_id": urow.get("anchor_id"),
             "anchor_status": urow.get("anchor_status"),
             "validated_sync": False,
+            # composite selected identity: (electrical_asset_id, locator);
+            # filled only for MATCHED_UNIQUE, null otherwise (BRW-010R §2/§4).
+            "electrical_asset_id": None,
         }
 
         if not available:
             base.update(
                 match_status="TIMESTAMP_UNAVAILABLE",
+                electrical_asset_id=None,
                 electrical_record_locator=None,
                 electrical_timestamp=None,
                 sync_error_s=None,
@@ -99,6 +103,7 @@ def align_frames(
         if tz_mismatch:
             base.update(
                 match_status="TIMEZONE_MISMATCH",
+                electrical_asset_id=None,
                 electrical_record_locator=None,
                 electrical_timestamp=None,
                 sync_error_s=None,
@@ -122,6 +127,7 @@ def align_frames(
         )
         within = result.within_tolerance(max_sync_error_s)
         ambiguous = result.candidate_record_count != 1
+        selected_asset = None
         if result.candidate_timestamp_count == 0:
             status = "NO_ELECTRICAL_CANDIDATE"
             selected_locator = None
@@ -136,14 +142,17 @@ def align_frames(
             selected_ts = None
         else:
             status = "MATCHED_UNIQUE"
-            # exactly one record under the nearest timestamp group.
+            # exactly one record under the nearest timestamp group; the
+            # selected identity is composite: (asset_id, locator).
             best_ts = result.candidate_timestamps[0]
             rec = index.record_lists[best_ts][0]
+            selected_asset = rec["asset_id"]
             selected_locator = rec["locator"]
             selected_ts = rec["timestamp"]
 
         base.update(
             match_status=status,
+            electrical_asset_id=selected_asset,
             electrical_record_locator=selected_locator,
             electrical_timestamp=selected_ts,
             sync_error_s=result.sync_error_s,

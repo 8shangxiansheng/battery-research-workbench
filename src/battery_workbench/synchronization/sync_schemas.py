@@ -70,6 +70,13 @@ class SyncScientificGuardConfig(BaseModel):
     allow_verified_sync_upgrade: bool = False
 
 
+# Persisted synchronization output schema version. Bumped 0.1.0 -> 0.2.0 by
+# BRW-010R: aligned rows now persist the composite selected electrical identity
+# (electrical_asset_id, electrical_record_locator, electrical_timestamp).
+# Matching algorithm / policy version is unchanged.
+SYNCHRONIZATION_SCHEMA_VERSION = "0.2.0"
+
+
 class SynchronizationConfig(BaseModel):
     version: str = "0.1.0"
     matching: MatchingConfig = Field(default_factory=MatchingConfig)

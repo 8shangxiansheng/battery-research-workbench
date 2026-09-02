@@ -1,30 +1,30 @@
-"""Exact electrical locator index + normalization for BRW-011.
+"""BRW-011 exact electrical index over the composite selected identity.
 
-BRW-010 stores ``electrical_record_locator`` as a string (e.g. ``"2"``) that is
-really the BRW-003 ``source_row_index``. BRW-011 normalizes it explicitly and
-resolves it through an *exact* index — never by timestamp, never by row
-position. This module contains no time-matching logic.
+Canonical selected identity at BRW-010 is the pair::
+
+    (electrical_asset_id, electrical_record_locator)
+
+A locator alone is ambiguous across electrical assets (E001 row 10 vs E002
+row 10). This index keys records by the composite pair; ``resolve_selected``
+requires the asset id and NEVER falls back to locator-only lookup and NEVER
+re-matches by timestamp.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
+from pydantic import BaseModel
 
 
 class LocatorError(ValueError):
-    """Raised when a locator is malformed, missing, or non-unique."""
+    """Integrity error for malformed/ambiguous selected-identity lookups."""
 
 
 def normalize_locator(locator: str | int | None) -> int:
-    """Parse a canonical locator string/integer to a non-negative int.
-
-    Accepts plain integer text (``"2"`` / ``2``). Rejects empty, non-numeric,
-    fractional, NaN, or malformed values. No implicit pandas coercion.
-    """
     if locator is None:
-        raise LocatorError("locator is None")
-    if isinstance(locator, float) and pd.isna(locator):
-        raise LocatorError("locator is NaN")
+        raise LocatorError("locator is empty")
     text = str(locator).strip()
     if not text:
         raise LocatorError("locator is empty")
@@ -34,27 +34,42 @@ def normalize_locator(locator: str | int | None) -> int:
     return int(text)
 
 
+def normalize_asset_id(asset_id: str | int | None) -> str:
+    if asset_id is None:
+        raise LocatorError("electrical_asset_id is required (composite identity)")
+    text = str(asset_id).strip()
+    if not text or text.lower() in {"none", "nan"}:
+        raise LocatorError("electrical_asset_id is required (composite identity)")
+    return text
+
+
 def build_electrical_index(
     records: pd.DataFrame,
     *,
     locator_col: str = "source_row_index",
-) -> dict[int, dict]:
-    """Build an exact ``source_row_index -> record`` map.
+    asset_col: str = "electrical_asset_id",
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """Build an exact ``(electrical_asset_id, source_row_index) -> record`` map.
 
-    Every row must have a unique locator. A duplicated locator is an integrity
-    error (it cannot resolve to exactly one record). Never uses timestamps.
+    The same locator may exist on different assets — those are distinct
+    records. A duplicated (asset, locator) pair is an integrity error.
+    Timestamps are never used for lookup.
     """
     if records.empty:
         return {}
-    col = records[locator_col]
-    if not col.is_unique:
-        raise LocatorError("source_row_index is not unique in records")
-    index: dict[int, dict] = {}
+    required = {locator_col, asset_col}
+    missing = required - set(records.columns)
+    if missing:
+        raise LocatorError(f"records missing composite identity columns: {sorted(missing)}")
+    index: dict[tuple[str, int], dict[str, Any]] = {}
     for _, row in records.iterrows():
+        asset = normalize_asset_id(row[asset_col])
         loc = normalize_locator(row[locator_col])
-        if loc in index:
-            raise LocatorError(f"duplicate locator {loc}")
-        index[loc] = row.to_dict()
+        key = (asset, loc)
+        if key in index:
+            raise LocatorError(f"duplicate composite identity {key}")
+        value: dict[str, Any] = {str(k): v for k, v in row.to_dict().items()}
+        index[key] = value
     return index
 
 
@@ -63,36 +78,53 @@ def build_aux_index(
     *,
     locator_col: str = "source_row_index",
     value_col: str = "temperature_c",
-) -> dict[int, float]:
-    """Build an exact ``source_row_index -> temperature_c`` map.
+) -> dict[tuple[str, int], float]:
+    """Exact ``(electrical_asset_id, source_row_index) -> temperature_c`` map.
 
-    A duplicated aux locator is an integrity error. Missing values are simply
-    absent from the map (caller reports them as null).
+    A duplicated composite aux identity is an integrity error. Missing values
+    are simply absent from the map (caller reports them as null).
     """
     if aux.empty:
         return {}
-    col = aux[locator_col]
-    if not col.is_unique:
-        raise LocatorError("aux source_row_index is not unique")
-    index: dict[int, float] = {}
+    asset_col = "electrical_asset_id"
+    required = {locator_col, value_col, asset_col}
+    missing = required - set(aux.columns)
+    if missing:
+        raise LocatorError(f"aux missing composite identity columns: {sorted(missing)}")
+    index: dict[tuple[str, int], float] = {}
     for _, row in aux.iterrows():
+        asset = normalize_asset_id(row[asset_col])
         loc = normalize_locator(row[locator_col])
-        if loc in index:
-            raise LocatorError(f"duplicate aux locator {loc}")
-        index[loc] = float(row[value_col])
+        key = (asset, loc)
+        if key in index:
+            raise LocatorError(f"duplicate composite aux identity {key}")
+        index[key] = float(row[value_col])
     return index
+
+
+class SelectedElectricalRecord(BaseModel):
+    """One resolved selected electrical record (composite identity)."""
+
+    electrical_asset_id: str
+    electrical_record_locator: int
+    record: dict[str, Any]
 
 
 def resolve_selected(
     locator: str | int | None,
-    index: dict[int, dict],
-) -> dict:
-    """Resolve a selected locator to exactly one record.
+    index: dict[tuple[str, int], dict[str, Any]],
+    *,
+    asset_id: str | int | None,
+) -> dict[str, Any]:
+    """Resolve a selected record by composite (asset_id, locator).
 
-    Raises ``LocatorError`` when the locator is missing, malformed, or has no
-    matching record. Never falls back to timestamp matching.
+    Raises ``LocatorError`` when the identity is missing/malformed/absent, or
+    when the asset id is missing (no locator-only fallback). Never falls back
+    to timestamp matching.
     """
+    asset = normalize_asset_id(asset_id)
     loc = normalize_locator(locator)
-    if loc not in index:
-        raise LocatorError(f"selected locator not found: {locator!r}")
-    return index[loc]
+    key = (asset, loc)
+    if key not in index:
+        raise LocatorError(f"selected composite identity not found in electrical index: {key}")
+    return index[key]
