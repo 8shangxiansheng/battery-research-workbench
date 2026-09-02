@@ -35,6 +35,7 @@ ALL_STAGES = [
     "GATED_FEATURES",
     "FEATURE_LABEL_ANALYSIS",
     "DATASET",
+    "SPLIT",
 ]
 
 PROFILE_STAGES: dict[str, list[str]] = {
@@ -56,6 +57,7 @@ PROFILE_STAGES: dict[str, list[str]] = {
         "GATED_FEATURES",
         "FEATURE_LABEL_ANALYSIS",
     ],
+    "EVALUATION_SPLIT": ["DATASET", "SPLIT"],
     "BUILD_DATASET": [
         "MEASUREMENT_EVENTS",
         "ANALYSIS_SLICE",
@@ -87,6 +89,7 @@ class AnalysisPlan(BaseModel):
     gates: dict[str, Any] = Field(default_factory=dict)
     features: dict[str, Any] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)
+    split: dict[str, Any] = Field(default_factory=dict)
     target: str | None = None
     label_producer_version: str | None = None
     execution: PlanExecution = Field(default_factory=PlanExecution)
@@ -110,6 +113,7 @@ class AnalysisPlan(BaseModel):
                 "gates": self.gates,
                 "features": self.features,
                 "parameters": self.parameters,
+                "split": self.split,
                 "target": self.target,
                 "label_producer_version": self.label_producer_version,
                 "plan_version": self.plan_version,
@@ -135,6 +139,7 @@ class ArtifactType(str, Enum):
     GATED_FEATURE_SET = "GATED_FEATURE_SET"
     FEATURE_LABEL_ANALYSIS = "FEATURE_LABEL_ANALYSIS"
     DATASET = "DATASET"
+    SPLIT = "SPLIT"
 
 
 class ArtifactRef(BaseModel):
@@ -179,6 +184,7 @@ class UserActionRequired(BaseModel):
     action_type: str
     message: str
     required_fields: list[dict[str, Any]] = Field(default_factory=list)
+    options: list[dict[str, Any]] = Field(default_factory=list)
     scientific_reason: str = ""
     blocking: bool = True
 

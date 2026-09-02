@@ -102,9 +102,12 @@ class PipelineOrchestrator:
 
         for node_id in order:
             node = self.nodes[node_id]
-            ref, reason = node.resolve_existing_output(plan, {}, self.processed_root)
             deps = NODE_DEPENDENCIES.get(node_id, [])
             dep_states = [states[d] for d in deps if d in states]
+            dep_refs = {
+                d: results[d].outputs[0] for d in deps if d in results and results[d].outputs
+            }
+            ref, reason = node.resolve_existing_output(plan, dep_refs, self.processed_root)
 
             if node_id in plan.execution.force_recompute:
                 result = NodeResult(
@@ -182,7 +185,10 @@ class PipelineOrchestrator:
         node_results: dict[str, NodeResult] = {}
         for node_id in order:
             node = self.nodes[node_id]
-            ref, reason = node.resolve_existing_output(plan, {}, self.processed_root)
+            dep_inputs = {
+                d: resolved[d] for d in NODE_DEPENDENCIES.get(node_id, []) if d in resolved
+            }
+            ref, reason = node.resolve_existing_output(plan, dep_inputs, self.processed_root)
             if (
                 ref is not None
                 and plan.execution.reuse_existing
@@ -299,6 +305,33 @@ class PipelineOrchestrator:
                     node_states[node_id] = NodeState.SUCCEEDED
                     self._append_event(ctx.run_dir, "NODE_SUCCEEDED", node_id=node_id)
                 except Exception as exc:  # noqa: BLE001 — engine boundary
+                    from battery_workbench.orchestrator.nodes import UserInputNeededError
+
+                    if isinstance(exc, UserInputNeededError):
+                        action = UserActionRequired(
+                            action_id=exc.action,
+                            node_id=exc.node_id,
+                            action_type=exc.action_type,
+                            message=exc.message,
+                            required_fields=exc.required_fields,
+                            options=exc.options,
+                            scientific_reason=exc.scientific_reason,
+                            blocking=True,
+                        )
+                        result.state = NodeState.WAITING_FOR_USER
+                        result.reason = exc.scientific_reason
+                        result.user_action_required = action
+                        user_actions.append(action)
+                        node_states[node_id] = NodeState.WAITING_FOR_USER
+                        self._append_event(
+                            ctx.run_dir,
+                            "USER_ACTION_REQUIRED",
+                            node_id=exc.node_id,
+                            detail=action.model_dump(mode="json"),
+                        )
+                        if run_status != RunState.FAILED:
+                            run_status = RunState.WAITING_FOR_USER
+                        continue
                     result.state = NodeState.FAILED
                     result.reason = f"{type(exc).__name__}: {exc}"
                     node_states[node_id] = NodeState.FAILED
@@ -391,18 +424,28 @@ class PipelineOrchestrator:
             for field_spec in action.get("required_fields", []):
                 field_name = field_spec["field"]
                 value = user_inputs.get(field_name)
-                if value is None or (isinstance(value, dict) and value.get("value") is None):
+                parameter_style = "unit" in field_spec or "example" in field_spec
+                if value is None or (
+                    parameter_style and isinstance(value, dict) and value.get("value") is None
+                ):
                     raise ValueError(
                         f"user action {action_id} requires a non-empty value for {field_name}"
                     )
         plan = self._read_plan(run_dir)
         merged_overrides = dict(plan.parameters.get("user_overrides") or {})
-        merged_overrides.update(user_inputs or {})
-        new_plan = plan.model_copy(
-            update={
-                "parameters": {**plan.parameters, "user_overrides": merged_overrides},
-            }
-        )
+        plan_updates: dict[str, Any] = {}
+        for key, value in (user_inputs or {}).items():
+            if key in ("split", "features", "analysis_slice", "parameters", "gates"):
+                if key == "split" and isinstance(value, dict):
+                    plan_updates["split"] = {**plan.split, **value}
+                elif key == "parameters" and isinstance(value, dict):
+                    merged_overrides.update(value)
+                else:
+                    plan_updates[key] = value
+            else:
+                merged_overrides[key] = value
+        plan_updates["parameters"] = {**plan.parameters, "user_overrides": merged_overrides}
+        new_plan = plan.model_copy(update=plan_updates)
         new_plan = new_plan.model_copy(
             update={
                 "execution": new_plan.execution.model_copy(update={"dry_run": False}),

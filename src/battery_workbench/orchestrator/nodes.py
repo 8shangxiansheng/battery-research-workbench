@@ -16,7 +16,6 @@ import pandas as pd
 from battery_workbench.orchestrator.resolver import (
     ArtifactIdentity,
     ArtifactRequirements,
-    current_input_checksums,
     find_existing_artifact,
 )
 from battery_workbench.orchestrator.schemas import (
@@ -87,23 +86,14 @@ class WorkflowNode:
         processed_root: Path,
     ) -> tuple[ArtifactRef | None, str]:
         req = self.requirements(plan, inputs)
-        provenance = {}
-        for dep_ref in inputs.values():
-            manifest = _load_json(Path(dep_ref.manifest_path))
-            if manifest and manifest.get("input_checksums"):
-                manifest_path = Path(dep_ref.manifest_path)
-                current = current_input_checksums(
-                    manifest, manifest_path, processed_root=processed_root
-                )
-                if current:
-                    provenance[f"upstream:{dep_ref.artifact_type}"] = {
-                        "input_checksums": _downshift(current)
-                    }
+        # Declared-checksum verification happens in verify_manifest_provenance
+        # (post-resolution): a downstream manifest that records input checksums
+        # is re-verified against current files; one that doesn't is not
+        # penalized. Upstream fingerprints are never invented here.
         ref = find_existing_artifact(
             processed_root,
             requirements=req,
             artifact_id=self.pinned_artifact_id(plan),
-            provenance=provenance or None,
         )
         if ref is not None:
             from battery_workbench.orchestrator.resolver import verify_manifest_provenance
@@ -440,8 +430,8 @@ class SynchronizationNode(WorkflowNode):
             "artifact_id": "",
             "path": str(exp_dir),
             "manifest_path": str(exp_dir / "synchronization_manifest.json"),
-            "producer_version": report.sync_engine_version,
-            "metrics": {"matched_frames": report.matches_frames},
+            "producer_version": report.sync_version,
+            "metrics": {"matched_frames": report.ultrasound_frame_count},
         }
 
 
@@ -1222,4 +1212,224 @@ def default_nodes() -> list[WorkflowNode]:
         GatedFeaturesNode(),
         FeatureLabelAnalysisNode(),
         DatasetNode(),
+        SplitNode(),
     ]
+
+
+class SplitNode(WorkflowNode):
+    node_type = "SPLIT"
+
+    def requirements(self, plan, inputs):
+        dataset_ref = inputs.get("DATASET")
+        dataset_id = dataset_ref.artifact_id if dataset_ref else ""
+        return ArtifactRequirements(
+            artifact_type="SPLIT",
+            manifest_name="split_manifest.json",
+            identity=ArtifactIdentity(
+                battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
+            ),
+            output_rel_dir=(
+                f"splits/{plan.project.battery_id}/{plan.project.experiment_id}/{dataset_id}"
+            ),
+            id_key="split_id",
+            extra_match={"dataset_id": dataset_id} if dataset_id else {},
+        )
+
+    def output_rel_dir(self, plan):
+        return f"splits/{plan.project.battery_id}/{plan.project.experiment_id}"
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        # A prohibited/illegal split request must surface as a user action,
+        # never silently reuse an unrelated existing split.
+        split_plan = dict(plan.split or {})
+        strategy = str(split_plan.get("strategy", ""))
+        if strategy in (
+            "RANDOM_FRAME_SPLIT",
+            "RANDOM_ROW_SPLIT",
+            "RANDOM_MEASUREMENT_EVENT_SPLIT",
+            "SOC_BIN_ROW_SPLIT",
+        ):
+            return None, f"prohibited split strategy requested: {strategy}"
+        # split spec IS the identity: compute expected split_id and pin it so
+        # a different spec never reuses another split's artifacts.
+        dataset_ref = inputs.get("DATASET")
+        dataset_id = dataset_ref.artifact_id if dataset_ref else ""
+        try:
+            from battery_workbench.splits.schemas import SplitSpec
+
+            expected = SplitSpec(**self._split_spec_kwargs(plan, dataset_id))
+        except (ValueError, TypeError):
+            return None, "split spec invalid — readiness check will surface the problem"
+        ref = find_existing_artifact(
+            processed_root,
+            requirements=self.requirements(plan, inputs),
+            artifact_id=expected.split_id,
+        )
+        reason = (
+            "split spec matches existing artifacts"
+            if ref is not None
+            else ("no reusable split for this spec")
+        )
+        return ref, reason
+
+    def _split_spec_kwargs(self, plan, dataset_id: str) -> dict[str, Any]:
+        split_plan = dict(plan.split or {})
+        kwargs: dict[str, Any] = {
+            "dataset_id": dataset_id,
+            "group_column": split_plan.get("group_column", "cycle_group_id"),
+            "split_unit": split_plan.get("split_unit", "CYCLE"),
+            "purpose": split_plan.get("purpose", "SCIENTIFIC_EVALUATION"),
+        }
+        if "strategy" in split_plan:
+            kwargs["strategy"] = split_plan["strategy"]
+        if split_plan.get("explicit_holdout_groups"):
+            kwargs["explicit_holdout_groups"] = split_plan["explicit_holdout_groups"]
+        if split_plan.get("k") is not None:
+            kwargs["k"] = split_plan["k"]
+        if split_plan.get("require_roles"):
+            kwargs["require_roles"] = split_plan["require_roles"]
+        return kwargs
+
+    def validate_readiness(self, plan, inputs):
+        dataset_ref = inputs.get("DATASET")
+        if dataset_ref is None:
+            return Readiness(ok=False, reason="DATASET artifact required for split")
+        try:
+            from battery_workbench.splits.schemas import SplitSpec
+
+            SplitSpec(**self._split_spec_kwargs(plan, dataset_ref.artifact_id))
+        except (ValueError, TypeError) as exc:  # schema-level prohibition or bad request
+            return Readiness(
+                ok=False,
+                reason=str(exc),
+                user_action=UserActionRequired(
+                    action_id=_action_id(self.node_type, "SELECT_SPLIT_SCHEME"),
+                    node_id=self.node_type,
+                    action_type="SELECT_SPLIT_SCHEME",
+                    message="Invalid or prohibited split request — choose a legal scheme",
+                    required_fields=[
+                        {
+                            "field": "split",
+                            "legal": [
+                                "LEAVE_ONE_GROUP_OUT",
+                                "GROUP_HOLDOUT",
+                                "K_FOLD_GROUPED",
+                                "TRAIN_ONLY",
+                                "NO_VALID_SPLIT",
+                            ],
+                        }
+                    ],
+                    scientific_reason=str(exc),
+                    blocking=True,
+                ),
+            )
+        return Readiness(ok=True, reason="split spec accepted")
+
+    def run(self, plan, inputs, ctx):
+        import pandas as pd
+
+        from battery_workbench.splits.engine import build_assignments
+        from battery_workbench.splits.persistence import write_split_payload
+        from battery_workbench.splits.schemas import (
+            SplitInfeasibleError,
+            SplitSpec,
+        )
+
+        dataset_ref = inputs["DATASET"]
+        manifest = _load_json(Path(dataset_ref.manifest_path)) or {}
+        family = str(manifest.get("dataset_family", "SOC"))
+        dataset_dir = Path(dataset_ref.manifest_path).parent
+        frame = pd.read_parquet(dataset_dir / "dataset.parquet")
+
+        try:
+            spec = SplitSpec(**self._split_spec_kwargs(plan, dataset_ref.artifact_id))
+        except Exception as exc:
+            raise SplitInfeasibleError(
+                str(exc),
+                options=[
+                    {"strategy": "LEAVE_ONE_GROUP_OUT"},
+                    {"strategy": "TRAIN_ONLY"},
+                ],
+            ) from exc
+
+        independent_soh = None
+        if family == "SOH_CAPACITY" and "soh_capacity_reference_percent" in frame.columns:
+            independent_soh = int(frame["soh_capacity_reference_percent"].nunique())
+
+        try:
+            assignments = build_assignments(spec, frame)
+        except SplitInfeasibleError as exc:
+            # impossible request → WAITING_FOR_USER with legal options
+            from battery_workbench.splits.engine import _legal_options
+
+            group_count = len(frame[spec.group_column].astype(str).unique())
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action=_action_id(self.node_type, "SELECT_SPLIT_SCHEME"),
+                action_type="SELECT_SPLIT_SCHEME",
+                message=(
+                    f"Requested split is impossible with {group_count} groups — "
+                    "choose a legal evaluation scheme"
+                ),
+                required_fields=[
+                    {
+                        "field": "split",
+                        "options": _legal_options(group_count),
+                    }
+                ],
+                options=_legal_options(group_count),
+                scientific_reason=str(exc),
+            ) from exc
+
+        group_counts = {str(k): int(v) for k, v in frame.groupby(spec.group_column).size().items()}
+        paths = write_split_payload(
+            spec=spec,
+            assignments=assignments,
+            dataset_id=dataset_ref.artifact_id,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            dataset_family=family,
+            output_root=Path(ctx.processed_root),
+            group_counts=group_counts,
+            dataset_status=str(manifest.get("dataset_status", "")),
+            independent_soh_states=independent_soh,
+        )
+        limitations = ["within-battery cross-cycle evaluation only (1 battery)"]
+        if family == "SOH_CAPACITY":
+            limitations.append(
+                f"SOH independent states = {independent_soh}: NOT_READY_FOR_MODEL_EVALUATION"
+            )
+        return {
+            "artifact_id": spec.split_id,
+            "path": paths["split_dir"],
+            "manifest_path": paths["split_manifest"],
+            "producer_version": spec.split_version,
+            "metrics": {
+                "readiness": json.loads(Path(paths["evaluation_readiness"]).read_text())["status"]
+            },
+            "limitations": limitations,
+        }
+
+
+class UserInputNeededError(RuntimeError):
+    """Raised by nodes when only a human can resolve the next step."""
+
+    def __init__(
+        self,
+        *,
+        node_id: str,
+        action: str,
+        action_type: str,
+        message: str,
+        required_fields: list[dict[str, Any]],
+        scientific_reason: str,
+        options: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.node_id = node_id
+        self.action = action
+        self.action_type = action_type
+        self.message = message
+        self.required_fields = required_fields
+        self.options = options or []
+        self.scientific_reason = scientific_reason
