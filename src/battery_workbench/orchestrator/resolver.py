@@ -113,6 +113,16 @@ def _manifest_matches(
     ):
         return False, "producer version mismatch"
     for key, expected in requirements.extra_match.items():
+        if "." in key:
+            node_value: Any = manifest
+            for part in key.split("."):
+                if not isinstance(node_value, dict) or part not in node_value:
+                    node_value = None
+                    break
+                node_value = node_value[part]
+            if node_value != expected:
+                return False, f"selection mismatch on {key}"
+            continue
         if manifest.get(key) != expected:
             return False, f"selection mismatch on {key}"
     if requirements.provenance:

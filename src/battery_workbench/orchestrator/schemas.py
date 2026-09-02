@@ -36,6 +36,7 @@ ALL_STAGES = [
     "FEATURE_LABEL_ANALYSIS",
     "DATASET",
     "SPLIT",
+    "FEATURE_ANALYSIS",
 ]
 
 PROFILE_STAGES: dict[str, list[str]] = {
@@ -56,8 +57,9 @@ PROFILE_STAGES: dict[str, list[str]] = {
         "TOF_ACTIVATION",
         "GATED_FEATURES",
         "FEATURE_LABEL_ANALYSIS",
+        "FEATURE_ANALYSIS",
     ],
-    "EVALUATION_SPLIT": ["DATASET", "SPLIT"],
+    "EVALUATION_SPLIT": ["DATASET", "SPLIT", "FEATURE_ANALYSIS"],
     "BUILD_DATASET": [
         "MEASUREMENT_EVENTS",
         "ANALYSIS_SLICE",
@@ -90,6 +92,9 @@ class AnalysisPlan(BaseModel):
     features: dict[str, Any] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)
     split: dict[str, Any] = Field(default_factory=dict)
+    feature_analysis: dict[str, Any] = Field(default_factory=dict)
+    split_id: str | None = None
+    fold_index: int | None = None
     target: str | None = None
     label_producer_version: str | None = None
     execution: PlanExecution = Field(default_factory=PlanExecution)
@@ -114,6 +119,7 @@ class AnalysisPlan(BaseModel):
                 "features": self.features,
                 "parameters": self.parameters,
                 "split": self.split,
+                "feature_analysis": self.feature_analysis,
                 "target": self.target,
                 "label_producer_version": self.label_producer_version,
                 "plan_version": self.plan_version,

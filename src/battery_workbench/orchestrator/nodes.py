@@ -1196,6 +1196,272 @@ class DatasetNode(WorkflowNode):
         }
 
 
+class FeatureAnalysisNode(WorkflowNode):
+    """BRW-021 node: exploratory or TRAIN-only ML-safe feature analysis."""
+
+    node_type = "FEATURE_ANALYSIS"
+
+    def requirements(self, plan, inputs):
+        fa = dict(plan.feature_analysis or {})
+        if "fold_index" not in fa and plan.fold_index is not None:
+            fa["fold_index"] = plan.fold_index
+        if "split_id" not in fa and plan.split_id:
+            fa["split_id"] = plan.split_id
+        dataset_id = str(fa.get("dataset_id") or "")
+        if not dataset_id:
+            dataset_ref = inputs.get("DATASET")
+            if dataset_ref is not None:
+                dataset_id = dataset_ref.artifact_id
+            elif fa.get("split_id"):
+                split_ref = inputs.get("SPLIT")
+                if split_ref is not None:
+                    dataset_id = str(
+                        (_load_json(Path(split_ref.manifest_path)) or {}).get("dataset_id", "")
+                    )
+        # mode/split/fold are part of the analysis identity: a different
+        # fold (or mode) must never reuse another analysis' artifacts.
+        selection = dict(fa.get("selection") or {})
+        extra_match = {
+            "analysis_mode": str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA")),
+            "target": str(fa.get("target", "soc_reference_percent")),
+            "selection.selection_requested": bool(selection.get("requested", False)),
+        }
+        if fa.get("fold_index") is not None:
+            extra_match["fold_index"] = fa["fold_index"]
+        return ArtifactRequirements(
+            artifact_type="FEATURE_ANALYSIS",
+            manifest_name="analysis_manifest.json",
+            identity=ArtifactIdentity(
+                battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
+            ),
+            output_rel_dir=(
+                f"feature_analysis/{plan.project.battery_id}/{plan.project.experiment_id}"
+            ),
+            id_key="analysis_id",
+            scan=True,
+            extra_match=extra_match,
+        )
+
+    def output_rel_dir(self, plan):
+        return f"feature_analysis/{plan.project.battery_id}/{plan.project.experiment_id}"
+
+    def validate_readiness(self, plan, inputs):
+        fa = dict(plan.feature_analysis or {})
+        if not fa:
+            return Readiness(ok=False, reason="no feature_analysis block in plan")
+        return Readiness(ok=True, reason="feature analysis spec present")
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        # A selection whose commit is still WAITING_FOR_USER must re-enter the
+        # user gate on a new run, not silently reuse the unconfirmed state.
+        selection = dict((plan.feature_analysis or {}).get("selection") or {})
+        if selection.get("requested"):
+            ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+            if ref is not None:
+                manifest = _load_json(Path(ref.manifest_path)) or {}
+                commit = (manifest.get("selection") or {}).get("commit_status")
+                if commit == "WAITING_FOR_USER":
+                    return None, "selection commit not yet user-confirmed"
+            return ref, reason
+        return super().resolve_existing_output(plan, inputs, processed_root)
+
+    def run(self, plan, inputs, ctx):
+        fa = dict(plan.feature_analysis or {})
+        # top-level fold/split plan fields flow into the analysis spec
+        if "fold_index" not in fa and plan.fold_index is not None:
+            fa["fold_index"] = plan.fold_index
+        if "split_id" not in fa and plan.split_id:
+            fa["split_id"] = plan.split_id
+        mode = str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA"))
+        dataset_id = ""
+        dataset_ref = inputs.get("DATASET")
+        if dataset_ref is not None:
+            dataset_id = dataset_ref.artifact_id
+
+        analysis_frame: pd.DataFrame
+        split_id = None
+        if mode == "TRAIN_ONLY_ML_SAFE":
+            split_ref = inputs.get("SPLIT")
+            if split_ref is None:
+                raise UserInputNeededError(
+                    node_id=self.node_type,
+                    action="UA::SPLIT_REQUIRED",
+                    action_type="SELECT_SPLIT_SCHEME",
+                    message="ML-safe analysis requires a leakage-safe grouped split",
+                    required_fields=[
+                        {
+                            "field": "split",
+                            "legal": [
+                                "LEAVE_ONE_GROUP_OUT",
+                                "GROUP_HOLDOUT",
+                                "K_FOLD_GROUPED",
+                                "TRAIN_ONLY",
+                                "NO_VALID_SPLIT",
+                            ],
+                        }
+                    ],
+                    scientific_reason=("TRAIN_ONLY_ML_SAFE consumes TRAIN rows of a grouped split"),
+                )
+            split_id = split_ref.artifact_id
+            split_manifest = _load_json(Path(split_ref.manifest_path)) or {}
+            dataset_id = str(split_manifest.get("dataset_id", dataset_id))
+            split_dir = Path(split_ref.path)
+            if not (split_dir / "split_assignments.parquet").exists():
+                split_dir = split_dir / split_id
+            assignments = pd.read_parquet(split_dir / "split_assignments.parquet")
+            assignments["split_id"] = split_id
+            dataset_dir = Path(dataset_ref.path) if dataset_ref is not None else None
+            if dataset_dir is None or not (dataset_dir / "dataset.parquet").exists():
+                family = str(split_manifest.get("dataset_family", "SOC"))
+                family_dir = "SOC" if family.startswith("SOC") else "SOH_CAPACITY"
+                dataset_dir = (
+                    Path(ctx.processed_root)
+                    / "datasets"
+                    / plan.project.battery_id
+                    / plan.project.experiment_id
+                    / family_dir
+                    / dataset_id
+                )
+            dataset_frame = pd.read_parquet(dataset_dir / "dataset.parquet")
+            fold_name = f"fold{fa.get('fold_index', 1)}"
+            from battery_workbench.feature_analysis.engine import train_feature_input
+
+            tfa = train_feature_input(dataset_frame, assignments, fold=fold_name)
+            analysis_frame = tfa.frame
+        else:
+            fla_ref = inputs.get("FEATURE_LABEL_ANALYSIS")
+            if fla_ref is None:
+                analysis_frame = pd.DataFrame(columns=["measurement_event_id"])
+            else:
+                fla_dir = Path(fla_ref.path)
+                # the FLA artifact may be directory-scoped or nested (gate_set dir)
+                table_candidates: list[Path] = []
+                for name in (
+                    "gated_feature_label_analysis.parquet",
+                    "feature_label_analysis.parquet",
+                ):
+                    if (fla_dir / name).is_file():
+                        table_candidates.append(fla_dir / name)
+                    table_candidates.extend(sorted(fla_dir.rglob(name)))
+                if not table_candidates:
+                    raise FileNotFoundError(f"no feature/label analysis table under {fla_dir}")
+                analysis_frame = pd.read_parquet(table_candidates[0])
+
+        target = str(fa.get("target", "soc_reference_percent"))
+        if target not in analysis_frame.columns:
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action="UA::TARGET_NOT_IN_DATASET",
+                action_type="TARGET_NOT_IN_DATASET",
+                message=(
+                    f"target {target!r} is not present in the analysis frame — "
+                    "dataset/target mismatch (check dataset family vs target)"
+                ),
+                required_fields=[{"field": "none"}],
+                scientific_reason=(
+                    "the analysis frame must carry the reference target; using an "
+                    "unrelated dataset would fabricate associations"
+                ),
+            )
+        soh_states = (
+            int(analysis_frame["soh_capacity_reference_percent"].nunique())
+            if "soh_capacity_reference_percent" in analysis_frame.columns
+            else None
+        )
+        if (
+            mode == "TRAIN_ONLY_ML_SAFE"
+            and target == "soh_capacity_reference_percent"
+            and soh_states is not None
+            and soh_states < 3
+        ):
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action="UA::SOH_NOT_READY",
+                action_type="SOH_NOT_READY_FOR_MODEL_EVALUATION",
+                message=f"SOH ML-safe analysis blocked: only {soh_states} independent states",
+                required_fields=[{"field": "none"}],
+                scientific_reason=(
+                    "SOH event rows are not independent states; no supervised "
+                    "protocol is scientifically meaningful yet"
+                ),
+            )
+
+        from battery_workbench.feature_analysis.output import write_analysis_payload
+        from battery_workbench.feature_analysis.schemas import FeatureAnalysisSpec
+        from battery_workbench.feature_analysis.selection import run_selection
+
+        spec = FeatureAnalysisSpec(
+            analysis_mode=mode,
+            target=target,
+            candidate_features=fa.get("candidate_features", []),
+            split_id=split_id,
+            fold_index=fa.get("fold_index"),
+            subgroup_by=fa.get("subgroup_by", ["step_type", "cycle"]),
+            methods=fa.get("methods", ["descriptive", "pearson", "spearman"]),
+            selection=fa.get("selection", {"requested": False}),
+        )
+        if mode == "TRAIN_ONLY_ML_SAFE":
+            fold_name = f"fold{fa.get('fold_index', 1)}"
+            assignments = pd.DataFrame(
+                {
+                    "measurement_event_id": analysis_frame["measurement_event_id"],
+                    "fold": [fold_name] * len(analysis_frame),
+                    "role": ["TRAIN"] * len(analysis_frame),
+                    "split_id": split_id or "",
+                }
+            )
+            selection = run_selection(spec, analysis_frame, assignments=assignments, fold=fold_name)
+        else:
+            selection = run_selection(spec, analysis_frame)
+        selection["held_out_target_accessed"] = False
+
+        paths = write_analysis_payload(
+            spec=spec,
+            analysis=selection["analysis"],
+            selection=selection,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            dataset_id=dataset_id or "EXPLORATORY",
+            output_root=Path(ctx.processed_root),
+        )
+        limitations: list[str] = []
+        if mode == "EXPLORATORY_FULL_DATA":
+            limitations.append(
+                "full-data analysis; any selection is EXPLORATORY_FULL_DATA (ml_safe=False)"
+            )
+        for a in selection.get("availability", []):
+            if a["status"] == "UNAVAILABLE":
+                limitations.append(f"{a['feature_name']}: UNAVAILABLE — {a['reason']}")
+        if selection["selection_requested"] and selection["selected_features"]:
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action=f"UA::CONFIRM_FEATURE_SELECTION::{selection['selection_id']}",
+                action_type="CONFIRM_FEATURE_SELECTION",
+                message=(
+                    "Confirm selected features to build a new dataset "
+                    "(no automatic rebuild, no analysis→dataset loop)"
+                ),
+                required_fields=[{"field": "selection_id", "value": selection["selection_id"]}],
+                scientific_reason=(
+                    "Feature selection commit is user-gated; dataset rebuild requires "
+                    "explicit confirmation"
+                ),
+            )
+        return {
+            "artifact_id": spec.analysis_id,
+            "path": paths["analysis_dir"],
+            "manifest_path": paths["analysis_manifest"],
+            "producer_version": spec.analysis_version,
+            "metrics": {
+                "mode": mode,
+                "fold_index": fa.get("fold_index"),
+                "selection_id": selection["selection_id"],
+                "held_out_target_accessed": False,
+            },
+            "limitations": limitations,
+        }
+
+
 def default_nodes() -> list[WorkflowNode]:
     return [
         ElectricalCanonicalNode(),
@@ -1213,6 +1479,7 @@ def default_nodes() -> list[WorkflowNode]:
         FeatureLabelAnalysisNode(),
         DatasetNode(),
         SplitNode(),
+        FeatureAnalysisNode(),
     ]
 
 

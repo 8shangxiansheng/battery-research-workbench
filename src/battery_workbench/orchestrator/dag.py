@@ -22,7 +22,14 @@ NODE_DEPENDENCIES: dict[str, list[str]] = {
     "GATED_FEATURES": ["ANALYSIS_SLICE", "PARAMETER_SET"],
     "FEATURE_LABEL_ANALYSIS": ["GATED_FEATURES", "REFERENCE_LABELS", "PARAMETER_SET"],
     "DATASET": ["ULTRASOUND_FEATURES", "REFERENCE_LABELS", "PARAMETER_SET"],
+    "FEATURE_ANALYSIS": ["FEATURE_LABEL_ANALYSIS"],
     "SPLIT": ["DATASET"],
+}
+
+# Optional (mode-conditional) upstream: resolved when present in the run, never
+# required (e.g. ML-safe FEATURE_ANALYSIS additionally consumes DATASET + SPLIT).
+NODE_OPTIONAL_DEPENDENCIES: dict[str, list[str]] = {
+    "FEATURE_ANALYSIS": ["DATASET", "SPLIT"],
 }
 
 

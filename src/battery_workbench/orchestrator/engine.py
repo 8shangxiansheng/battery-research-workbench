@@ -14,6 +14,7 @@ from typing import Any
 
 from battery_workbench.orchestrator.dag import (
     NODE_DEPENDENCIES,
+    NODE_OPTIONAL_DEPENDENCIES,
     topological_order,
 )
 from battery_workbench.orchestrator.nodes import default_nodes
@@ -186,7 +187,10 @@ class PipelineOrchestrator:
         for node_id in order:
             node = self.nodes[node_id]
             dep_inputs = {
-                d: resolved[d] for d in NODE_DEPENDENCIES.get(node_id, []) if d in resolved
+                d: resolved[d]
+                for d in NODE_DEPENDENCIES.get(node_id, [])
+                + NODE_OPTIONAL_DEPENDENCIES.get(node_id, [])
+                if d in resolved
             }
             ref, reason = node.resolve_existing_output(plan, dep_inputs, self.processed_root)
             if (
@@ -237,6 +241,7 @@ class PipelineOrchestrator:
             result = node_results[node_id]
             node = self.nodes[node_id]
             deps = NODE_DEPENDENCIES.get(node_id, [])
+            optional_deps = NODE_OPTIONAL_DEPENDENCIES.get(node_id, [])
             dep_states = [node_states.get(d) for d in deps if d in node_states]
             if any(
                 s
@@ -258,7 +263,7 @@ class PipelineOrchestrator:
                 # (partial plans may execute a node whose deps are pre-existing)
                 inputs: dict[str, ArtifactRef] = {}
                 missing_deps: list[str] = []
-                for dep in deps:
+                for dep in deps + optional_deps:
                     dep_result = node_results.get(dep)
                     if dep_result and dep_result.outputs:
                         inputs[dep] = dep_result.outputs[0]
@@ -270,7 +275,7 @@ class PipelineOrchestrator:
                     dep_ref, _ = dep_node.resolve_existing_output(plan, {}, self.processed_root)
                     if dep_ref is not None:
                         inputs[dep] = dep_ref
-                    else:
+                    elif dep in deps:  # required
                         missing_deps.append(dep)
                 if missing_deps:
                     result.state = NodeState.BLOCKED
