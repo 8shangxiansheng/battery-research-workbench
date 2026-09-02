@@ -12,7 +12,8 @@ class AssetRegistry:
 
     def list_by_modality(self, experiment_id: str, modality: str) -> list[DataAsset]:
         return [
-            x for x in self._items.values()
+            x
+            for x in self._items.values()
             if x.experiment_id == experiment_id and x.modality == modality
         ]
 

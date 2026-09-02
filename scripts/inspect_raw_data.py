@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import statistics
 from pathlib import Path
@@ -28,7 +29,7 @@ def main() -> None:
             first_id = frame.frame_index
         last_id = frame.frame_index
 
-    intervals = [b - a for a, b in zip(times, times[1:])]
+    intervals = [b - a for a, b in itertools.pairwise(times)]
 
     result = {
         "electrical": {
