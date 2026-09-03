@@ -38,6 +38,7 @@ ALL_STAGES = [
     "SPLIT",
     "FEATURE_ANALYSIS",
     "SOC_MODELING",
+    "SCIENTIFIC_REPORT",
 ]
 
 PROFILE_STAGES: dict[str, list[str]] = {
@@ -97,6 +98,7 @@ class AnalysisPlan(BaseModel):
     split_id: str | None = None
     fold_index: int | None = None
     modeling: dict[str, Any] = Field(default_factory=dict)
+    scientific_report: dict[str, Any] = Field(default_factory=dict)
     target: str | None = None
     label_producer_version: str | None = None
     execution: PlanExecution = Field(default_factory=PlanExecution)
@@ -123,6 +125,7 @@ class AnalysisPlan(BaseModel):
                 "split": self.split,
                 "feature_analysis": self.feature_analysis,
                 "modeling": self.modeling,
+                "scientific_report": self.scientific_report,
                 "target": self.target,
                 "label_producer_version": self.label_producer_version,
                 "plan_version": self.plan_version,

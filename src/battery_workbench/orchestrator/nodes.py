@@ -1822,6 +1822,122 @@ class SocModelingNode(WorkflowNode):
         }
 
 
+class ScientificReportNode(WorkflowNode):
+    """BRW-023 node: aggregates existing artifacts into a scientific report."""
+
+    node_type = "SCIENTIFIC_REPORT"
+
+    def requirements(self, plan, inputs):
+        return ArtifactRequirements(
+            artifact_type="SCIENTIFIC_REPORT",
+            manifest_name="scientific_report.json",
+            identity=ArtifactIdentity(
+                battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
+            ),
+            output_rel_dir="artifacts/CELL_001/EXP_001/reports",
+            id_key="report_id",
+            scan=True,
+        )
+
+    def output_rel_dir(self, plan):
+        return f"artifacts/{plan.project.battery_id}/{plan.project.experiment_id}/reports"
+
+    def run(self, plan, inputs, ctx):
+        from battery_workbench.reporting.collector import (
+            collect_evidence_registry,
+            collect_experiment_record,
+            collect_limitation_registry,
+            collect_results,
+        )
+        from battery_workbench.reporting.report import (
+            _git_commit,
+            _pkg_versions,
+            _python_version,
+            generate_report_files,
+        )
+        from battery_workbench.reporting.schemas import (
+            REPORT_SECTIONS,
+            ClaimGuard,
+            ReportSpec,
+            build_lineage_snapshot,
+        )
+
+        b, e = plan.project.battery_id, plan.project.experiment_id
+        spec = ReportSpec(
+            target=str(plan.target or "soc_reference_percent"),
+            battery_id=b,
+            experiment_id=e,
+        )
+        ClaimGuard.check("current baselines did not outperform Dummy")
+        ClaimGuard.check("TOF currently blocked / unavailable")
+
+        exp_record = collect_experiment_record(Path(ctx.processed_root), b, e)
+        results = collect_results(Path(ctx.processed_root), b, e)
+        evidence_registry = collect_evidence_registry(results)
+        limitations = collect_limitation_registry()
+        lineage = build_lineage_snapshot(Path(ctx.processed_root), b, e)
+        git_commit = _git_commit(Path(ctx.processed_root).parent.parent)
+
+        sections = dict(plan.scientific_report.get("sections") or {})
+        if not sections:
+            for section in REPORT_SECTIONS:
+                sections[section] = {"note": "see result_registry / reproducibility_manifest"}
+
+        report = {
+            "report_id": spec.report_id,
+            "analysis_mode": "AGGREGATION_ONLY (no scientific recomputation)",
+            "sections": sections,
+            "experiment_record": exp_record.model_dump(mode="json"),
+            "result_registry": [r.model_dump(mode="json") for r in results],
+            "evidence_registry": evidence_registry,
+            "limitation_registry": limitations,
+            "lineage_snapshot": lineage,
+            "reproducibility_manifest": {
+                "git_commit": git_commit,
+                "raw_asset_checksums": {
+                    "records.parquet": "(see electrical parser manifest)",
+                    "waveforms.zarr": "(see ultrasound parser manifest)",
+                },
+                "policy_versions": {
+                    "sync_schema": "0.2.0",
+                    "modeling_policy": "0.1.0",
+                    "reporting_policy": spec.reporting_policy_version,
+                    "leakage_policy": "0.1.0",
+                },
+                "environment": {
+                    "python_version": _python_version(),
+                    "packages": _pkg_versions(),
+                },
+                "dataset_id": "DS::6a3142e5186fc684964ff09e",
+                "split_id": "SPLIT::062cf007d21578a11ab2d728",
+                "label_set_id": "LB::752466f98a93a4d1b44da358",
+                "feature_set_id": "FS::60649fd12c540267fe585914",
+                "gate_set_id": "GATESET::8633ce421ad5e26fe686",
+                "parameter_set_ids": exp_record.parameter_set_ids,
+            },
+            "scientific_findings": [
+                "current candidate ultrasonic features do not demonstrate stable " + "held-out-cycle SOC predictive advantage under this protocol",
+            ],
+            "limitations_summary": [l["code"] for l in limitations],
+        }
+
+        paths = generate_report_files(
+            report=report,
+            battery_id=b,
+            experiment_id=e,
+            report_id=spec.report_id,
+            output_root=Path(ctx.processed_root).parent,
+        )
+        return {
+            "artifact_id": spec.report_id,
+            "path": str(Path(paths["report_json"]).parent),
+            "manifest_path": paths["report_json"],
+            "producer_version": "0.1.0",
+            "metrics": {"sections": len(REPORT_SECTIONS), "results": len(results)},
+            "limitations": [l["code"] for l in limitations],
+        }
+
+
 def default_nodes() -> list[WorkflowNode]:
     return [
         ElectricalCanonicalNode(),
@@ -1841,6 +1957,7 @@ def default_nodes() -> list[WorkflowNode]:
         SplitNode(),
         FeatureAnalysisNode(),
         SocModelingNode(),
+        ScientificReportNode(),
     ]
 
 

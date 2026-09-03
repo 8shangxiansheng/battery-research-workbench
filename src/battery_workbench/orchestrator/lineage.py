@@ -62,6 +62,15 @@ _UPSTREAM: dict[str, dict[str, Any]] = {
             ("TIME_ANCHORS", None, "input_paths"),
         ],
     },
+    "GATED_FEATURE_SET": {
+        "manifest": "gated_feature_manifest.json",
+        "dir": "gated_features/{b}/{e}",
+        "scan": True,
+        "id_key": "gate_set_id",
+        "inputs": [
+            ("ANALYSIS_SLICE", "analysis_slice_id", "analysis_slice_path"),
+        ],
+    },
     "LABEL_SET": {
         "manifest": "label_manifest.json",
         "dir": "labels/{b}/{e}",

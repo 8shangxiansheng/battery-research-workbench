@@ -25,6 +25,7 @@ NODE_DEPENDENCIES: dict[str, list[str]] = {
     "FEATURE_ANALYSIS": ["FEATURE_LABEL_ANALYSIS"],
     "SPLIT": ["DATASET"],
     "SOC_MODELING": ["DATASET", "SPLIT", "FEATURE_ANALYSIS"],
+    "SCIENTIFIC_REPORT": ["SOC_MODELING"],
 }
 
 # Optional (mode-conditional) upstream: resolved when present in the run, never

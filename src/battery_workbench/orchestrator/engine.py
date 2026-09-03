@@ -31,6 +31,14 @@ from battery_workbench.orchestrator.schemas import (
 )
 
 
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(Path(path).read_text())
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -639,6 +647,42 @@ class PipelineOrchestrator:
             experiment_id="EXP_001",
             processed_root=self.processed_root,
         )
+
+    def generate_report(
+        self,
+        *,
+        battery_id: str,
+        experiment_id: str,
+        target: str = "soc_reference_percent",
+    ) -> dict[str, Any]:
+        """Aggregate existing artifacts into a scientific report (no recomputation)."""
+        plan = self.plan_run(
+            profile="FULL_PRE_MODEL",
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            dry_run=False,
+            target=target,
+            scientific_report={"sections": []},
+        )
+        plan = plan.model_copy(update={"stages": ["SCIENTIFIC_REPORT"]})
+        run_dir = self.runs_root / f"report-{plan.plan_id.split('::')[1][:16]}"
+        from battery_workbench.orchestrator.engine import RunContext
+
+        ctx = RunContext(
+            raw_root=self.raw_root,
+            processed_root=self.processed_root,
+            runs_root=self.runs_root,
+            run_id=f"RUN::report-{plan.plan_id.split('::')[1][:16]}",
+            run_dir=run_dir,
+        )
+        node = self.nodes["SCIENTIFIC_REPORT"]
+        output = node.run(plan, {}, ctx)
+        report = _load_json_file(Path(output["manifest_path"]))
+        report = report or {}
+        report["report_id"] = output["artifact_id"]
+        report["nodes"] = [{"node_id": node.node_type, "state": "SUCCEEDED"}]
+        report["run_id"] = ctx.run_id
+        return report
 
     def _manifest_to_dict(self, manifest: RunManifest, *, run_dir: Path) -> dict[str, Any]:
         out = manifest.model_dump(mode="json")
