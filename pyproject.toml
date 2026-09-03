@@ -81,3 +81,7 @@ ignore = ["DTZ001", "DTZ005", "DTZ007"]
 python_version = "3.11"
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib"]
+ignore_missing_imports = true

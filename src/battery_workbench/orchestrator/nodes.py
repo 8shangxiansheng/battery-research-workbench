@@ -1263,10 +1263,36 @@ class FeatureAnalysisNode(WorkflowNode):
         # A selection whose commit is still WAITING_FOR_USER must re-enter the
         # user gate on a new run, not silently reuse the unconfirmed state.
         selection = dict((plan.feature_analysis or {}).get("selection") or {})
+        fa_split_id = plan.split_id
         if selection.get("requested"):
             ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
             if ref is not None:
                 manifest = _load_json(Path(ref.manifest_path)) or {}
+                # Spec identity: the FA spec (incl. selection policy) determines
+                # analysis_id — a policy change must not reuse another
+                # policy's artifacts.
+                try:
+                    from battery_workbench.feature_analysis.schemas import (
+                        FeatureAnalysisSpec,
+                    )
+
+                    fa = dict(plan.feature_analysis or {})
+                    if "fold_index" not in fa and plan.fold_index is not None:
+                        fa["fold_index"] = plan.fold_index
+                    expected_spec = FeatureAnalysisSpec(
+                        analysis_mode=str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA")),
+                        target=str(fa.get("target", "soc_reference_percent")),
+                        candidate_features=list(fa.get("candidate_features", [])),
+                        split_id=fa.get("split_id") or fa_split_id,
+                        fold_index=fa.get("fold_index"),
+                        subgroup_by=list(fa.get("subgroup_by", ["step_type", "cycle"])),
+                        methods=list(fa.get("methods", ["descriptive", "pearson", "spearman"])),
+                        selection=selection,
+                    )
+                    if manifest.get("analysis_id") != expected_spec.analysis_id:
+                        return None, "FA spec changed — new analysis required"
+                except (ValueError, TypeError):
+                    return None, "FA spec invalid"
                 commit = (manifest.get("selection") or {}).get("commit_status")
                 if commit == "WAITING_FOR_USER":
                     return None, "selection commit not yet user-confirmed"
@@ -1421,6 +1447,9 @@ class FeatureAnalysisNode(WorkflowNode):
             selection = run_selection(spec, analysis_frame, assignments=assignments, fold=fold_name)
         else:
             selection = run_selection(spec, analysis_frame)
+        selection["confirmed"] = bool((fa.get("selection") or {}).get("confirmed", False))
+        if selection["confirmed"] and selection.get("selected_features"):
+            selection["commit_status"] = "CONFIRMED"
         selection["held_out_target_accessed"] = False
 
         paths = write_analysis_payload(
@@ -1441,20 +1470,22 @@ class FeatureAnalysisNode(WorkflowNode):
             if a["status"] == "UNAVAILABLE":
                 limitations.append(f"{a['feature_name']}: UNAVAILABLE — {a['reason']}")
         if selection["selection_requested"] and selection["selected_features"]:
-            raise UserInputNeededError(
-                node_id=self.node_type,
-                action=f"UA::CONFIRM_FEATURE_SELECTION::{selection['selection_id']}",
-                action_type="CONFIRM_FEATURE_SELECTION",
-                message=(
-                    "Confirm selected features to build a new dataset "
-                    "(no automatic rebuild, no analysis→dataset loop)"
-                ),
-                required_fields=[{"field": "selection_id", "value": selection["selection_id"]}],
-                scientific_reason=(
-                    "Feature selection commit is user-gated; dataset rebuild requires "
-                    "explicit confirmation"
-                ),
-            )
+            if not selection.get("confirmed"):
+                raise UserInputNeededError(
+                    node_id=self.node_type,
+                    action=f"UA::CONFIRM_FEATURE_SELECTION::{selection['selection_id']}",
+                    action_type="CONFIRM_FEATURE_SELECTION",
+                    message=(
+                        "Confirm selected features to build a new dataset "
+                        "(no automatic rebuild, no analysis→dataset loop)"
+                    ),
+                    required_fields=[{"field": "selection_id", "value": selection["selection_id"]}],
+                    scientific_reason=(
+                        "Feature selection commit is user-gated; dataset rebuild requires "
+                        "explicit confirmation"
+                    ),
+                )
+            selection["commit_status"] = "CONFIRMED"
         return {
             "artifact_id": spec.analysis_id,
             "path": paths["analysis_dir"],
@@ -1467,6 +1498,327 @@ class FeatureAnalysisNode(WorkflowNode):
                 "held_out_target_accessed": False,
             },
             "limitations": limitations,
+        }
+
+
+def _confirmed_fold_fingerprint(processed_root: Path, plan) -> set[str]:
+    """Fold fingerprint set: f"{fold}:{selection_id}" for confirmed selections."""
+    dataset_ref = None
+    dn = DatasetNode()
+    dataset_ref, _ = dn.resolve_existing_output(plan, {}, processed_root)
+    dataset_id = dataset_ref.artifact_id if dataset_ref else ""
+    split_node = SplitNode()
+    split_ref, _ = (
+        split_node.resolve_existing_output(plan, {"DATASET": dataset_ref}, processed_root)
+        if dataset_ref
+        else (None, "")
+    )
+    split_id = split_ref.artifact_id if split_ref else ""
+    base = (
+        Path(processed_root)
+        / "feature_analysis"
+        / plan.project.battery_id
+        / plan.project.experiment_id
+        / dataset_id
+    )
+    out: set[str] = set()
+    for mp in base.rglob("analysis_manifest.json"):
+        m = _load_json(mp) or {}
+        sel = m.get("selection") or {}
+        if (
+            m.get("analysis_mode") == "TRAIN_ONLY_ML_SAFE"
+            and sel.get("commit_status") == "CONFIRMED"
+            and sel.get("selected_features")
+            and m.get("split_id") == split_id
+        ):
+            out.add(f"{m.get('fold_index')}:{sel['selection_id']}")
+    return out
+
+
+class SocModelingNode(WorkflowNode):
+    """BRW-022 node: leakage-safe limited within-battery SOC baseline modeling."""
+
+    node_type = "SOC_MODELING"
+
+    def requirements(self, plan, inputs):
+        dataset_ref = inputs.get("DATASET")
+        dataset_id = dataset_ref.artifact_id if dataset_ref else ""
+        return ArtifactRequirements(
+            artifact_type="SOC_MODELING",
+            manifest_name="model_manifest.json",
+            identity=ArtifactIdentity(
+                battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
+            ),
+            output_rel_dir=(
+                f"models/{plan.project.battery_id}/{plan.project.experiment_id}/{dataset_id}"
+            ),
+            id_key="model_id",
+            scan=True,
+        )
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        """Reuse only when every confirmed fold selection is already covered."""
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        covered = set(manifest.get("confirmed_fold_selections") or {})
+        current = _confirmed_fold_fingerprint(processed_root, plan)
+        if not current.issubset(covered):
+            missing = sorted(current - covered)
+            return None, (
+                f"new confirmed fold selection(s) not covered by existing models: {missing}"
+            )
+        return ref, reason
+
+    def output_rel_dir(self, plan):
+        return f"models/{plan.project.battery_id}/{plan.project.experiment_id}"
+
+    def validate_readiness(self, plan, inputs):
+        # selection confirmation is decided by the on-disk FA artifact
+        # (commit_status=CONFIRMED), not by the plan kwargs.
+        return Readiness(ok=True, reason="modeling spec present")
+
+    def run(self, plan, inputs, ctx):
+        from battery_workbench.modeling.engine import (
+            evaluate_predictions,
+            fit_model,
+            macro_average,
+            predict,
+        )
+        from battery_workbench.modeling.persistence import (
+            write_model_comparison,
+            write_model_payload,
+        )
+        from battery_workbench.modeling.schemas import ModelSpec
+        from battery_workbench.modeling.view import build_fold_training_view
+
+        modeling_cfg = dict(plan.modeling or {})
+        strategies = list(
+            modeling_cfg.get(
+                "strategies",
+                ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE", "RANDOM_FOREST", "GRADIENT_BOOSTING"],
+            )
+        )
+        random_state = modeling_cfg.get("random_state", 42)
+        modeling_policy_version = "0.1.0"
+
+        dataset_ref = inputs.get("DATASET")
+        if dataset_ref is None:
+            raise ValueError("DATASET artifact required for SOC modeling")
+        dataset_dir = Path(dataset_ref.manifest_path).parent
+        dataset = pd.read_parquet(dataset_dir / "dataset.parquet")
+        dataset_id = dataset_ref.artifact_id
+
+        split_ref = inputs.get("SPLIT")
+        if split_ref is None:
+            raise ValueError("SPLIT artifact required for SOC modeling")
+        split_dir = Path(split_ref.manifest_path).parent
+        if not (split_dir / "split_assignments.parquet").exists():
+            split_dir = split_dir / split_ref.artifact_id
+        assignments = pd.read_parquet(split_dir / "split_assignments.parquet")
+        split_id = split_ref.artifact_id
+
+        if plan.target == "soh_capacity_reference_percent":
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action="UA::SOH_MODELING_NOT_READY",
+                action_type="SOH_MODELING_NOT_READY",
+                message="SOH modeling blocked: only 2 independent SOH states",
+                required_fields=[{"field": "none"}],
+                scientific_reason=(
+                    "SOH event rows are not independent states; readiness is "
+                    "NOT_READY_FOR_MODEL_EVALUATION"
+                ),
+            )
+        target = str(plan.target or "soc_reference_percent")
+
+        # confirmed fold selections (BRW-021)
+        fa_dir = (
+            Path(ctx.processed_root)
+            / "feature_analysis"
+            / plan.project.battery_id
+            / plan.project.experiment_id
+            / dataset_id
+        )
+        fold_selections: dict[int, dict] = {}
+        for manifest_path in sorted(fa_dir.rglob("analysis_manifest.json")):
+            m = _load_json(manifest_path) or {}
+            sel = m.get("selection") or {}
+            if (
+                m.get("analysis_mode") == "TRAIN_ONLY_ML_SAFE"
+                and sel.get("commit_status") == "CONFIRMED"
+                and sel.get("selected_features")
+                and m.get("split_id") == split_id
+            ):
+                fold_selections[int(m.get("fold_index") or 0)] = {
+                    "analysis_id": m["analysis_id"],
+                    "selection_id": sel["selection_id"],
+                    "selected_features": sel["selected_features"],
+                }
+        if not fold_selections:
+            raise UserInputNeededError(
+                node_id=self.node_type,
+                action="UA::CONFIRM_FEATURE_SELECTION::NONE",
+                action_type="CONFIRM_FEATURE_SELECTION",
+                message=(
+                    "No confirmed TRAIN_ONLY_ML_SAFE selection — confirm the "
+                    "feature selection before modeling"
+                ),
+                required_fields=[{"field": "none"}],
+                scientific_reason=(
+                    "formal modeling requires a confirmed TRAIN-only selection; "
+                    "EXPLORATORY_FULL_DATA selections BLOCK this path"
+                ),
+            )
+
+        confirmed_fingerprint = sorted(
+            f"{fi}:{info['selection_id']}" for fi, info in fold_selections.items()
+        )
+        comparison_rows: list[dict[str, Any]] = []
+        fold_metrics_by_model: dict[str, list[dict[str, Any]]] = {}
+        written_manifests: list[str] = []
+
+        for fold_index in sorted(fold_selections):
+            fold = f"fold{fold_index}"
+            sel_info = fold_selections[fold_index]
+            features = sel_info["selected_features"]
+            view = build_fold_training_view(
+                dataset, assignments, fold=fold, features=features, target=target
+            )
+            for strategy in strategies:
+                spec = ModelSpec(
+                    strategy=strategy,
+                    dataset_id=dataset_id,
+                    split_id=split_id,
+                    fold_index=fold_index,
+                    selection_id=sel_info["selection_id"],
+                    selected_features=features,
+                    random_state=random_state,
+                )
+                fitted = fit_model(view, spec)
+                held_events = assignments[
+                    (assignments["fold"] == fold) & (assignments["role"] == "HELD_OUT")
+                ]["measurement_event_id"]
+                held = dataset[dataset["measurement_event_id"].isin(held_events)]
+                x_held = held[features]
+                y_held = held[target]
+                step_held = held["step_type"] if "step_type" in held.columns else None
+                preds = predict(fitted, x_held)
+                metrics = evaluate_predictions(
+                    y_held.to_numpy(),
+                    preds,
+                    step_type=step_held.to_numpy() if step_held is not None else None,
+                    soc_bins=True,
+                )
+                metrics["fold_index"] = fold_index
+                metrics["fold"] = fold
+                metrics["train_group_ids"] = sorted(view.train_group_ids)
+                metrics["held_out_group_ids"] = sorted(view.held_out_group_ids)
+                metrics["train_row_count"] = view.train_row_count
+                metrics["held_out_row_count"] = len(x_held)
+                metrics["selected_features"] = features
+                metrics["selection_id"] = sel_info["selection_id"]
+                metrics["analysis_id"] = sel_info["analysis_id"]
+
+                pred_df = pd.DataFrame(
+                    {
+                        "measurement_event_id": held["measurement_event_id"].to_numpy(),
+                        "fold": fold,
+                        "fold_index": fold_index,
+                        "model_id": spec.model_id,
+                        "strategy": strategy,
+                        "y_pred": preds,
+                        "y_true": y_held.to_numpy(),
+                    }
+                )
+                payload = write_model_payload(
+                    spec=spec,
+                    fitted=fitted,
+                    view=view,
+                    predictions=pred_df,
+                    metrics=metrics,
+                    battery_id=plan.project.battery_id,
+                    experiment_id=plan.project.experiment_id,
+                    output_root=Path(ctx.processed_root),
+                    confirmed_fold_selections=confirmed_fingerprint,
+                )
+                written_manifests.append(payload["model_manifest"])
+                comparison_rows.append(
+                    {
+                        "model_id": spec.model_id,
+                        "strategy": strategy,
+                        "fold_index": fold_index,
+                        "fold": fold,
+                        "train_group": ",".join(view.train_group_ids),
+                        "held_out_group": ",".join(view.held_out_group_ids),
+                        "train_rows": view.train_row_count,
+                        "held_out_rows": len(x_held),
+                        "selected_features": ",".join(features),
+                        "selection_id": sel_info["selection_id"],
+                        "MAE": metrics["overall"]["MAE"],
+                        "RMSE": metrics["overall"]["RMSE"],
+                        "R2": metrics["overall"]["R2"],
+                        "out_of_bounds_count": metrics["overall"]["out_of_bounds_count"],
+                    }
+                )
+                fold_metrics_by_model.setdefault(strategy, []).append(metrics)
+
+        comparison = []
+        for strategy, fm in fold_metrics_by_model.items():
+            macro = macro_average(fm)
+            dummy_macros = macro_average(fold_metrics_by_model.get("DUMMY_MEAN", []))
+            comparison.append(
+                {
+                    "strategy": strategy,
+                    **macro,
+                    "macro_MAE_vs_DUMMY": (
+                        macro.get("macro_MAE") - dummy_macros.get("macro_MAE")
+                        if strategy != "DUMMY_MEAN" and dummy_macros.get("macro_MAE") is not None
+                        else 0.0
+                    ),
+                    "limited_evaluation_note": (
+                        "LOWEST_MACRO_MAE_AMONG_FIXED_BASELINES — "
+                        "LIMITED_TWO_CYCLE_EVALUATION, no cross-battery claim"
+                    ),
+                }
+            )
+
+        comp_paths = write_model_comparison(
+            comparison_rows=comparison_rows,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            dataset_id=dataset_id,
+            split_id=split_id,
+            output_root=Path(ctx.processed_root),
+        )
+        comp_json = Path(comp_paths["model_comparison_json"])
+        comp_json.write_text(
+            json.dumps(comparison, indent=2, ensure_ascii=False, default=str) + "\n"
+        )
+
+        return {
+            "artifact_id": "EXP_001",
+            "path": str(
+                Path(ctx.processed_root)
+                / "models"
+                / plan.project.battery_id
+                / plan.project.experiment_id
+                / dataset_id
+                / split_id
+            ),
+            "manifest_path": written_manifests[0] if written_manifests else "",
+            "producer_version": modeling_policy_version,
+            "metrics": {
+                "comparison_rows": len(comparison_rows),
+                "folds": len(fold_selections),
+            },
+            "limitations": [
+                "within-battery cross-cycle limited evaluation only",
+                "no cross-battery generalization claim",
+                "no hyperparameter tuning (2 cycles)",
+                "EVALUATION_UNCERTAINTY_HIGH",
+            ],
         }
 
 
@@ -1488,6 +1840,7 @@ def default_nodes() -> list[WorkflowNode]:
         DatasetNode(),
         SplitNode(),
         FeatureAnalysisNode(),
+        SocModelingNode(),
     ]
 
 

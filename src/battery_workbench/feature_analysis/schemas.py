@@ -108,6 +108,7 @@ class FeatureAnalysisSpec(BaseModel):
                     "subgroup_by": self.subgroup_by,
                     "methods": self.methods,
                     "policy_version": self.policy_version,
+                    "selection": self.selection.model_dump(mode="json"),
                 },
                 sort_keys=True,
                 separators=(",", ":"),

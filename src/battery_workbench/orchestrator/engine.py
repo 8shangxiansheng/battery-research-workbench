@@ -440,11 +440,27 @@ class PipelineOrchestrator:
         merged_overrides = dict(plan.parameters.get("user_overrides") or {})
         plan_updates: dict[str, Any] = {}
         for key, value in (user_inputs or {}).items():
-            if key in ("split", "features", "analysis_slice", "parameters", "gates"):
+            if key in (
+                "split",
+                "features",
+                "analysis_slice",
+                "parameters",
+                "gates",
+                "feature_analysis",
+                "modeling",
+            ):
                 if key == "split" and isinstance(value, dict):
                     plan_updates["split"] = {**plan.split, **value}
                 elif key == "parameters" and isinstance(value, dict):
                     merged_overrides.update(value)
+                elif key == "feature_analysis" and isinstance(value, dict):
+                    merged_fa = {**plan.feature_analysis, **value}
+                    if "selection" in value and isinstance(value["selection"], dict):
+                        merged_fa["selection"] = {
+                            **(plan.feature_analysis.get("selection") or {}),
+                            **value["selection"],
+                        }
+                    plan_updates["feature_analysis"] = merged_fa
                 else:
                     plan_updates[key] = value
             else:

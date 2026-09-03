@@ -37,6 +37,7 @@ ALL_STAGES = [
     "DATASET",
     "SPLIT",
     "FEATURE_ANALYSIS",
+    "SOC_MODELING",
 ]
 
 PROFILE_STAGES: dict[str, list[str]] = {
@@ -95,6 +96,7 @@ class AnalysisPlan(BaseModel):
     feature_analysis: dict[str, Any] = Field(default_factory=dict)
     split_id: str | None = None
     fold_index: int | None = None
+    modeling: dict[str, Any] = Field(default_factory=dict)
     target: str | None = None
     label_producer_version: str | None = None
     execution: PlanExecution = Field(default_factory=PlanExecution)
@@ -120,6 +122,7 @@ class AnalysisPlan(BaseModel):
                 "parameters": self.parameters,
                 "split": self.split,
                 "feature_analysis": self.feature_analysis,
+                "modeling": self.modeling,
                 "target": self.target,
                 "label_producer_version": self.label_producer_version,
                 "plan_version": self.plan_version,
@@ -238,6 +241,12 @@ def build_plan(**plan_fields: Any) -> AnalysisPlan:
         "reuse_existing": plan_fields.pop("reuse_existing", True),
         "force_recompute": plan_fields.pop("force_recompute", []),
     }
+    # convenience kwargs routed into nested plan blocks
+    selection = plan_fields.pop("selection", None)
+    if selection is not None:
+        fa = dict(plan_fields.get("feature_analysis") or {})
+        fa.setdefault("selection", {}).update(selection)
+        plan_fields["feature_analysis"] = fa
     if "project" not in plan_fields:
         plan_fields["project"] = {
             "battery_id": plan_fields.pop("battery_id"),
