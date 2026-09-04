@@ -47,10 +47,10 @@ def list_waveform_frames(request: Request, battery_id: str, experiment_id: str) 
     ).reset_index(drop=True)
     items = [
         {
-            "frame_index": int(r.frame_index_raw),
+            "frame_index": int(str(r.frame_index_raw)),
             "waveform_group": str(r.waveform_group),
-            "waveform_row_index": int(r.waveform_row_index),
-            "sample_count": int(r.waveform_sample_count),
+            "waveform_row_index": int(str(r.waveform_row_index)),
+            "sample_count": int(str(r.waveform_sample_count)),
         }
         for r in frames.itertuples()
     ]
@@ -60,7 +60,7 @@ def list_waveform_frames(request: Request, battery_id: str, experiment_id: str) 
             "battery_id": battery_id,
             "experiment_id": experiment_id,
             "frame_count": len(items),
-            "waveform_length": int(items[0]["sample_count"]) if items else 0,
+            "waveform_length": int(str(items[0]["sample_count"])) if items else 0,
             "x_axis": "SAMPLE_INDEX",
             "time_axis_available": False,
             "frames": items,
@@ -105,7 +105,9 @@ def get_waveform_frame(
         raise APIError(ErrorCode.NOT_FOUND, "frame not found")
     r = row.iloc[0]
     zg = zarr.open_group(str(store_path), mode="r")
-    wave = np.asarray(zg[str(r.waveform_group)][int(r.waveform_row_index)])
+    wave = np.asarray(
+        zg[str(r.waveform_group)][int(str(r.waveform_row_index))]  # type: ignore[index]
+    )
     length = int(wave.shape[0])
     step = -(-length // max_points)  # ceil division: points <= max_points
     downsampled = [

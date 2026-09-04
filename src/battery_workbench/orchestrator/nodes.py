@@ -183,6 +183,7 @@ class ElectricalCanonicalNode(WorkflowNode):
         ]
         result = parse_electrical_experiment(experiment, assets, ctx.raw_root)
         manifest = write_electrical_experiment(result, Path(ctx.processed_root) / "electrical")
+        manifest_json = json.loads(manifest.manifest_path.read_text(encoding="utf-8"))
         out_dir = (
             Path(ctx.processed_root)
             / "electrical"
@@ -193,7 +194,7 @@ class ElectricalCanonicalNode(WorkflowNode):
             "artifact_id": "",
             "path": str(out_dir),
             "manifest_path": str(out_dir / "parser_manifest.json"),
-            "producer_version": manifest.parser_version,
+            "producer_version": manifest_json.get("parser_version"),
             "metrics": {"records": len(result.records)},
         }
 
@@ -240,6 +241,7 @@ class UltrasoundCanonicalNode(WorkflowNode):
         ]
         result = parse_ultrasound_experiment(experiment, assets, ctx.raw_root)
         manifest = write_ultrasound_experiment(result, Path(ctx.processed_root) / "ultrasound")
+        manifest_json = json.loads(manifest.manifest_path.read_text(encoding="utf-8"))
         out_dir = (
             Path(ctx.processed_root)
             / "ultrasound"
@@ -250,10 +252,8 @@ class UltrasoundCanonicalNode(WorkflowNode):
             "artifact_id": "",
             "path": str(out_dir),
             "manifest_path": str(out_dir / "parser_manifest.json"),
-            "producer_version": manifest.parser_version,
-            "metrics": {
-                "frames": manifest.frame_count if hasattr(manifest, "frame_count") else None
-            },
+            "producer_version": manifest_json.get("parser_version"),
+            "metrics": {"frames": manifest_json.get("frame_count")},
         }
 
 
@@ -280,9 +280,11 @@ class TimeAnchorNode(WorkflowNode):
         from battery_workbench.synchronization.schemas import TimeAnchorConfig
         from battery_workbench.synchronization.service import assess_experiment_time_anchors
 
-        config = TimeAnchorConfig.from_yaml(
-            Path(ctx.raw_root).parent.parent / "configs" / "time_anchor.yaml"
-        )
+        config_path = Path(ctx.raw_root).parent.parent / "configs" / "time_anchor.yaml"
+        if not config_path.is_file():
+            # repo-shipped default config (sandbox raw roots have no configs dir)
+            config_path = Path(__file__).resolve().parents[3] / "configs" / "time_anchor.yaml"
+        config = TimeAnchorConfig.from_yaml(config_path)
         report = assess_experiment_time_anchors(
             plan.project.experiment_id,
             processed_root=Path(ctx.processed_root),
@@ -374,7 +376,7 @@ class UltrasoundTimestampsNode(WorkflowNode):
             / plan.project.experiment_id
             / "frames.parquet",
             time_anchor_state_path=exp_dir / "time_anchors.json",
-            output_dir=exp_dir,
+            output_dir=Path(ctx.processed_root),
             config=TimestampEngineConfig(),
         )
         return {

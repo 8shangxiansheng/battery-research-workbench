@@ -1,6 +1,31 @@
 {
   "components": {
     "schemas": {
+      "Body_upload_asset_api_v1_intake_sessions__session_id__assets_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "ELECTRICAL",
+              "ULTRASOUND",
+              "EXPERIMENT_METADATA",
+              "AUXILIARY"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "file"
+        ],
+        "title": "Body_upload_asset_api_v1_intake_sessions__session_id__assets_post",
+        "type": "object"
+      },
       "ErrorEnvelope": {
         "properties": {
           "error": {
@@ -15,7 +40,14 @@
                   "SCIENTIFIC_READINESS_BLOCKED",
                   "INTEGRITY_ERROR",
                   "UNSUPPORTED_OPERATION",
-                  "INTERNAL_ERROR"
+                  "INTERNAL_ERROR",
+                  "UNSUPPORTED_FILE_FORMAT",
+                  "AMBIGUOUS_ADAPTER",
+                  "DUPLICATE_ASSET",
+                  "INTAKE_NOT_VALIDATED",
+                  "INTAKE_ALREADY_COMMITTED",
+                  "UPLOAD_TOO_LARGE",
+                  "ASSET_ROLE_CONFLICT"
                 ],
                 "type": "string"
               },
@@ -333,7 +365,7 @@
     },
     "/api/v1/experiments": {
       "get": {
-        "operationId": "list_experiments_api_v1_experiments_get",
+        "operationId": "list_experiments_v2_api_v1_experiments_get",
         "parameters": [
           {
             "in": "query",
@@ -362,6 +394,54 @@
               ],
               "title": "Cursor"
             }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "battery_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Battery Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_demo",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Demo"
+            }
           }
         ],
         "responses": {
@@ -370,7 +450,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response List Experiments Api V1 Experiments Get",
+                  "title": "Response List Experiments V2 Api V1 Experiments Get",
                   "type": "object"
                 }
               }
@@ -388,8 +468,53 @@
             "description": "Validation Error"
           }
         },
-        "summary": "List Experiments",
+        "summary": "List Experiments V2",
         "tags": [
+          "intake",
+          "experiments"
+        ]
+      },
+      "post": {
+        "operationId": "create_experiment_api_v1_experiments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Experiment Api V1 Experiments Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Experiment",
+        "tags": [
+          "intake",
           "experiments"
         ]
       }
@@ -443,6 +568,178 @@
         },
         "summary": "Get Experiment",
         "tags": [
+          "experiments"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_experiment_api_v1_experiments__battery_id___experiment_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Experiment Api V1 Experiments  Battery Id   Experiment Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Experiment",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/archive": {
+      "post": {
+        "operationId": "archive_experiment_api_v1_experiments__battery_id___experiment_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Archive Experiment Api V1 Experiments  Battery Id   Experiment Id  Archive Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Experiment",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/assets": {
+      "get": {
+        "operationId": "experiment_assets_api_v1_experiments__battery_id___experiment_id__assets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Experiment Assets Api V1 Experiments  Battery Id   Experiment Id  Assets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Experiment Assets",
+        "tags": [
+          "intake",
           "experiments"
         ]
       }
@@ -605,6 +902,168 @@
         "tags": [
           "scientific-resources",
           "artifacts"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/intake-history": {
+      "get": {
+        "operationId": "intake_history_api_v1_experiments__battery_id___experiment_id__intake_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Intake History Api V1 Experiments  Battery Id   Experiment Id  Intake History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Intake History",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/intake-sessions": {
+      "post": {
+        "operationId": "create_intake_session_api_v1_experiments__battery_id___experiment_id__intake_sessions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Intake Session Api V1 Experiments  Battery Id   Experiment Id  Intake Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Intake Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/lifecycle-events": {
+      "get": {
+        "operationId": "lifecycle_events_api_v1_experiments__battery_id___experiment_id__lifecycle_events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Lifecycle Events Api V1 Experiments  Battery Id   Experiment Id  Lifecycle Events Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lifecycle Events",
+        "tags": [
+          "intake",
+          "experiments"
         ]
       }
     },
@@ -1366,6 +1825,407 @@
         "summary": "Health",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}": {
+      "get": {
+        "operationId": "get_intake_session_api_v1_intake_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Intake Session Api V1 Intake Sessions  Session Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Intake Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/assets": {
+      "get": {
+        "operationId": "list_session_assets_api_v1_intake_sessions__session_id__assets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Session Assets Api V1 Intake Sessions  Session Id  Assets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Session Assets",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      },
+      "post": {
+        "operationId": "upload_asset_api_v1_intake_sessions__session_id__assets_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_asset_api_v1_intake_sessions__session_id__assets_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upload Asset Api V1 Intake Sessions  Session Id  Assets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Asset",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/assets/{intake_asset_id}/preview": {
+      "get": {
+        "operationId": "preview_asset_api_v1_intake_sessions__session_id__assets__intake_asset_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "intake_asset_id",
+            "required": true,
+            "schema": {
+              "title": "Intake Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Asset Api V1 Intake Sessions  Session Id  Assets  Intake Asset Id  Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Asset",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "cancel_session_api_v1_intake_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Session Api V1 Intake Sessions  Session Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/commit": {
+      "post": {
+        "operationId": "commit_session_api_v1_intake_sessions__session_id__commit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Commit Session Api V1 Intake Sessions  Session Id  Commit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Commit Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/detect": {
+      "post": {
+        "operationId": "detect_session_api_v1_intake_sessions__session_id__detect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Detect Session Api V1 Intake Sessions  Session Id  Detect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Detect Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/validate": {
+      "post": {
+        "operationId": "validate_session_api_v1_intake_sessions__session_id__validate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Validate Session Api V1 Intake Sessions  Session Id  Validate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Session",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake/capabilities": {
+      "get": {
+        "operationId": "intake_capabilities_api_v1_intake_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Intake Capabilities Api V1 Intake Capabilities Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Intake Capabilities",
+        "tags": [
+          "intake",
+          "experiments"
         ]
       }
     },

@@ -60,6 +60,12 @@ class WorkbenchService:
             raw_root=self.raw_root, processed_root=self.processed_root
         )
         self._idempotency: dict[str, dict[str, Any]] = {}
+        from battery_workbench.intake.engine import IntakeEngine
+
+        self.intake = IntakeEngine(
+            raw_root=self.raw_root,
+            work_root=self.processed_root.parent / "artifacts",
+        )
 
     # ---------- system ----------
     def version(self) -> dict[str, Any]:
