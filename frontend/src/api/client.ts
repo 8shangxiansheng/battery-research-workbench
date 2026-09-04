@@ -83,6 +83,7 @@ export interface ExperimentSummary {
 }
 
 export interface WorkspaceSummary extends ExperimentSummary {
+  status?: string;
   limitations_registry: { code: string; severity: string; description: string }[];
   readiness: Record<string, unknown>;
   next_actions: string[];
@@ -224,6 +225,140 @@ export interface FramePreviewResponse {
   sampling_rate_status: string;
   max_points: number;
   samples: WaveformSample[];
+}
+
+
+// ---------- BRW-024R intake DTOs ----------
+
+export type IntakeSessionStatus =
+  | "DRAFT" | "ASSETS_RECEIVED" | "DETECTED" | "VALIDATED"
+  | "COMMITTED" | "FAILED" | "CANCELLED" | "EXPIRED";
+
+export type ExperimentLifecycle =
+  | "DRAFT" | "AWAITING_DATA" | "IMPORTING" | "IMPORT_VALIDATION_REQUIRED"
+  | "READY_FOR_PIPELINE" | "WAITING_FOR_USER" | "RUNNING" | "READY"
+  | "FAILED" | "ARCHIVED";
+
+export type AssetRole = "ELECTRICAL" | "ULTRASOUND" | "EXPERIMENT_METADATA" | "AUXILIARY";
+
+export interface LibraryExperiment {
+  battery_id: string;
+  experiment_id: string;
+  experiment_composite_id: string;
+  name: string;
+  status: ExperimentLifecycle | string;
+  is_demo: boolean;
+  created_at: string;
+  updated_at: string;
+  notes: string;
+  asset_summary: { committed_assets: number; intake_sessions: number };
+  latest_run: string | null;
+  readiness: unknown;
+  pending_actions: unknown[];
+}
+
+export interface IntakeAssetRecord {
+  intake_asset_id: string;
+  session_id: string;
+  role: AssetRole;
+  original_filename: string;
+  stored_filename: string;
+  size: number;
+  sha256: string;
+  received_at: string;
+  content_kind: string | null;
+}
+
+export interface AdapterDetection {
+  intake_asset_id: string;
+  state: "DETECTED_UNIQUE" | "DETECTED_AMBIGUOUS" | "UNSUPPORTED" | "NEEDS_USER_CONFIRMATION";
+  modality: string | null;
+  adapter_id: string | null;
+  adapter_version: string | null;
+  asset_role: AssetRole | null;
+  detection_reason: string;
+  matched_signatures: string[];
+  candidates: { modality: string; adapter_id: string; adapter_version: string }[];
+}
+
+export interface ValidationCheck {
+  dimension: "FORMAT_VALIDITY" | "SCIENTIFIC_METADATA_COMPLETENESS" | "PIPELINE_READINESS";
+  level: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface ImportValidation {
+  session_id: string;
+  validation_level: string;
+  overall_passed: boolean;
+  checks: ValidationCheck[];
+  sampling_rate_hz: number | null;
+  sampling_rate_status: "UNKNOWN" | "RESOLVED";
+  timebase_status: string;
+}
+
+export interface IntakeSessionDetail {
+  session_id: string;
+  battery_id: string;
+  experiment_id: string;
+  experiment_composite_id: string;
+  status: IntakeSessionStatus;
+  created_at: string;
+  updated_at: string;
+  assets: IntakeAssetRecord[];
+  detections: AdapterDetection[];
+  validation: ImportValidation | null;
+  commit: {
+    session_id: string;
+    committed_at: string;
+    experiment_composite_id: string;
+    assets: Record<string, unknown>[];
+    import_manifest_checksum: string;
+  } | null;
+  failure_reason: string | null;
+  recommended_next_action: string | null;
+}
+
+export interface IntakeCapabilities {
+  adapters: { modality: string; adapter_id: string; adapter_version: string }[];
+  supported_roles: AssetRole[];
+  file_limits: { max_file_size_bytes: number; max_assets_per_session: number };
+  format_hints: Record<string, string>;
+  extension_note: string;
+  intake_policy_version: string;
+}
+
+// ---------- BRW-025R data DTOs ----------
+
+export interface DataQuality {
+  battery_id: string;
+  experiment_id: string;
+  electrical: { records: number; cycles: number | null; steps: number | null; duplicate_timestamps: number | null } | null;
+  ultrasound: { frames: number; frame_cadence_s: number | null; sampling_rate_hz: null; sampling_rate_status: "UNKNOWN"; note: string } | null;
+}
+
+export interface SynchronizationSummary {
+  battery_id: string;
+  experiment_id: string;
+  matches_frames: number | null;
+  match_state: "MATCHED_UNIQUE" | "AMBIGUOUS";
+  ambiguous_frames: unknown[];
+  sync_tolerance_s: number | null;
+  validated_sync: boolean;
+  timebase_status: string;
+  note: string;
+}
+
+export interface MeasurementEventRow {
+  measurement_event_id: string;
+  frame_index_raw: number | null;
+  timestamp: string | null;
+  cycle_index_raw: number | null;
+  step_index_raw: number | null;
+  voltage_v: number | null;
+  current_a: number | null;
+  soc_reference_percent: number | null;
 }
 
 // ---------- client ----------
@@ -419,6 +554,74 @@ export const client = {
       `/runs/${encodeURIComponent(runId)}/user-actions/${encodeURIComponent(actionId)}`,
       { method: "POST", body: JSON.stringify({ values }) },
     ),
+  // ---------- BRW-024R intake ----------
+  intakeCapabilities: () =>
+    request<IntakeCapabilities>("/intake/capabilities"),
+  createExperiment: (body: {
+    battery_id: string;
+    experiment_id?: string;
+    name: string;
+    is_demo?: boolean;
+    notes?: string;
+  }) => request<LibraryExperiment>("/experiments", { method: "POST", body: JSON.stringify(body) }),
+  listLibraryExperiments: (params?: { limit?: number; cursor?: string; status?: string; battery_id?: string; is_demo?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.cursor) q.set("cursor", params.cursor);
+    if (params?.status) q.set("status", params.status);
+    if (params?.battery_id) q.set("battery_id", params.battery_id);
+    if (params?.is_demo !== undefined) q.set("is_demo", String(params.is_demo));
+    return request<{ experiments: LibraryExperiment[] }>(`/experiments?${q}`);
+  },
+  patchExperiment: (batteryId: string, experimentId: string, body: { name?: string; notes?: string }) =>
+    request<LibraryExperiment>(`/experiments/${batteryId}/${experimentId}`, {
+      method: "PATCH", body: JSON.stringify(body),
+    }),
+  archiveExperiment: (batteryId: string, experimentId: string) =>
+    request<LibraryExperiment>(`/experiments/${batteryId}/${experimentId}/archive`, { method: "POST", body: JSON.stringify({}) }),
+  loadDemo: (batteryId: string, experimentId: string) =>
+    request<LibraryExperiment>(`/experiments/${batteryId}/${experimentId}/load-demo`, { method: "POST", body: JSON.stringify({}) }),
+  createIntakeSession: (batteryId: string, experimentId: string) =>
+    request<IntakeSessionDetail>(`/experiments/${batteryId}/${experimentId}/intake-sessions`, { method: "POST", body: JSON.stringify({}) }),
+  getIntakeSession: (sessionId: string) =>
+    request<IntakeSessionDetail>(`/intake-sessions/${encodeURIComponent(sessionId)}`),
+  uploadIntakeAsset: (sessionId: string, role: AssetRole, file: File) => {
+    const form = new FormData();
+    form.append("role", role);
+    form.append("file", file);
+    return request<IntakeAssetRecord>(`/intake-sessions/${encodeURIComponent(sessionId)}/assets`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  listIntakeAssets: (sessionId: string) =>
+    request<{ assets: IntakeAssetRecord[] }>(`/intake-sessions/${encodeURIComponent(sessionId)}/assets`),
+  getIntakeAssetPreview: (sessionId: string, intakeAssetId: string) =>
+    request<Record<string, unknown>>(
+      `/intake-sessions/${encodeURIComponent(sessionId)}/assets/${encodeURIComponent(intakeAssetId)}/preview`,
+    ),
+  detectIntakeSession: (sessionId: string) =>
+    request<{ detections: AdapterDetection[] }>(`/intake-sessions/${encodeURIComponent(sessionId)}/detect`, { method: "POST", body: JSON.stringify({}) }),
+  validateIntakeSession: (sessionId: string) =>
+    request<ImportValidation & { next_action?: string }>(`/intake-sessions/${encodeURIComponent(sessionId)}/validate`, { method: "POST", body: JSON.stringify({}) }),
+  commitIntakeSession: (sessionId: string) =>
+    request<Record<string, unknown>>(`/intake-sessions/${encodeURIComponent(sessionId)}/commit`, { method: "POST", body: JSON.stringify({}) }),
+  cancelIntakeSession: (sessionId: string) =>
+    request<IntakeSessionDetail>(`/intake-sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: JSON.stringify({}) }),
+  listExperimentAssets: (batteryId: string, experimentId: string) =>
+    request<{ assets: Record<string, unknown>[] }>(`/experiments/${batteryId}/${experimentId}/assets`),
+  getIntakeHistory: (batteryId: string, experimentId: string) =>
+    request<{ history: Record<string, unknown>[] }>(`/experiments/${batteryId}/${experimentId}/intake-history`),
+
+  // ---------- BRW-025R data workspace ----------
+  getDataQuality: (batteryId: string, experimentId: string) =>
+    request<DataQuality>(`/experiments/${batteryId}/${experimentId}/data-quality`),
+  getSynchronization: (batteryId: string, experimentId: string) =>
+    request<SynchronizationSummary>(`/experiments/${batteryId}/${experimentId}/synchronization`),
+  getMeasurementEvents: (batteryId: string, experimentId: string, limit = 50, cursor?: number) =>
+    request<{ total: number; events: MeasurementEventRow[] }>(
+      `/experiments/${batteryId}/${experimentId}/measurement-events?limit=${limit}${cursor !== undefined ? `&cursor=${cursor}` : ""}`,
+    ),
 };
 
 /** client 覆盖的 API 路径清单 — drift 测试与 openapi-v1.json 对齐用。 */
@@ -463,4 +666,25 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/runs/{run_id}/retry" },
   { method: "GET", path: "/runs/{run_id}/user-actions" },
   { method: "POST", path: "/runs/{run_id}/user-actions/{action_id}" },
+  { method: "GET", path: "/intake/capabilities" },
+  { method: "POST", path: "/experiments" },
+  { method: "PATCH", path: "/experiments/{battery_id}/{experiment_id}" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/archive" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/load-demo" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/intake-sessions" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/intake-history" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/lifecycle-events" },
+  { method: "GET", path: "/intake-sessions/{session_id}" },
+  { method: "POST", path: "/intake-sessions/{session_id}/assets" },
+  { method: "GET", path: "/intake-sessions/{session_id}/assets" },
+  { method: "GET", path: "/intake-sessions/{session_id}/assets/{intake_asset_id}/preview" },
+  { method: "POST", path: "/intake-sessions/{session_id}/detect" },
+  { method: "POST", path: "/intake-sessions/{session_id}/validate" },
+  { method: "POST", path: "/intake-sessions/{session_id}/commit" },
+  { method: "POST", path: "/intake-sessions/{session_id}/cancel" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/data-quality" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/synchronization" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/measurement-events" },
 ];
+
+/** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

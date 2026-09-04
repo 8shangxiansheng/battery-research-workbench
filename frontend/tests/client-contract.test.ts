@@ -12,7 +12,7 @@ interface OpenApiSpec {
   paths: Record<string, Record<string, unknown>>;
 }
 
-const snapshotPath = resolve(new URL(import.meta.url).pathname, "../../docs/api/openapi-v1.json");
+const snapshotPath = resolve(new URL(import.meta.url).pathname, "../../../docs/api/openapi-v1.json");
 
 describe("OpenAPI v1 ↔ typed client drift", () => {
   let spec: OpenApiSpec;

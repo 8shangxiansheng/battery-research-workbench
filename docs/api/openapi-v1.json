@@ -744,6 +744,60 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/data-quality": {
+      "get": {
+        "operationId": "data_quality_api_v1_experiments__battery_id___experiment_id__data_quality_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Data Quality Api V1 Experiments  Battery Id   Experiment Id  Data Quality Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Quality",
+        "tags": [
+          "experiments",
+          "data"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/evidence": {
       "get": {
         "operationId": "evidence_api_v1_experiments__battery_id___experiment_id__evidence_get",
@@ -1173,6 +1227,143 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/load-demo": {
+      "post": {
+        "description": "Register a shipped demo experiment in the intake library (lifecycle-only).\n\nNo raw/processed data is copied; the library entry points at the existing\ndemo artifacts and is flagged is_demo=true.",
+        "operationId": "load_demo_api_v1_experiments__battery_id___experiment_id__load_demo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Load Demo Api V1 Experiments  Battery Id   Experiment Id  Load Demo Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Load Demo",
+        "tags": [
+          "experiments",
+          "data"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/measurement-events": {
+      "get": {
+        "operationId": "measurement_events_api_v1_experiments__battery_id___experiment_id__measurement_events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Measurement Events Api V1 Experiments  Battery Id   Experiment Id  Measurement Events Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Measurement Events",
+        "tags": [
+          "experiments",
+          "data"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/parameters": {
       "get": {
         "operationId": "list_parameters_api_v1_experiments__battery_id___experiment_id__parameters_get",
@@ -1438,6 +1629,60 @@
         "summary": "Get Status",
         "tags": [
           "experiments"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/synchronization": {
+      "get": {
+        "operationId": "synchronization_api_v1_experiments__battery_id___experiment_id__synchronization_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Synchronization Api V1 Experiments  Battery Id   Experiment Id  Synchronization Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Synchronization",
+        "tags": [
+          "experiments",
+          "data"
         ]
       }
     },
