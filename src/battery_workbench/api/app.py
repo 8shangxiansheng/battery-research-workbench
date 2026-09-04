@@ -144,12 +144,13 @@ def create_app(
     app.add_exception_handler(Exception, generic_error_handler)
     app.add_middleware(RequestContextMiddleware)
 
-    from battery_workbench.api.routes import experiments, resources, runs, system
+    from battery_workbench.api.routes import experiments, resources, runs, system, waveform
 
     app.include_router(system.router, prefix="/api/v1")
     app.include_router(experiments.router, prefix="/api/v1")
     app.include_router(runs.router, prefix="/api/v1")
     app.include_router(resources.router, prefix="/api/v1")
+    app.include_router(waveform.router, prefix="/api/v1")
     return app
 
 
