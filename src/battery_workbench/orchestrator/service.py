@@ -6,6 +6,7 @@ the same orchestrator engine and UserActionRequired structures.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,22 @@ class ScientificRunService:
         self, run_id: str, *, runs_root: Path | None = None
     ) -> list[dict[str, Any]]:
         return self._engine.list_user_actions(run_id, runs_root=runs_root)
+
+    def list_run_events(
+        self, run_id: str, *, runs_root: Path | None = None
+    ) -> list[dict[str, Any]]:
+        """Read persisted orchestrator events without executing or recomputing nodes."""
+        run = self.get_run(run_id, runs_root=runs_root)
+        events_path = Path(run["run_dir"]) / "run_events.jsonl"
+        if not events_path.is_file():
+            return []
+        events: list[dict[str, Any]] = []
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    events.append(payload)
+        return events
 
     def submit_user_action(
         self,
@@ -119,4 +136,22 @@ class ScientificRunService:
             battery_id="CELL_001",
             experiment_id="EXP_001",
             processed_root=self.processed_root,
+        )
+
+    def generate_report(
+        self,
+        *,
+        battery_id: str,
+        experiment_id: str,
+        target: str = "soc_reference_percent",
+        source_artifact_ids: list[str] | None = None,
+        sections: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Delegate aggregation-only report generation to the BRW-023 node."""
+        return self._engine.generate_report(
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            target=target,
+            source_artifact_ids=source_artifact_ids,
+            sections=sections,
         )

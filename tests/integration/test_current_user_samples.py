@@ -33,8 +33,5 @@ def test_current_ultrasound_sample_contract() -> None:
     assert frames[-1].frame_index == 3998
     assert all(len(frame.waveform) == 1250 for frame in frames)
 
-    intervals = [
-        b.elapsed_time_s - a.elapsed_time_s
-        for a, b in itertools.pairwise(frames)
-    ]
+    intervals = [b.elapsed_time_s - a.elapsed_time_s for a, b in itertools.pairwise(frames)]
     assert statistics.median(intervals) == pytest.approx(10.0, abs=1e-5)

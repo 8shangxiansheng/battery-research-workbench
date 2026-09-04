@@ -155,7 +155,9 @@ def _apply_user_overrides(
                 value=payload.get("value"),
                 unit=payload.get("unit", spec.unit),
                 source_type=SourceType.USER_SUPPLIED,
-                source_reference="configs/experiment_parameters.yaml",
+                source_reference=payload.get(
+                    "source_reference", "configs/experiment_parameters.yaml"
+                ),
                 evidence_note=payload.get("evidence_note", ""),
                 verification_status=payload.get("verification_status", "UNVERIFIED"),
                 scope_type="EXPERIMENT",
@@ -177,15 +179,14 @@ def build_parameter_set(
     waveform_store_path: Path | None = None,
     label_manifest_path: Path | None = None,
     user_overrides: dict[str, dict[str, Any]] | None = None,
+    battery_id: str = "CELL_001",
+    experiment_id: str = "EXP_001",
 ) -> Any:
     """Build one deterministic parameter set (registry contract entry point)."""
     from battery_workbench.parameters.persistence import write_parameter_payload
 
     output_root = Path(output_root)
     config = config or ParameterConfig()
-
-    battery_id = "CELL_001"
-    experiment_id = "EXP_001"
 
     if measurement_events_path is not None and Path(measurement_events_path).exists():
         events = pd.read_parquet(measurement_events_path)

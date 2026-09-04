@@ -139,106 +139,146 @@ def collect_results(
     # synchronization
     sync = _load_json(processed_root / "synchronization" / b / e / "synchronization_manifest.json")
     if sync:
-        results.append(ScientificResultRecord(
-            result_id="R::sync_aligned", result_type="SYNCHRONIZATION",
-            name="aligned ultrasound frames", value=sync.get("matches_frames"),
-            units="rows", scope="experiment", dataset_id=DATASET_ID,
-            evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-            evidence_ref="synchronization_manifest.json",
-            scientific_status="PROVISIONAL", limitations=["PROVISIONAL_TIMEBASE"],
-        ))
+        results.append(
+            ScientificResultRecord(
+                result_id="R::sync_aligned",
+                result_type="SYNCHRONIZATION",
+                name="aligned ultrasound frames",
+                value=sync.get("matches_frames"),
+                units="rows",
+                scope="experiment",
+                dataset_id=DATASET_ID,
+                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                evidence_ref="synchronization_manifest.json",
+                scientific_status="PROVISIONAL",
+                limitations=["PROVISIONAL_TIMEBASE"],
+            )
+        )
 
     # labels
     label_manifest = _load_json(processed_root / "labels" / b / e / "label_manifest.json")
     if label_manifest:
-        results.append(ScientificResultRecord(
-            result_id="R::label_soc_method", result_type="LABEL",
-            name="SOC method", value=label_manifest.get("soc_method"),
-            scope="experiment", dataset_id=DATASET_ID,
-            evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-            evidence_ref="label_manifest.json",
-            scientific_status="RETROSPECTIVE",
-            limitations=["RETROSPECTIVE_SOC_REFERENCE"],
-        ))
+        results.append(
+            ScientificResultRecord(
+                result_id="R::label_soc_method",
+                result_type="LABEL",
+                name="SOC method",
+                value=label_manifest.get("soc_method"),
+                scope="experiment",
+                dataset_id=DATASET_ID,
+                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                evidence_ref="label_manifest.json",
+                scientific_status="RETROSPECTIVE",
+                limitations=["RETROSPECTIVE_SOC_REFERENCE"],
+            )
+        )
 
     # dataset
     ds_dir = processed_root / "datasets" / b / e / "SOC" / DATASET_ID
     ds_manifest = _load_json(ds_dir / "dataset_manifest.json")
     if ds_manifest:
-        results.append(ScientificResultRecord(
-            result_id="R::dataset_status", result_type="DATA_QUALITY",
-            name="SOC dataset status", value=ds_manifest.get("dataset_status"),
-            scope="experiment", dataset_id=DATASET_ID,
-            evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-            evidence_ref="dataset_manifest.json",
-            scientific_status=ds_manifest.get("dataset_status", ""),
-        ))
+        results.append(
+            ScientificResultRecord(
+                result_id="R::dataset_status",
+                result_type="DATA_QUALITY",
+                name="SOC dataset status",
+                value=ds_manifest.get("dataset_status"),
+                scope="experiment",
+                dataset_id=DATASET_ID,
+                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                evidence_ref="dataset_manifest.json",
+                scientific_status=ds_manifest.get("dataset_status", ""),
+            )
+        )
 
     # split
     split_dir = processed_root / "splits" / b / e / DATASET_ID / SPLIT_ID
     split_manifest = _load_json(split_dir / "split_manifest.json")
     if split_manifest:
-        results.append(ScientificResultRecord(
-            result_id="R::split_readiness", result_type="READINESS",
-            name="split evaluation readiness", value=split_manifest.get("readiness_status"),
-            scope="experiment", dataset_id=DATASET_ID, split_id=SPLIT_ID,
-            evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-            evidence_ref="split_manifest.json",
-            scientific_status=split_manifest.get("readiness_status", ""),
-            limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION"],
-        ))
+        results.append(
+            ScientificResultRecord(
+                result_id="R::split_readiness",
+                result_type="READINESS",
+                name="split evaluation readiness",
+                value=split_manifest.get("readiness_status"),
+                scope="experiment",
+                dataset_id=DATASET_ID,
+                split_id=SPLIT_ID,
+                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                evidence_ref="split_manifest.json",
+                scientific_status=split_manifest.get("readiness_status", ""),
+                limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION"],
+            )
+        )
 
     # model comparison per fold per strategy
-    comp_path = processed_root / "models" / b / e / DATASET_ID / SPLIT_ID / "model_comparison.parquet"
+    comp_path = (
+        processed_root / "models" / b / e / DATASET_ID / SPLIT_ID / "model_comparison.parquet"
+    )
     if comp_path.exists():
         comp = pd.read_parquet(comp_path)
         for _, row in comp.iterrows():
             for metric in ("MAE", "RMSE", "R2"):
-                results.append(ScientificResultRecord(
-                    result_id=f"R::model_{row['strategy']}_f{row['fold_index']}_{metric}",
-                    result_type="MODEL_METRIC",
-                    name=f"{row['strategy']} fold{row['fold_index']} {metric}",
-                    value=float(row[metric]) if pd.notna(row[metric]) else None,
-                    units="percent" if metric == "MAE" else "",
-                    scope=f"fold:{row['fold_index']}",
-                    source_artifact_id=row["model_id"],
-                    dataset_id=DATASET_ID, split_id=SPLIT_ID,
-                    model_id=row["model_id"], model_family=str(row["strategy"]),
-                    evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-                    evidence_ref="model_comparison.parquet",
-                    fold_index=int(row["fold_index"]),
-                    strategy=str(row["strategy"]),
-                    limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION"],
-                    pooled_rows_usage="POOLED_ROW_DIAGNOSTIC" if metric != "MAE" else "",
-                ))
+                results.append(
+                    ScientificResultRecord(
+                        result_id=f"R::model_{row['strategy']}_f{row['fold_index']}_{metric}",
+                        result_type="MODEL_METRIC",
+                        name=f"{row['strategy']} fold{row['fold_index']} {metric}",
+                        value=float(row[metric]) if pd.notna(row[metric]) else None,
+                        units="percent" if metric == "MAE" else "",
+                        scope=f"fold:{row['fold_index']}",
+                        source_artifact_id=row["model_id"],
+                        dataset_id=DATASET_ID,
+                        split_id=SPLIT_ID,
+                        model_id=row["model_id"],
+                        model_family=str(row["strategy"]),
+                        evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                        evidence_ref="model_comparison.parquet",
+                        fold_index=int(row["fold_index"]),
+                        strategy=str(row["strategy"]),
+                        limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION"],
+                        pooled_rows_usage="POOLED_ROW_DIAGNOSTIC" if metric != "MAE" else "",
+                    )
+                )
         # macro comparison
         mcomp = _load_json(comp_path.parent / "model_comparison.json") or []
         for c in mcomp:
-            results.append(ScientificResultRecord(
-                result_id=f"R::macro_{c['strategy']}_MAE",
-                result_type="MODEL_COMPARISON",
-                name=f"{c['strategy']} macro MAE",
-                value=c.get("macro_MAE"), units="percent", scope="experiment",
-                dataset_id=DATASET_ID, split_id=SPLIT_ID,
-                source_run_id=latest_run_id, model_family=c["strategy"],
-                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-                evidence_ref="model_comparison.json",
-                strategy=c["strategy"],
-                limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION", "TWO_CYCLES_ONLY"],
-            ))
+            results.append(
+                ScientificResultRecord(
+                    result_id=f"R::macro_{c['strategy']}_MAE",
+                    result_type="MODEL_COMPARISON",
+                    name=f"{c['strategy']} macro MAE",
+                    value=c.get("macro_MAE"),
+                    units="percent",
+                    scope="experiment",
+                    dataset_id=DATASET_ID,
+                    split_id=SPLIT_ID,
+                    source_run_id=latest_run_id,
+                    model_family=c["strategy"],
+                    evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                    evidence_ref="model_comparison.json",
+                    strategy=c["strategy"],
+                    limitations=["LIMITED_CROSS_CYCLE_GENERALIZATION", "TWO_CYCLES_ONLY"],
+                )
+            )
 
     # tof readiness
     tof = _load_json(processed_root / "features_physical" / b / e / "tof_activation_manifest.json")
     if tof:
-        results.append(ScientificResultRecord(
-            result_id="R::tof_status", result_type="READINESS",
-            name="TOF status", value=tof.get("tof_status"),
-            scope="experiment", dataset_id=DATASET_ID,
-            evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
-            evidence_ref="tof_activation_manifest.json",
-            scientific_status="BLOCKED",
-            limitations=["TOF_UNAVAILABLE_OR_BLOCKED"],
-        ))
+        results.append(
+            ScientificResultRecord(
+                result_id="R::tof_status",
+                result_type="READINESS",
+                name="TOF status",
+                value=tof.get("tof_status"),
+                scope="experiment",
+                dataset_id=DATASET_ID,
+                evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+                evidence_ref="tof_activation_manifest.json",
+                scientific_status="BLOCKED",
+                limitations=["TOF_UNAVAILABLE_OR_BLOCKED"],
+            )
+        )
 
     return results
 

@@ -1867,6 +1867,8 @@ class ScientificReportNode(WorkflowNode):
             target=str(plan.target or "soc_reference_percent"),
             battery_id=b,
             experiment_id=e,
+            source_artifact_ids=list(plan.scientific_report.get("source_artifact_ids") or []),
+            sections=list(plan.scientific_report.get("section_names") or []),
         )
         ClaimGuard.check("current baselines did not outperform Dummy")
         ClaimGuard.check("TOF currently blocked / unavailable")
@@ -1878,15 +1880,17 @@ class ScientificReportNode(WorkflowNode):
         lineage = build_lineage_snapshot(Path(ctx.processed_root), b, e)
         git_commit = _git_commit(Path(ctx.processed_root).parent.parent)
 
-        sections = dict(plan.scientific_report.get("sections") or {})
-        if not sections:
-            for section in REPORT_SECTIONS:
-                sections[section] = {"note": "see result_registry / reproducibility_manifest"}
+        section_payloads = dict(plan.scientific_report.get("sections") or {})
+        if not section_payloads:
+            for section in spec.sections or REPORT_SECTIONS:
+                section_payloads[section] = {
+                    "note": "see result_registry / reproducibility_manifest"
+                }
 
         report = {
             "report_id": spec.report_id,
             "analysis_mode": "AGGREGATION_ONLY (no scientific recomputation)",
-            "sections": sections,
+            "sections": section_payloads,
             "experiment_record": exp_record.model_dump(mode="json"),
             "result_registry": [r.model_dump(mode="json") for r in results],
             "evidence_registry": evidence_registry,
@@ -1916,7 +1920,8 @@ class ScientificReportNode(WorkflowNode):
                 "parameter_set_ids": exp_record.parameter_set_ids,
             },
             "scientific_findings": [
-                "current candidate ultrasonic features do not demonstrate stable " + "held-out-cycle SOC predictive advantage under this protocol",
+                "current candidate ultrasonic features do not demonstrate stable "
+                + "held-out-cycle SOC predictive advantage under this protocol",
             ],
             "limitations_summary": [l["code"] for l in limitations],
         }

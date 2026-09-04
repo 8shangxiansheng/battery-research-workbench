@@ -654,6 +654,8 @@ class PipelineOrchestrator:
         battery_id: str,
         experiment_id: str,
         target: str = "soc_reference_percent",
+        source_artifact_ids: list[str] | None = None,
+        sections: list[str] | None = None,
     ) -> dict[str, Any]:
         """Aggregate existing artifacts into a scientific report (no recomputation)."""
         plan = self.plan_run(
@@ -662,7 +664,10 @@ class PipelineOrchestrator:
             experiment_id=experiment_id,
             dry_run=False,
             target=target,
-            scientific_report={"sections": []},
+            scientific_report={
+                "source_artifact_ids": source_artifact_ids or [],
+                "section_names": sections or [],
+            },
         )
         plan = plan.model_copy(update={"stages": ["SCIENTIFIC_REPORT"]})
         run_dir = self.runs_root / f"report-{plan.plan_id.split('::')[1][:16]}"
