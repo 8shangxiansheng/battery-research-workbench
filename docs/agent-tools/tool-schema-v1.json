@@ -1,0 +1,49 @@
+{
+  "tool_contract_version": "1.0.0",
+  "tool_spec_schema": {
+    "required_metadata": [
+      "name",
+      "description",
+      "category",
+      "read_only",
+      "side_effect",
+      "confirmation_required",
+      "scientific_scope",
+      "idempotent",
+      "returns_evidence",
+      "prerequisites",
+      "allowed_when",
+      "blocked_when"
+    ],
+    "result_envelope": [
+      "status",
+      "data",
+      "scientific_context",
+      "evidence",
+      "next_actions",
+      "request_id"
+    ],
+    "statuses": [
+      "SUCCEEDED",
+      "FAILED",
+      "BLOCKED",
+      "WAITING_FOR_USER",
+      "CONFIRMATION_REQUIRED",
+      "REUSED"
+    ],
+    "confirmation_policies": [
+      "NO_CONFIRMATION",
+      "USER_CONFIRMATION",
+      "USER_INPUT_REQUIRED"
+    ]
+  },
+  "categories": [
+    "dataset_evaluation",
+    "discovery",
+    "features_analysis",
+    "intake",
+    "parameters",
+    "reporting",
+    "waveform_gates"
+  ]
+}

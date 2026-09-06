@@ -1,0 +1,1176 @@
+{
+  "tool_contract_version": "1.0.0",
+  "tool_count": 36,
+  "tools": [
+    {
+      "name": "list_experiments",
+      "description": "列出实验库中的实验（分页、可按状态/Demo过滤）",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "experiment library",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_experiment",
+      "description": "查看单个实验的高层摘要与最新产物",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "experiment",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_data_quality",
+      "description": "查看电气/超声数据质量聚合（API 计算）",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "data quality",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_synchronization",
+      "description": "查看同步状态（PROVISIONAL 时间基等）",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "synchronization",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_measurement_events",
+      "description": "分页预览测量事件",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "measurement events",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_run",
+      "description": "查看运行状态/节点/事件",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "runs",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_lineage",
+      "description": "查看产物血缘链",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "lineage",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_intake_capabilities",
+      "description": "查看 intake 支持的 adapter/角色/限制",
+      "category": "discovery",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "intake capabilities",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "create_experiment",
+      "description": "创建新实验（显式 battery/experiment id 或自动 ID）",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "experiment lifecycle",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "name"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "load_demo",
+      "description": "将内置 Demo 实验注册进实验库（is_demo=true，幂等）",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "experiment library",
+      "idempotent": true,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "start_intake",
+      "description": "为实验启动 intake session",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "intake session",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "upload_experiment_asset",
+      "description": "上传资产到 intake session（经 API multipart，禁止本地路径）",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "intake asset",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "file_ref": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "file_ref",
+          "role"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "detect_asset_format",
+      "description": "运行 BRW-007 adapter 格式检测",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "adapter detection",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "validate_intake",
+      "description": "运行三维度导入验证（格式/元数据/就绪）",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "intake validation",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "commit_intake",
+      "description": "提交 intake：staging→canonical raw+manifest（需确认）",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "intake commit",
+      "idempotent": true,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "cancel_intake",
+      "description": "取消 intake session",
+      "category": "intake",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "intake session",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_missing_parameters",
+      "description": "查看缺失的科学参数（fs/trigger/timezone 等）",
+      "category": "parameters",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "parameters",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "set_experiment_parameter",
+      "description": "设置实验参数（必须由用户提供，禁止推断）",
+      "category": "parameters",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_INPUT_REQUIRED",
+      "scientific_scope": "parameters",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "parameter_name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "parameter_name",
+          "value"
+        ]
+      },
+      "no_guess_parameters": [
+        "ultrasound.sampling_rate_hz",
+        "ultrasound.trigger_sample_index",
+        "experiment.timezone",
+        "experiment.ultrasound_path_length_m",
+        "experiment.reference_capacity_ah"
+      ]
+    },
+    {
+      "name": "list_waveform_frames",
+      "description": "列出波形帧元数据（不含波形体）",
+      "category": "waveform_gates",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "waveform",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_waveform_frame",
+      "description": "有界降采样预览一帧波形（不传全量 3999×1250）",
+      "category": "waveform_gates",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "waveform",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "frame_index": {
+            "type": "integer"
+          },
+          "max_points": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "frame_index"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "list_gates",
+      "description": "列出已提交闸门",
+      "category": "waveform_gates",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "gates",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "propose_gate",
+      "description": "提议闸门（draft，只读无副作用）",
+      "category": "waveform_gates",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "gates proposal",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "start_sample": {
+            "type": "integer"
+          },
+          "end_sample": {
+            "type": "integer"
+          },
+          "waveform_length": {
+            "type": "integer"
+          },
+          "gate_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "start_sample",
+          "end_sample"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "create_gate",
+      "description": "提交闸门（side effect + 确认）",
+      "category": "waveform_gates",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "gates",
+      "idempotent": true,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "gate_name": {
+            "type": "string"
+          },
+          "start_sample": {
+            "type": "integer"
+          },
+          "end_sample": {
+            "type": "integer"
+          },
+          "waveform_length": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "gate_name",
+          "start_sample",
+          "end_sample"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "list_available_features",
+      "description": "列出特征清单（CORE/DERIVED/AUXILIARY，含 blocked 原因）",
+      "category": "features_analysis",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "features",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_feature",
+      "description": "查看单个特征详情（availability/gate/missing reason）",
+      "category": "features_analysis",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "features",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "feature_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "feature_name"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "analyze_feature_relationships",
+      "description": "运行 BRW-021 特征分析（EXPLORATORY 或 TRAIN_ONLY_ML_SAFE）",
+      "category": "features_analysis",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "feature analysis",
+      "idempotent": false,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "analysis_mode": {
+            "type": "string",
+            "enum": [
+              "EXPLORATORY_FULL_DATA",
+              "TRAIN_ONLY_ML_SAFE"
+            ]
+          },
+          "target": {
+            "type": "string"
+          },
+          "candidate_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "analysis_mode",
+          "target",
+          "candidate_features"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "propose_feature_selection",
+      "description": "提议特征选择（draft，只读）",
+      "category": "features_analysis",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "feature selection",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "selected_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "selected_features"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "confirm_feature_selection",
+      "description": "确认特征选择（UserAction 合同）",
+      "category": "features_analysis",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "feature selection",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "selected_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "selected_features"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "prepare_soc_dataset",
+      "description": "构建 SOC 数据集（保留 leakage/forbidden guard）",
+      "category": "dataset_evaluation",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "dataset",
+      "idempotent": true,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "selected_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "prepare_grouped_evaluation_split",
+      "description": "创建分组评估划分（LEAVE_ONE_GROUP_OUT；组不足→WAITING_FOR_USER）",
+      "category": "dataset_evaluation",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "split",
+      "idempotent": true,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "dataset_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "dataset_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "run_limited_soc_baselines",
+      "description": "运行固定基线协议（无 tuning）",
+      "category": "dataset_evaluation",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "modeling",
+      "idempotent": true,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "dataset_id": {
+            "type": "string"
+          },
+          "split_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "dataset_id",
+          "split_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_model_comparison",
+      "description": "查看模型对比（含 Dummy 基线）",
+      "category": "dataset_evaluation",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "modeling",
+      "idempotent": false,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "generate_scientific_report",
+      "description": "生成科学报告（聚合既有产物，幂等 REUSED）",
+      "category": "reporting",
+      "read_only": false,
+      "side_effect": true,
+      "confirmation_required": "USER_CONFIRMATION",
+      "scientific_scope": "reporting",
+      "idempotent": true,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_scientific_report",
+      "description": "查看报告内容",
+      "category": "reporting",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "reporting",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "report_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "explain_result_evidence",
+      "description": "解释科学数值的证据链（ClaimGuard 保护）",
+      "category": "reporting",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "evidence",
+      "idempotent": false,
+      "returns_evidence": true,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          },
+          "result_id": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "result_id"
+        ]
+      },
+      "no_guess_parameters": []
+    },
+    {
+      "name": "inspect_evidence",
+      "description": "查看证据注册表",
+      "category": "reporting",
+      "read_only": true,
+      "side_effect": false,
+      "confirmation_required": "NO_CONFIRMATION",
+      "scientific_scope": "evidence",
+      "idempotent": false,
+      "returns_evidence": false,
+      "prerequisites": [],
+      "allowed_when": [],
+      "blocked_when": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "battery_id": {
+            "type": "string"
+          },
+          "experiment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id"
+        ]
+      },
+      "no_guess_parameters": []
+    }
+  ]
+}
