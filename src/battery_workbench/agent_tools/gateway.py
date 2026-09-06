@@ -350,7 +350,11 @@ class ToolGateway:
         b = inputs.get("battery_id") or ctx.battery_id
         e = inputs.get("experiment_id") or ctx.experiment_id
         data = _me(
-            _FakeRequest(self.service), b, e, int(inputs.get("limit", 20)), inputs.get("cursor")  # type: ignore[arg-type]
+            _FakeRequest(self.service),
+            b,
+            e,
+            int(inputs.get("limit", 20)),
+            inputs.get("cursor"),  # type: ignore[arg-type]
         )["data"]
         return self._wrap(data, ctx)
 
@@ -408,7 +412,8 @@ class ToolGateway:
 
         data = _load_demo(
             _FakeRequest(self.service),  # type: ignore[arg-type]
-            inputs["battery_id"], inputs["experiment_id"],
+            inputs["battery_id"],
+            inputs["experiment_id"],
         )["data"]
         return self._wrap(data, ctx)
 
@@ -601,7 +606,7 @@ class ToolGateway:
         r = row.iloc[0]
         zg = zarr.open_group(str(base / "waveforms.zarr"), mode="r")
         wave = np.asarray(
-            zg[str(getattr(r, "waveform_group"))][int(getattr(r, "waveform_row_index"))]  # type: ignore[index]
+            zg[str(r.waveform_group)][int(r.waveform_row_index)]  # type: ignore[index]
         )
         max_points = min(int(inputs.get("max_points", 250)), 1000)
         step = max(1, len(wave) // max_points)
