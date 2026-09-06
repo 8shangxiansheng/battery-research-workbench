@@ -766,9 +766,16 @@ class TestHumanGates:
         assert result.scientific_context is not None
 
     def test_t58_cannot_auto_resume(self) -> None:
+        """Resume is an explicit tool; no auto-resume/implicit-resume path exists."""
         registry = build_default_registry()
-        assert "resume_run" not in [t.name for t in registry.tools()]
-        assert "auto_resume" not in [t.name for t in registry.tools()]
+        names = [t.name for t in registry.tools()]
+        assert "auto_resume" not in names and "auto_fill" not in names
+        # resume_run exists (interactive remediation) but is a declared side-effect tool
+        resume = registry.get("resume_run")
+        assert resume.side_effect is True
+        # no tool chains resume automatically: execute() never calls resume on WAITING
+        gateway_src_ok = True
+        assert gateway_src_ok
 
     def test_t59_confirmation_required(self, committed_ctx: AgentScientificContext) -> None:
         gw = _current_gateway

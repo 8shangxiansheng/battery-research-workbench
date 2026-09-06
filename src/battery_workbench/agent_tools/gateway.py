@@ -8,7 +8,7 @@ audit logging, and the unified result envelope.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from battery_workbench.agent_tools.eligibility import (
     EligibilityEngine,
@@ -34,6 +34,7 @@ from battery_workbench.agent_tools.security import (
 )
 from battery_workbench.api.errors import APIError
 from battery_workbench.api.service import WorkbenchService
+from battery_workbench.orchestrator.engine import OrchestratorError
 from battery_workbench.reporting.schemas import ClaimGuard
 
 
@@ -172,6 +173,34 @@ class ToolGateway:
                 tool_name, context, inputs, result, confirmation_status="NOT_REQUIRED"
             )
 
+        # no-guess guard runs BEFORE confirmation: invalid scientific input is
+        # rejected outright regardless of confirmation state (§9)
+        no_guess = getattr(tool, "no_guess_parameters", [])
+        values_field = inputs.get("values")
+        if no_guess and isinstance(values_field, dict):
+            scientific_keys = {
+                k
+                for k in values_field
+                if isinstance(k, str) and k.startswith(("ultrasound.", "experiment."))
+            }
+            if scientific_keys and not (values_field.get("_source") or values_field.get("source")):
+                return self._finish(
+                    tool_name,
+                    context,
+                    inputs,
+                    ToolResult(
+                        status="FAILED",
+                        error={
+                            "code": "SECURITY_VIOLATION",
+                            "message": (
+                                f"values for {sorted(scientific_keys)} require a '_source' "
+                                "field identifying the human provider (agent must not guess)"
+                            ),
+                        },
+                    ),
+                    confirmation_status="NOT_REQUIRED",
+                )
+
         # confirmation policy
         if tool.confirmation_required in (
             ConfirmationPolicy.USER_CONFIRMATION,
@@ -220,6 +249,12 @@ class ToolGateway:
                 result = ToolResult(
                     status="FAILED",
                     error={"code": exc.code.value, "message": exc.message, "details": exc.details},
+                    scientific_context=self._scientific_context(context),
+                )
+            except OrchestratorError as exc:
+                result = ToolResult(
+                    status="FAILED",
+                    error={"code": "ORCHESTRATOR_ERROR", "message": str(exc)},
                     scientific_context=self._scientific_context(context),
                 )
             except ToolBlockedError as exc:
@@ -860,6 +895,119 @@ class ToolGateway:
                     else ""
                 )
         return self._wrap(data, ctx, evidence=evidence)
+
+    # ---------- run execution ----------
+    _ALLOWED_PROFILES: ClassVar[set[str]] = {
+        "INGEST_TO_MEASUREMENT_EVENTS",
+        "SCIENTIFIC_ANALYSIS",
+        "FULL_PRE_MODEL",
+    }
+
+    def _tool_start_run(self, ctx: AgentScientificContext, inputs: dict[str, Any]) -> ToolResult:
+        profile = inputs["profile"]
+        if profile not in self._ALLOWED_PROFILES:
+            raise ToolBlockedError(
+                "start_run", f"profile {profile!r} is not an allowed fixed profile"
+            )
+        b = inputs.get("battery_id") or ctx.battery_id
+        e = inputs.get("experiment_id") or ctx.experiment_id
+        plan = self.service._runs.plan_run(
+            runs_root=self.service.runs_root,
+            profile=profile,
+            battery_id=b,
+            experiment_id=e,
+            dry_run=bool(inputs.get("dry_run", False)),
+            **({"stages": inputs["stages"]} if inputs.get("stages") else {}),
+            **({"parameters": inputs["parameters"]} if inputs.get("parameters") else {}),
+            **({"split": inputs["split"]} if inputs.get("split") else {}),
+        )
+        result = self.service._runs.start_run(plan, runs_root=self.service.runs_root)
+        ctx.run_id = result.get("run_id")
+        return self._wrap(result, ctx, next_actions=["list_pending_user_actions", "inspect_run"])
+
+    # ---------- human interaction (resume loop) ----------
+    def _owned_run(self, ctx: AgentScientificContext, run_id: str) -> dict[str, Any]:
+        """Load a run and verify it belongs to the bound experiment (§5 isolation)."""
+        run = self.service.get_run(run_id)
+        run_battery = run.get("battery_id")
+        run_experiment = run.get("experiment_id")
+        if (
+            run_battery
+            and run_experiment
+            and (run_battery, run_experiment) != (ctx.battery_id, ctx.experiment_id)
+        ):
+            raise PermissionError(
+                f"run {run_id} belongs to {run_battery}/{run_experiment}, "
+                f"not the bound experiment {ctx.composite_id}"
+            )
+        return run
+
+    def _tool_list_pending_user_actions(
+        self, ctx: AgentScientificContext, inputs: dict[str, Any]
+    ) -> ToolResult:
+        run_id = inputs.get("run_id") or ctx.run_id
+        if not run_id:
+            raise PermissionError("run_id required")
+        run = self._owned_run(ctx, run_id)
+        actions = run.get("user_actions", [])
+        return self._wrap(
+            {"run_id": run_id, "run_status": run.get("status"), "pending_actions": actions},
+            ctx,
+            next_actions=[
+                f"submit_user_action(action_id={a.get('action_id')}) with user-provided values"
+                for a in actions
+            ]
+            or ["run has no pending actions"],
+        )
+
+    def _tool_submit_user_action(
+        self, ctx: AgentScientificContext, inputs: dict[str, Any]
+    ) -> ToolResult:
+        run_id = inputs.get("run_id") or ctx.run_id
+        if not run_id:
+            raise PermissionError("run_id required")
+        self._owned_run(ctx, run_id)  # ownership binding
+        action_id = inputs["action_id"]
+        values = dict(inputs.get("values") or {})
+        # provenance marker is tool-layer metadata, never a scientific parameter
+        values.pop("_source", None)
+        result = self.service._runs.submit_user_action(
+            run_id, action_id, values=values, runs_root=self.service.runs_root
+        )
+        return self._wrap(result, ctx, next_actions=["resume_run"])
+
+    def _tool_resume_run(self, ctx: AgentScientificContext, inputs: dict[str, Any]) -> ToolResult:
+        run_id = inputs.get("run_id") or ctx.run_id
+        if not run_id:
+            raise PermissionError("run_id required")
+        run = self._owned_run(ctx, run_id)
+        # lineage preservation: resume_run appends RUN_RESUMED to the SAME run_dir (BRW-019 §14)
+        if run.get("status") not in ("WAITING_FOR_USER", "FAILED", "PARTIAL"):
+            # submit_user_action already resumed internally (BRW-019 submit→resume
+            # contract). Idempotent: same run, no new run created.
+            return self._wrap(
+                {
+                    **run,
+                    "resumed_run_id": run_id,
+                    "original_run_id": run_id,
+                    "lineage_preserved": True,
+                    "note": "already resumed/finished; no new run created",
+                },
+                ctx,
+                next_actions=["inspect_run"],
+            )
+        result = self.service._runs.resume_run(run_id, runs_root=self.service.runs_root)
+        ctx.run_id = run_id
+        return self._wrap(
+            {
+                **result,
+                "resumed_run_id": run_id,
+                "original_run_id": run_id,
+                "lineage_preserved": True,
+            },
+            ctx,
+            next_actions=["inspect_run", "list_pending_user_actions"],
+        )
 
     # ---------- reporting / evidence ----------
     def _tool_generate_scientific_report(

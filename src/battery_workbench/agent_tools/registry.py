@@ -591,6 +591,79 @@ def build_default_registry() -> AgentToolRegistry:
         )
     )
 
+    # ---------- run execution ----------
+    r.register(
+        _t(
+            "start_run",
+            "启动 orchestrator run（仅限固定 profile；确认后执行）",
+            ToolCategory.DISCOVERY,
+            read_only=False,
+            side_effect=True,
+            confirmation=ConfirmationPolicy.USER_CONFIRMATION,
+            scope="runs",
+            properties={
+                "profile": {
+                    "type": "string",
+                    "enum": ["INGEST_TO_MEASUREMENT_EVENTS", "SCIENTIFIC_ANALYSIS"],
+                },
+                "battery_id": STR,
+                "experiment_id": STR,
+                "stages": {"type": "array", "items": STR},
+                "parameters": {"type": "object"},
+                "split": {"type": "object"},
+                "dry_run": BOOL,
+            },
+            required=["profile", "battery_id", "experiment_id"],
+        )
+    )
+
+    # ---------- human interaction (resume loop) ----------
+    r.register(
+        _t(
+            "list_pending_user_actions",
+            "列出 run 的待处理科学动作（WAITING_FOR_USER）",
+            ToolCategory.DISCOVERY,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="runs",
+            properties={"run_id": STR},
+            required=["run_id"],
+        )
+    )
+    r.register(
+        _t(
+            "submit_user_action",
+            "提交用户对科学动作的显式回答（必须来自用户，禁止 Agent 猜值）",
+            ToolCategory.DISCOVERY,
+            read_only=False,
+            side_effect=True,
+            confirmation=ConfirmationPolicy.USER_CONFIRMATION,
+            scope="runs",
+            properties={"run_id": STR, "action_id": STR, "values": {"type": "object"}},
+            required=["run_id", "action_id", "values"],
+            no_guess=[
+                "ultrasound.sampling_rate_hz",
+                "ultrasound.trigger_sample_index",
+                "experiment.timezone",
+                "experiment.ultrasound_path_length_m",
+            ],
+        )
+    )
+    r.register(
+        _t(
+            "resume_run",
+            "恢复原 run（保留 lineage，追加 RUN_RESUMED 事件）",
+            ToolCategory.DISCOVERY,
+            read_only=False,
+            side_effect=True,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="runs",
+            properties={"run_id": STR},
+            required=["run_id"],
+        )
+    )
+
     # ---------- reporting / provenance ----------
     r.register(
         _t(

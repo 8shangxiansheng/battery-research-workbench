@@ -78,7 +78,7 @@ def test_current_real_ambiguity_regression_t30(tmp_path: Path) -> None:
         row = out[out["frame_index_raw"] == fi].iloc[0]
         assert row["event_quality_status"] == "AMBIGUOUS_SYNC"
         assert bool(row["analysis_eligible"]) is False
-        assert row["electrical_record_locator"] is None
+        assert pd.isna(row["electrical_record_locator"])
         assert pd.isna(row["voltage_v"])
         # Candidate relation preserved for the event.
         rel = pd.read_parquet(
@@ -123,7 +123,7 @@ def test_current_real_golden_frames_t31(tmp_path: Path) -> None:
     # Frame 3998 ambiguous.
     row3998 = out[out["frame_index_raw"] == 3998].iloc[0]
     assert row3998["event_quality_status"] == "AMBIGUOUS_SYNC"
-    assert row3998["electrical_record_locator"] is None
+    assert pd.isna(row3998["electrical_record_locator"])
 
 
 @pytest.mark.skipif(
