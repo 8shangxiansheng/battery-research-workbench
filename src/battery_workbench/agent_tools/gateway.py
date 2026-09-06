@@ -350,7 +350,7 @@ class ToolGateway:
         b = inputs.get("battery_id") or ctx.battery_id
         e = inputs.get("experiment_id") or ctx.experiment_id
         data = _me(
-            _FakeRequest(self.service),
+            _FakeRequest(self.service),  # type: ignore[arg-type]
             b,
             e,
             int(inputs.get("limit", 20)),
