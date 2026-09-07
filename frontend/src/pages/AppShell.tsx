@@ -1,6 +1,11 @@
 /**
  * BRW-025R V2 AppShell（§19）：一级导航按科研生命周期分组。
- * 实验库为首页；实验级页面挂在 /experiments/:batteryId/:experimentId/*。
+ * 首页 = Experiment Library；实验级页面挂 /experiments/:batteryId/:experimentId/*。
+ *
+ * 路由结构（嵌套 Routes 必须用相对路径 —— 绝对路径在 descendant Routes
+ * 中与祖先参数前缀冲突导致空白渲染）：
+ *   main: /experiments/:bId/:eId/* → AppShell
+ *   AppShell: "overview" | "data" | "waveform" | ... （相对）
  */
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useParams } from "react-router-dom";
@@ -136,12 +141,13 @@ function ExperimentLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function V2AppShell() {
+/** Library 路由（首页 + wizard + runs），无实验上下文。 */
+export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<LibraryHome />} />
-      <Route path="/new" element={<WizardEntry />} />
-      <Route path="/new/:sessionId" element={<WizardEntry />} />
+      <Route path="/" element={<ExperimentLibraryPage />} />
+      <Route path="/new" element={<NewExperimentWizardPage />} />
+      <Route path="/new/:sessionId" element={<NewExperimentWizardPage />} />
       <Route path="/runs" element={<RunsPage />} />
       <Route
         path="/experiments/:batteryId/:experimentId/*"
@@ -163,13 +169,7 @@ export function V2AppShell() {
           </ExperimentLayout>
         }
       />
+      <Route path="*" element={<ExperimentLibraryPage />} />
     </Routes>
   );
-
-  function LibraryHome() {
-    return <ExperimentLibraryPage />;
-  }
-  function WizardEntry() {
-    return <NewExperimentWizardPage />;
-  }
 }
