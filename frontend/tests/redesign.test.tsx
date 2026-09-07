@@ -114,8 +114,8 @@ describe("OverviewPage（§8）", () => {
     renderPage(<OverviewPage />);
     await waitFor(() => {
       // finding precedes table (§18: scientific finding first)
-      expect(screen.getByText(/No evaluated model outperformed Dummy Mean/)).toBeInTheDocument();
-      expect(screen.getByText(/Dummy Mean macro MAE: 29.61/)).toBeInTheDocument();
+      expect(screen.getByText(/当前没有任何模型跑赢 Dummy 基准/)).toBeInTheDocument();
+      expect(screen.getByText(/Dummy 均值宏观 MAE：29.61/)).toBeInTheDocument();
     });
   });
 });
@@ -126,15 +126,15 @@ describe("ModelsWorkbench（§18）", () => {
     const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
     renderPage(<ModelsWorkbench />);
     await waitFor(() => {
-      expect(screen.getByText(/No evaluated model outperformed Dummy Mean/i)).toBeInTheDocument();
+      expect(screen.getByText(/当前没有任何模型跑赢 Dummy 基准/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/Did any model beat a simple baseline/i)).toBeInTheDocument();
+    expect(screen.getByText(/有没有模型跑赢简单基线/)).toBeInTheDocument();
   });
   it("no tuning controls anywhere", async () => {
     clientMock.getResults.mockResolvedValue({ data: demoResults, meta: {} });
     const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
     renderPage(<ModelsWorkbench />);
-    await waitFor(() => screen.getByText(/No evaluated model outperformed Dummy Mean/i));
+    await waitFor(() => screen.getByText(/当前没有任何模型跑赢 Dummy 基准/));
     expect(screen.queryByLabelText(/tuning/i)).not.toBeInTheDocument();
     expect(document.querySelectorAll("input[type=number]").length).toBe(0);
   });
@@ -149,8 +149,8 @@ describe("AnalysisWorkbench（§14/§17）", () => {
     const { AnalysisWorkbench } = await import("../src/pages/redesign/AnalysisWorkbench");
     renderPage(<AnalysisWorkbench />);
     await waitFor(() => {
-      expect(screen.getAllByText(/Explore relationships/).length).toBeGreaterThan(0);
-      expect(screen.getByText(/Uses training data only to avoid leakage/)).toBeInTheDocument();
+      expect(screen.getAllByText(/探索数据关系/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/仅使用训练组数据，避免数据泄漏/)).toBeInTheDocument();
     });
   });
 });
@@ -169,9 +169,9 @@ describe("Waveform workbench（§9/§11）", () => {
     const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
     renderPage(<WaveformWorkbench />);
     await waitFor(() => {
-      expect(screen.getByText("TOF")).toBeInTheDocument();
-      expect(screen.getByText(/Sampling rate required/i)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /add sampling rate/i })).toBeInTheDocument();
+      expect(screen.getByText("飞行时间 TOF")).toBeInTheDocument();
+      expect(screen.getByText(/需要先提供采样频率/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /添加采样频率|add sampling rate/i })).toBeInTheDocument();
     });
     expect(screen.queryByText(/^0$/)).not.toBeInTheDocument();
   });
