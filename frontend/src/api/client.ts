@@ -396,6 +396,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope
 }
 
 export const client = {
+  listParameters: (batteryId: string, experimentId: string) =>
+    request<{ parameter_set_id: string; effective: Record<string, unknown> }[]>(`/experiments/${batteryId}/${experimentId}/parameters`),
+  createParameters: (batteryId: string, experimentId: string, body: { values: Record<string, { value: number; unit: string }>; source: string; verified: boolean }) =>
+    request<{ parameter_set_id: string; sampling_rate_status: string; status: string }>(`/experiments/${batteryId}/${experimentId}/parameters`, { method: "POST", body: JSON.stringify(body) }),
   // system
   health: () => request<SystemStatus>("/health"),
   capabilities: () => request<Capabilities>("/capabilities"),

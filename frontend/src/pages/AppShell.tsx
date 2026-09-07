@@ -142,7 +142,7 @@ function ExperimentLayout({ children }: { children: React.ReactNode }) {
 }
 
 /** Library 路由（首页 + wizard + runs），无实验上下文。 */
-export function AppRoutes() {
+export function LegacyAppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<ExperimentLibraryPage />} />
@@ -173,3 +173,4 @@ export function AppRoutes() {
     </Routes>
   );
 }
+export { AppRoutes } from "./redesign/WorkbenchShell";
