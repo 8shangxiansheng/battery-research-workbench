@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -248,3 +249,87 @@ def test_measurement_events_include_state_columns(client: TestClient) -> None:
     assert resp.status_code == 200
     row = resp.json()["data"]["events"][0]
     assert "step_type" in row and "temperature_c" in row
+
+
+# ---------- BRW-025R-FE-R1 target-first workflow endpoints ----------
+def test_targets_endpoint_reads_real_capability(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/targets")
+    assert resp.status_code == 200
+    targets = {t["target_id"]: t for t in resp.json()["data"]["targets"]}
+    assert set(targets) == {
+        "reference_soc_percent", "temperature_c", "soh_capacity_reference_percent",
+        "voltage_v", "current_a",
+    }
+    soc = targets["reference_soc_percent"]
+    assert soc["semantic_type"] == "DERIVED_REFERENCE_LABEL"
+    assert "True SOC" not in json.dumps(soc) and "Ground Truth" not in json.dumps(soc)
+    assert soc["coverage"]["valid"] == 3995  # real counts from artifacts
+    assert targets["temperature_c"]["readiness"] == "UNAVAILABLE"
+    soh = targets["soh_capacity_reference_percent"]
+    assert soh["coverage"]["independent_states"] == 2
+    assert soh["readiness"] == "NOT_READY"
+
+
+def test_alignment_summary_counts_and_semantics(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-summary")
+    assert resp.status_code == 200
+    d = resp.json()["data"]
+    assert d["total_frames"] == 3999
+    assert d["matched_unique"] == 3995
+    assert d["ambiguous"] == 4
+    assert d["eligible"] == 3995
+    assert d["excluded"] == 4
+    q = d["sync_quality"]
+    assert q["validated_sync"] is False
+    assert q["timebase_status"] == "PROVISIONAL"
+
+
+def test_alignment_samples_provenance_and_null_identity(client: TestClient) -> None:
+    unique = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-samples?filter=eligible&limit=2")
+    row = unique.json()["data"]["samples"][0]
+    assert row["electrical_asset_id"] == "E001"
+    assert row["sync_error_s"] is not None
+    amb = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-samples?filter=ambiguous")
+    for s in amb.json()["data"]["samples"]:
+        assert s["electrical_asset_id"] is None  # never auto-selected
+        assert s["sync_ambiguous"] is True
+
+
+def test_alignment_exclusions_grouped_by_reason(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-exclusions")
+    reasons = {e["reason"]: e["count"] for e in resp.json()["data"]["exclusions"]}
+    assert reasons["AMBIGUOUS_SYNC"] == 4
+
+
+def test_feature_label_preview_one_target_grain(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-label-preview",
+        json={"target_id": "reference_soc_percent", "features": ["SWA", "BOTTOM_AMP", "TOF_XCORR"], "limit": 20},
+    )
+    assert resp.status_code == 200
+    d = resp.json()["data"]
+    assert d["summary"]["eligible_rows"] == 3995
+    assert d["summary"]["excluded_rows"] == 4
+    assert sorted(d["summary"]["cycles"]) == [1, 2]
+    row = d["rows"][0]
+    assert set(row["values"]) == {"SWA", "BOTTOM_AMP", "TOF_XCORR"}
+    assert row["target"] is not None
+    assert d["target_source"]
+
+
+def test_feature_target_ranking_direction_dependent(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-target-ranking",
+        json={"target_id": "reference_soc_percent", "features": ["SWA", "BOTTOM_AMP"], "mode": "EXPLORATORY"},
+    )
+    assert resp.status_code == 200
+    by_code = {r["feature_code"]: r for r in resp.json()["data"]["ranking"]}
+    assert by_code["SWA"]["direction_dependent"] is True
+    assert by_code["SWA"]["pearson_charge"] > 0 > by_code["SWA"]["pearson_discharge"]
+
+    soh = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-target-ranking",
+        json={"target_id": "soh_capacity_reference_percent", "features": ["SWA"], "mode": "EXPLORATORY"},
+    )
+    assert soh.json()["data"]["group_summary"]
+    assert soh.json()["data"]["ranking"] == []  # no frame-level SOH leaderboard

@@ -3593,6 +3593,387 @@
           }
         }
       }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/targets": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "List Targets",
+        "description": "Target definitions with source/coverage/readiness from canonical artifacts.",
+        "operationId": "list_targets_api_v1_experiments__battery_id___experiment_id__targets_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Targets Api V1 Experiments  Battery Id   Experiment Id  Targets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/alignment-summary": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Alignment Summary",
+        "description": "Alignment funnel: frames → matched/ambiguous/unmatched → target-valid → eligible.",
+        "operationId": "alignment_summary_api_v1_experiments__battery_id___experiment_id__alignment_summary_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Alignment Summary Api V1 Experiments  Battery Id   Experiment Id  Alignment Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/alignment-exclusions": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Alignment Exclusions",
+        "operationId": "alignment_exclusions_api_v1_experiments__battery_id___experiment_id__alignment_exclusions_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Alignment Exclusions Api V1 Experiments  Battery Id   Experiment Id  Alignment Exclusions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/alignment-samples": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Alignment Samples",
+        "description": "Row-level provenance: frame → MeasurementEvent → electrical record → sync → target.\n\nAmbiguous/unmatched rows carry electrical identity = null (never auto-selected).",
+        "operationId": "alignment_samples_api_v1_experiments__battery_id___experiment_id__alignment_samples_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(eligible|ambiguous|unmatched|all)$",
+              "default": "eligible",
+              "title": "Filter"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Alignment Samples Api V1 Experiments  Battery Id   Experiment Id  Alignment Samples Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/feature-label-preview": {
+      "post": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Feature Label Preview",
+        "description": "Event-grain preview: selected ultrasound features + exactly one target.\n\nRead-only aggregation of canonical artifacts — no recomputation.",
+        "operationId": "feature_label_preview_api_v1_experiments__battery_id___experiment_id__feature_label_preview_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Feature Label Preview Api V1 Experiments  Battery Id   Experiment Id  Feature Label Preview Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/feature-target-ranking": {
+      "post": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Feature Target Ranking",
+        "description": "Exploratory or TRAIN-only ranking across selected features for one target.\n\nTRAIN-only mode requires split_id + fold_index and restricts rows to the\nTRAIN role of that fold; held-out targets are never consulted.",
+        "operationId": "feature_target_ranking_api_v1_experiments__battery_id___experiment_id__feature_target_ranking_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Feature Target Ranking Api V1 Experiments  Battery Id   Experiment Id  Feature Target Ranking Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
