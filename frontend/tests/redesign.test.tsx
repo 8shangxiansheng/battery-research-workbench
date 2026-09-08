@@ -116,12 +116,16 @@ describe("OverviewPage（§8）", () => {
       ultrasound: { frames: 3999, frame_cadence_s: 10.03, sampling_rate_hz: null, sampling_rate_status: "UNKNOWN", note: "" } }, meta: {} });
     clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
     clientMock.getResults.mockResolvedValue({ data: demoResults, meta: {} });
+    clientMock.getMeasurementEvents.mockResolvedValue({ data: { events: [] } });
+    clientMock.listWaveformFrames.mockResolvedValue({ data: { frames: [] } });
+    clientMock.listGates.mockResolvedValue({ data: { gates: [] } });
     const { OverviewPage } = await import("../src/pages/redesign/OverviewPage");
     renderPage(<OverviewPage />);
     await waitFor(() => {
       // finding precedes table (§18: scientific finding first)
       expect(screen.getByText(/当前没有任何模型跑赢 Dummy 基准/)).toBeInTheDocument();
-      expect(screen.getByText(/Dummy 均值宏观 MAE：29.61/)).toBeInTheDocument();
+      expect(screen.getByText(/29.61 %/)).toBeInTheDocument();
+      expect(screen.getByTestId("overview-primary")).toHaveTextContent("完善前置参数");
     });
   });
 });

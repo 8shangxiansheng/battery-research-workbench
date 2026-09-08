@@ -15,7 +15,12 @@ export function ParameterDialog({ label = "Add sampling rate" }: { label?: strin
   const [saved, setSaved] = useState(false);
   const save = useMutation({ mutationFn: () => client.createParameters(batteryId, experimentId, {
     values: { "ultrasound.sampling_rate_hz": { value: Number(value), unit: "MHz" } }, source, verified: false,
-  }), onSuccess: () => { setSaved(true); void qc.invalidateQueries({ queryKey: ["parameters", batteryId, experimentId] }); } });
+  }), onSuccess: () => {
+    setSaved(true);
+    for (const key of ["parameters", "status", "workspace-summary", "data-quality", "synchronization", "features"]) {
+      void qc.invalidateQueries({ queryKey: [key, batteryId, experimentId] });
+    }
+  } });
   const valid = value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) > 0 && source.trim().length > 0;
   return <Dialog open={open} onOpenChange={next => {setOpen(next); if(next) {setSaved(false); save.reset();}}}>
     <DialogTrigger asChild><Button variant="outline" size="sm">{label}</Button></DialogTrigger>
