@@ -162,40 +162,6 @@ describe("PhysicalFeatureCards + ElectricalStatePanel（需求 5/9/10）", () =>
   });
 });
 
-describe("FeatureRelationship（需求 11-14）", () => {
-  it("SOC table uses Reference SOC naming + Pearson/Spearman × 4 views", async () => {
-    clientMock.listFeatures.mockResolvedValue({ data: { features: [
-      { feature_name: "amplitude_a_u", role: "predictor", availability: "AVAILABLE", gate_id: null, tof_definition_id: null, missing_reason: null },
-    ] }, meta: {} });
-    clientMock.getFeatureCorrelations.mockResolvedValue({ data: {
-      feature_code: "SWA", n_events: 400,
-      soc: ["overall", "charge", "discharge", "rest"].flatMap(scope => ["pearson", "spearman"].map(method => ({
-        analysis_id: "a", feature_code: "SWA", gate_id: null, feature_variant: "RAW",
-        state_variable: "reference_soc_percent", scope, method,
-        coefficient: scope === "overall" ? 0.62 : 0.4, n_valid: 100,
-        missing_feature_count: 0, missing_state_count: 0, excluded_ineligible_count: 0,
-        limitations: ["no naive frame-level p-value"], status: "VALID",
-      }))),
-      temperature: { analysis_id: "t", feature_code: "SWA", gate_id: null, feature_variant: "RAW", state_variable: "temperature_c", scope: "overall", method: "pearson", coefficient: null, n_valid: 0, missing_feature_count: 0, missing_state_count: 0, excluded_ineligible_count: 0, limitations: [], status: "TEMPERATURE_UNAVAILABLE" },
-      soh: { analysis_id: "s", feature_code: "SWA", gate_id: null, feature_variant: "RAW", state_variable: "soh_percent", scope: "overall", method: "pearson", coefficient: null, n_valid: 0, missing_feature_count: 0, missing_state_count: 0, excluded_ineligible_count: 0, limitations: [], status: "NOT_READY_INSUFFICIENT_SOH_STATES" },
-      soh_cycle_summary: [
-        { cycle: 1, soh_percent: 100, feature_median: 1.2, feature_mean: 1.2, feature_std: 0.1, n_frames: 200 },
-        { cycle: 2, soh_percent: 99.7, feature_median: 1.1, feature_mean: 1.1, feature_std: 0.1, n_frames: 200 },
-      ],
-    }, meta: {} });
-    const { AnalysisWorkbench } = await import("../src/pages/redesign/AnalysisWorkbench");
-    renderPage(<AnalysisWorkbench />);
-    await waitFor(() => {
-      expect(screen.getByTestId("feature-relationship")).toBeInTheDocument();
-      expect(screen.getByText(/Correlation with Reference SOC \/ 与参考 SOC 的相关性/)).toBeInTheDocument();
-      expect(screen.getByText(/充电 \/ Charge/)).toBeInTheDocument();
-      expect(screen.getByTestId("soh-analysis")).toHaveTextContent(/独立 SOH 状态/);
-      expect(screen.getByTestId("temperature-analysis")).toHaveTextContent(/无温度通道/);
-    });
-    // no naive p-values anywhere
-    expect(screen.getAllByText(/p 值|p-value/i).length).toBeGreaterThan(0);
-  });
-});
 
 describe("SelectedFeaturesPanel（需求 17/19）", () => {
   it("bilingual labels + scope/gate/variant/eligibility from dataset manifest", async () => {

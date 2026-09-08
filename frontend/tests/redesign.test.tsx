@@ -40,6 +40,10 @@ const clientMock = {
   getGateCalibration: vi.fn(),
   freezeGateCalibration: vi.fn(),
   getArtifact: vi.fn(),
+  listTargets: vi.fn(),
+  getAlignmentSummary: vi.fn(),
+  postFeatureLabelPreview: vi.fn(),
+  postFeatureTargetRanking: vi.fn(),
 };
 
 vi.mock("../src/api/client", () => ({ client: clientMock, ApiError: class ApiError extends Error {
@@ -150,17 +154,14 @@ describe("ModelsWorkbench（§18）", () => {
   });
 });
 
-describe("AnalysisWorkbench（§14/§17）", () => {
-  it("shows exploratory vs ML-safe as two modes", async () => {
-    clientMock.listFeatures.mockResolvedValue({ data: { features: [
-      { feature_name: "amplitude_a_u", role: "predictor", availability: "AVAILABLE", gate_id: null, tof_definition_id: null, missing_reason: null },
-      { feature_name: "tof_us", role: "predictor", availability: "NOT_AVAILABLE_CURRENT_ENVIRONMENT", gate_id: null, tof_definition_id: null, missing_reason: "sampling rate required" },
-    ] }, meta: {} });
+describe("AnalysisWorkbench（R1 target-first workflow）", () => {
+  it("starts at target step with 6-step stepper", async () => {
+    clientMock.listTargets.mockResolvedValue({ data: { targets: [] }, meta: {} });
     const { AnalysisWorkbench } = await import("../src/pages/redesign/AnalysisWorkbench");
     renderPage(<AnalysisWorkbench />);
     await waitFor(() => {
-      expect(screen.getAllByText(/探索数据关系/).length).toBeGreaterThan(0);
-      expect(screen.getByText(/仅使用训练组数据，避免数据泄漏/)).toBeInTheDocument();
+      expect(screen.getByTestId("workflow-stepper")).toBeInTheDocument();
+      expect(screen.getByTestId("step-target")).toBeInTheDocument();
     });
   });
 });

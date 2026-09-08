@@ -471,6 +471,113 @@ export interface GateCalibrationRecordEntry {
   reuse_status: string;
 }
 
+// ---------- BRW-025R-FE-R1 target-first workflow DTOs ----------
+
+export interface TargetDefinition {
+  target_id: string;
+  display_name_en: string;
+  display_name_zh: string;
+  semantic_type: "DIRECT_MEASUREMENT" | "DERIVED_REFERENCE_LABEL" | "DERIVED_HEALTH_STATE";
+  source: string;
+  source_detail?: Record<string, number>;
+  coverage: { valid: number; total: number; independent_states?: number };
+  range: [number, number] | null;
+  readiness: string;
+  limitation: string | null;
+  limitation_zh?: string | null;
+  unit: string;
+}
+
+export interface AlignmentSummaryResponse {
+  total_frames: number;
+  matched_unique: number;
+  ambiguous: number;
+  unmatched: number;
+  target_valid: Record<string, number>;
+  eligible: number;
+  excluded: number;
+  sync_quality: {
+    validated_sync: boolean;
+    timebase_status: string;
+    matching_performed: boolean;
+    max_sync_error_s: number | null;
+    sync_tolerance_s: number | null;
+    max_sync_error_limit_s: number | null;
+  };
+}
+
+export interface AlignmentSampleRow {
+  measurement_event_id: string;
+  frame_index_raw: number | null;
+  ultrasound_timestamp: string | null;
+  electrical_asset_id: string | null;
+  electrical_record_locator: string | null;
+  electrical_timestamp: string | null;
+  match_status: string;
+  sync_ambiguous: boolean;
+  sync_error_s: number | null;
+  within_tolerance: boolean | null;
+  analysis_eligible: boolean;
+  targets: Record<string, number | null>;
+}
+
+export interface AlignmentExclusionsResponse {
+  exclusions: { reason: string; count: number; measurement_event_ids: string[] }[];
+}
+
+export interface FeatureLabelPreviewRow {
+  measurement_event_id: string;
+  frame_index_raw: number | null;
+  cycle: number | null;
+  state: string;
+  target: number | null;
+  values: Record<string, number>;
+  sync_error_s: number | null;
+  electrical_asset_id: string | null;
+}
+
+export interface FeatureLabelPreviewResponse {
+  target_id: string;
+  target_source: string | null;
+  target_readiness: string | null;
+  features: string[];
+  rows: FeatureLabelPreviewRow[];
+  summary: {
+    total_frames: number;
+    aligned_events: number;
+    eligible_rows: number;
+    excluded_rows: number;
+    excluded_by_reason: Record<string, number>;
+    cycles: number[];
+    missing_values: number;
+    alignment_status: string;
+  };
+}
+
+export interface FeatureRankingEntry {
+  feature_code: string;
+  pearson_overall?: number | null;
+  spearman_overall?: number | null;
+  pearson_charge?: number | null;
+  pearson_discharge?: number | null;
+  n_valid?: number;
+  status?: string;
+  direction_dependent?: boolean;
+  pearson?: number | null;
+  spearman?: number | null;
+  state_variable?: string;
+}
+
+export interface FeatureRankingResponse {
+  mode: string;
+  target_id: string;
+  ranking: FeatureRankingEntry[];
+  group_summary?: {
+    cycle: number; soh_percent: number | null; feature_median: number | null;
+    feature_mean: number | null; feature_std: number | null; n_frames: number;
+  }[];
+}
+
 // ---------- client ----------
 
 async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope<T>> {
@@ -761,6 +868,24 @@ export const client = {
     request<GateCalibrationResponse>(
       `/experiments/${batteryId}/${experimentId}/gate-calibration?n_frames=${nFrames}`,
     ),
+  listTargets: (batteryId: string, experimentId: string) =>
+    request<{ targets: TargetDefinition[] }>(`/experiments/${batteryId}/${experimentId}/targets`),
+  getAlignmentSummary: (batteryId: string, experimentId: string) =>
+    request<AlignmentSummaryResponse>(`/experiments/${batteryId}/${experimentId}/alignment-summary`),
+  getAlignmentSamples: (batteryId: string, experimentId: string, filter: "eligible" | "ambiguous" | "unmatched" | "all", limit = 20, cursor = 0) =>
+    request<{ samples: AlignmentSampleRow[]; total: number }>(
+      `/experiments/${batteryId}/${experimentId}/alignment-samples?filter=${filter}&limit=${limit}&cursor=${cursor}`,
+    ),
+  getAlignmentExclusions: (batteryId: string, experimentId: string) =>
+    request<AlignmentExclusionsResponse>(`/experiments/${batteryId}/${experimentId}/alignment-exclusions`),
+  postFeatureLabelPreview: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; limit?: number }) =>
+    request<FeatureLabelPreviewResponse>(`/experiments/${batteryId}/${experimentId}/feature-label-preview`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  postFeatureTargetRanking: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; mode: string }) =>
+    request<FeatureRankingResponse>(`/experiments/${batteryId}/${experimentId}/feature-target-ranking`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
   listMaterializedAnalyses: (batteryId: string, experimentId: string) =>
     request<{ analyses: { analysis_id: string; analysis_mode: string; target: string; split_id: string | null; fold_index: number | null; dataset_id: string | null; candidate_features: string[]; selected_features: string[]; selection_basis: string | null; status: string }[] }>(
       `/experiments/${batteryId}/${experimentId}/feature-analyses`,
@@ -846,6 +971,12 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/splits" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-analyses" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/targets" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-summary" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-label-preview" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
 ];
 
