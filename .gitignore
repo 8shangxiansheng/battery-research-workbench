@@ -37,3 +37,7 @@ mlruns/
 *.db
 *.sqlite
 *.sqlite3
+
+# vitest cache
+node_modules/
+.vite/
