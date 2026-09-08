@@ -3219,6 +3219,274 @@
           }
         }
       }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/physical-features": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Physical Features",
+        "operationId": "physical_features_api_v1_experiments__battery_id___experiment_id__physical_features_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Physical Features Api V1 Experiments  Battery Id   Experiment Id  Physical Features Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/feature-correlations": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Feature Correlations",
+        "operationId": "feature_correlations_api_v1_experiments__battery_id___experiment_id__feature_correlations_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "feature_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "SWA",
+              "title": "Feature Code"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2000,
+              "minimum": 10,
+              "default": 400,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Feature Correlations Api V1 Experiments  Battery Id   Experiment Id  Feature Correlations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/gate-calibration": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Gate Calibration",
+        "operationId": "gate_calibration_api_v1_experiments__battery_id___experiment_id__gate_calibration_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "n_frames",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 40,
+              "minimum": 24,
+              "default": 32,
+              "title": "N Frames"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Gate Calibration Api V1 Experiments  Battery Id   Experiment Id  Gate Calibration Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Freeze Gate Calibration",
+        "operationId": "freeze_gate_calibration_api_v1_experiments__battery_id___experiment_id__gate_calibration_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Freeze Gate Calibration Api V1 Experiments  Battery Id   Experiment Id  Gate Calibration Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

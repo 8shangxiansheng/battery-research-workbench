@@ -127,6 +127,8 @@ def measurement_events(
             "voltage_v",
             "current_a",
             "soc_reference_percent",
+            "step_type",
+            "temperature_c",
         )
         if col in page.columns
     ]

@@ -147,6 +147,7 @@ def create_app(
     from battery_workbench.api.routes import (
         data,
         experiments,
+        features_v2,
         intake,
         resources,
         runs,
@@ -161,6 +162,7 @@ def create_app(
     app.include_router(resources.router, prefix="/api/v1")
     app.include_router(waveform.router, prefix="/api/v1")
     app.include_router(data.router, prefix="/api/v1")
+    app.include_router(features_v2.router, prefix="/api/v1")
     return app
 
 

@@ -189,3 +189,62 @@ def test_feature_definitions_catalogue_bilingual(client: TestClient) -> None:
     tdk = next(e for e in cat if e["code"] == "TDK")
     assert tdk["definition_status"] == "DEFINED_NOT_VALIDATED"
     assert tdk["parity_status"] == "MATLAB_PARITY_REQUIRED"
+
+
+# ---------- BRW-025R-FE feature workbench endpoints ----------
+def test_physical_features_endpoint(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/physical-features?limit=40")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    codes = {f["feature_code"] for f in data["features"]}
+    assert codes == {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTENUATION", "BPS"}
+    swa = next(f for f in data["features"] if f["feature_code"] == "SWA")
+    assert len(swa["values"]) == 40
+    assert swa["display_name_zh"] == "表面波幅值"
+    tof = next(f for f in data["features"] if f["feature_code"] == "TOF_XCORR")
+    assert "physical_time_blocked" in tof  # never fabricates tof_us
+
+
+def test_feature_correlations_endpoint(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/feature-correlations?feature_code=SWA&limit=120")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data["soc"]) == 8  # pearson+spearman × overall/charge/discharge/rest
+    scopes = {r["scope"] for r in data["soc"]}
+    assert {"overall", "charge", "discharge", "rest"} <= scopes
+    assert data["soh"]["status"] == "NOT_READY_INSUFFICIENT_SOH_STATES"
+    assert data["soh_cycle_summary"]
+
+
+def test_gate_calibration_roundtrip(client: TestClient, tmp_path: Path) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/gate-calibration?n_frames=26")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert 24 <= len(data["calibration_frame_ids"]) <= 40
+    assert len(data["frames"]) == len(data["calibration_frame_ids"])
+    frame0 = data["frames"][0]
+    assert {"sample_index", "amplitude_a_u", "envelope_a_u"} <= set(frame0["samples"][0])
+    assert len(data["diagnostics"]) == len(data["calibration_frame_ids"])
+    assert data["gate_templates"][0]["python_end_exclusive"] == 200
+
+    freeze = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/gate-calibration",
+        json={"confirmed_by": "user", "calibration_basis": "PREDECLARED_PROTOCOL_GATE"},
+    )
+    assert freeze.status_code == 200
+    record = freeze.json()["data"]
+    assert record["status"] == "FROZEN"
+    assert record["calibration_basis"] == "PREDECLARED_PROTOCOL_GATE"
+
+    blocked = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/gate-calibration",
+        json={"confirmed_by": "user", "calibration_basis": "SOC_CORRELATION"},
+    )
+    assert blocked.status_code == 400
+
+
+def test_measurement_events_include_state_columns(client: TestClient) -> None:
+    resp = client.get("/api/v1/experiments/CELL_001/EXP_001/measurement-events?limit=5")
+    assert resp.status_code == 200
+    row = resp.json()["data"]["events"][0]
+    assert "step_type" in row and "temperature_c" in row
