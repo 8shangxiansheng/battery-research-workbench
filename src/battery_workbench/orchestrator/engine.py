@@ -12,6 +12,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+
+def _deps_scheduled_this_run(
+    node_id: str,
+    dependencies: dict[str, list[str]],
+    node_states: dict[str, NodeState],
+) -> bool:
+    """True when any required dep of ``node_id`` is READY (executes in pass 2)."""
+    return any(
+        node_states.get(d) == NodeState.READY
+        for d in dependencies.get(node_id, [])
+    )
+
+
 from battery_workbench.orchestrator.dag import (
     NODE_DEPENDENCIES,
     NODE_OPTIONAL_DEPENDENCIES,
@@ -218,7 +231,19 @@ class PipelineOrchestrator:
                 resolved[node_id] = ref
             else:
                 readiness = node.validate_readiness(plan, resolved)
-                if readiness.ok:
+                if not readiness.ok and _deps_scheduled_this_run(
+                    node_id, NODE_DEPENDENCIES, node_states
+                ):
+                    # a required dep is READY and will execute in pass 2;
+                    # re-validate readiness with real inputs at run time
+                    # (fresh-root runs: pass 1 sees no artifacts on disk yet)
+                    result = NodeResult(
+                        node_id=node_id,
+                        node_version=node.node_version,
+                        state=NodeState.PENDING,
+                        reason="deferred readiness: required deps execute in this run",
+                    )
+                elif readiness.ok:
                     result = NodeResult(
                         node_id=node_id,
                         node_version=node.node_version,
@@ -288,9 +313,27 @@ class PipelineOrchestrator:
                 if missing_deps:
                     result.state = NodeState.BLOCKED
                     result.reason = f"missing upstream artifacts: {missing_deps}"
-                    node_states[node_id] = NodeState.BLOCKED
-                    self._append_event(ctx.run_dir, "NODE_BLOCKED", node_id=node_id)
+                    node_states[node_id] = result.state
                     continue
+                if result.state == NodeState.PENDING:
+                    # deferred readiness (pass 1 ran before deps existed): re-validate
+                    readiness = node.validate_readiness(plan, inputs)
+                    if not readiness.ok:
+                        result.state = (
+                            NodeState.WAITING_FOR_USER
+                            if readiness.user_action is not None
+                            else NodeState.BLOCKED
+                        )
+                        result.reason = readiness.reason
+                        if readiness.user_action is not None:
+                            result.user_action_required = readiness.user_action
+                            user_actions.append(readiness.user_action)
+                        node_states[node_id] = result.state
+                        self._append_event(
+                            ctx.run_dir, "NODE_BLOCKED", node_id=node_id,
+                            detail={"reason": readiness.reason},
+                        )
+                        continue
                 self._append_event(ctx.run_dir, "NODE_STARTED", node_id=node_id)
                 try:
                     output = node.run(plan, inputs, ctx)
@@ -447,7 +490,30 @@ class PipelineOrchestrator:
         plan = self._read_plan(run_dir)
         merged_overrides = dict(plan.parameters.get("user_overrides") or {})
         plan_updates: dict[str, Any] = {}
+        # CONFIRM_FEATURE_SELECTION: 'selection_id' is a feature-analysis commit
+        # field, not a canonical parameter — route it into feature_analysis so
+        # it never pollutes the parameter catalog (BRW-028 wiring fix).
+        action_type = ""
+        if action_id:
+            action_type = str(
+                next(
+                    (
+                        a.get("action_type", "")
+                        for a in manifest.get("user_actions", [])
+                        if a.get("action_id") == action_id
+                    ),
+                    "",
+                )
+            )
+        fa_selection_update: dict[str, Any] | None = None
+        if action_type == "CONFIRM_FEATURE_SELECTION" and user_inputs:
+            fa_selection_update = {"confirmed": True}
+            fa_selection_update.update(
+                {k: v for k, v in user_inputs.items() if k == "selection_id"}
+            )
         for key, value in (user_inputs or {}).items():
+            if fa_selection_update is not None and key == "selection_id":
+                continue  # routed above
             if key in (
                 "split",
                 "features",
@@ -473,6 +539,13 @@ class PipelineOrchestrator:
                     plan_updates[key] = value
             else:
                 merged_overrides[key] = value
+        if fa_selection_update is not None:
+            merged_fa = {**plan.feature_analysis}
+            merged_fa["selection"] = {
+                **(plan.feature_analysis.get("selection") or {}),
+                **fa_selection_update,
+            }
+            plan_updates["feature_analysis"] = merged_fa
         plan_updates["parameters"] = {**plan.parameters, "user_overrides": merged_overrides}
         new_plan = plan.model_copy(update=plan_updates)
         new_plan = new_plan.model_copy(

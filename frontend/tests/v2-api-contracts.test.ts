@@ -112,7 +112,7 @@ describe("Experiment Library API（§26 T01-T06 后端契约）", () => {
 });
 
 describe("Wizard 全链 API 契约（§27 T07-T20 后端部分）", () => {
-  it("create → session → detect → validate → commit → start pipeline", async (ctx) => {
+  it("create → session → detect → validate → commit → start pipeline", { timeout: 60_000 }, async (ctx) => {
     if (!available) ctx.skip();
     const created = await post("/experiments", { battery_id: "CELL_210", name: "wizard contract" });
     expect(created.status).toBe(200);

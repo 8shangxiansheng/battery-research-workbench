@@ -24,7 +24,7 @@ from battery_workbench.agent_tools.security import (
 from battery_workbench.api.app import create_app
 
 REPO = Path(__file__).resolve().parents[2]
-FIXTURES = Path("/tmp/brw024r-fixtures")
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "brw024r"
 HAS_FIXTURES = (FIXTURES / "sample_electrical.xlsx").is_file()
 
 

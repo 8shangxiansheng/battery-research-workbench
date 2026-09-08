@@ -523,7 +523,7 @@ class AnalysisSliceNode(WorkflowNode):
             / plan.project.experiment_id
             / "measurement_events.parquet",
             spec=spec,
-            output_root=Path(ctx.processed_root) / "analysis_slices",
+            output_root=Path(ctx.processed_root),
             config=AnalysisSliceConfig(),
         )
         out_dir = (
@@ -580,10 +580,7 @@ class UltrasoundFeaturesNode(WorkflowNode):
             / plan.project.battery_id
             / plan.project.experiment_id
             / "waveforms.zarr",
-            output_root=Path(ctx.processed_root)
-            / "features"
-            / plan.project.battery_id
-            / plan.project.experiment_id,
+            output_root=Path(ctx.processed_root),
             config=UltrasoundFeatureConfig(),
         )
         fs_dir = Path(report.artifacts["features"]).parent
@@ -798,7 +795,8 @@ class TofActivationNode(WorkflowNode):
         if not validation["validated"]:
             raise RuntimeError("arrival detector failed synthetic validation")
         features_path = Path(ctx.processed_root) / "features" / b / e
-        feature_sets = sorted(p for p in features_path.glob("FS::*") if p.is_dir())
+        # feature sets live at features/<b>/<e>/<AS id>/<FS id>/ (canonical layout)
+        feature_sets = sorted(p for p in features_path.glob("AS::*/FS::*") if p.is_dir())
         if not feature_sets:
             raise FileNotFoundError("no ULTRASOUND_FEATURE_SET available for TOF activation")
         features = pd.read_parquet(feature_sets[-1] / "ultrasound_features.parquet")
@@ -1190,7 +1188,7 @@ class DatasetNode(WorkflowNode):
             dataset_family="SOC" if target.startswith("soc") else "SOH_CAPACITY",
             feature_set_path=Path(features_ref.path) / "ultrasound_features.parquet",
             label_set_path=labels_dir / "event_labels.parquet",
-            output_root=Path(ctx.processed_root) / "datasets",
+            output_root=Path(ctx.processed_root),
         )
         return {
             "artifact_id": report.dataset_id,
