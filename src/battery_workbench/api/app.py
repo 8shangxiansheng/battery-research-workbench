@@ -145,6 +145,7 @@ def create_app(
     app.add_middleware(RequestContextMiddleware)
 
     from battery_workbench.api.routes import (
+        assistant,
         data,
         experiments,
         features_v2,
@@ -163,6 +164,7 @@ def create_app(
     app.include_router(waveform.router, prefix="/api/v1")
     app.include_router(data.router, prefix="/api/v1")
     app.include_router(features_v2.router, prefix="/api/v1")
+    app.include_router(assistant.router, prefix="/api/v1")
     return app
 
 

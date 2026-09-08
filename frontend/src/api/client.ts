@@ -578,6 +578,62 @@ export interface FeatureRankingResponse {
   }[];
 }
 
+// ---------- BRW-027R research assistant DTOs ----------
+
+export interface AssistantNextAction {
+  action_id: string;
+  label_en: string;
+  label_zh: string;
+  intent: string | null;
+  confirmation_required: boolean;
+}
+
+export interface AssistantSessionTurn {
+  turn_id: string;
+  role: "user" | "assistant";
+  intent: string | null;
+  message: string;
+  tool_name: string | null;
+  tool_status: string | null;
+  evidence_refs: string[];
+  timestamp: string;
+}
+
+export interface AssistantSession {
+  session_id: string;
+  battery_id: string;
+  experiment_id: string;
+  current_page: string;
+  selected_target: string | null;
+  target_readiness: string | null;
+  alignment_status: Record<string, unknown> | null;
+  selected_features: string[];
+  feature_selection_mode: string;
+  dataset_id: string | null;
+  split_id: string | null;
+  model_run_id: string | null;
+  report_id: string | null;
+  phase: string;
+  pending_user_action: Record<string, unknown> | null;
+  scientific_limitations: Record<string, unknown>[];
+  evidence_refs: string[];
+  next_actions: AssistantNextAction[];
+  conversation: AssistantSessionTurn[];
+}
+
+export interface AssistantMessageResponse {
+  message: string;
+  intent: string;
+  phase: string;
+  status: string;
+  pending_user_action: Record<string, unknown> | null;
+  confirmation_id: string | null;
+  evidence_refs: string[];
+  limitations: string[];
+  next_actions: AssistantNextAction[];
+  session: AssistantSession;
+}
+
 // ---------- client ----------
 
 async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope<T>> {
@@ -886,6 +942,13 @@ export const client = {
     request<FeatureRankingResponse>(`/experiments/${batteryId}/${experimentId}/feature-target-ranking`, {
       method: "POST", body: JSON.stringify(body),
     }),
+  openAssistantSession: (batteryId: string, experimentId: string) =>
+    request<AssistantSession>(`/experiments/${batteryId}/${experimentId}/assistant/session`, { method: "POST" }),
+  sendAssistantMessage: (batteryId: string, experimentId: string, sessionId: string, message: string, currentPage: string) =>
+    request<AssistantMessageResponse>(
+      `/experiments/${batteryId}/${experimentId}/assistant/session/${encodeURIComponent(sessionId)}/message`,
+      { method: "POST", body: JSON.stringify({ message, current_page: currentPage }) },
+    ),
   listMaterializedAnalyses: (batteryId: string, experimentId: string) =>
     request<{ analyses: { analysis_id: string; analysis_mode: string; target: string; split_id: string | null; fold_index: number | null; dataset_id: string | null; candidate_features: string[]; selected_features: string[]; selection_basis: string | null; status: string }[] }>(
       `/experiments/${batteryId}/${experimentId}/feature-analyses`,
@@ -971,6 +1034,9 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/splits" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-analyses" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/assistant/session" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/assistant/session/{session_id}" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/assistant/session/{session_id}/message" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/targets" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-summary" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },

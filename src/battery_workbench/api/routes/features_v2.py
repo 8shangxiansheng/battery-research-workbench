@@ -939,7 +939,31 @@ def feature_target_ranking(
                          "group_summary": summary, "ranking": []},
                 "meta": {"note": "SOH is cycle-level; frame-level ranking is not reported"}}
 
-    # SOC / Temperature via the correlation module (stratified suite)
+    if target_id == "temperature_c":
+        # temperature ranking: per-feature temperature readiness/correlation
+        # (never SOC values under a temperature label)
+        ranking_t: list[dict[str, Any]] = []
+        for code in features:
+            frows = _rows_for(code)
+            for method in ("pearson", "spearman"):
+                r = correlate_feature_state(
+                    frows, state_variable="temperature_c", method=method,
+                    analysis_id=f"rank:{code}:{method}", feature_code=code,
+                )
+                if method == "pearson":
+                    ranking_t.append({
+                        "feature_code": code,
+                        "pearson_overall": r.coefficient,
+                        "spearman_overall": None,
+                        "pearson_charge": None, "pearson_discharge": None,
+                        "n_valid": r.n_valid, "status": r.status,
+                        "direction_dependent": False,
+                    })
+        return {"data": {"mode": analysis_mode, "target_id": target_id, "ranking": ranking_t},
+                "meta": {"note": "temperature readiness is reported honestly; "
+                         "INSUFFICIENT_VARIATION yields no coefficient"}}
+
+    # SOC via the correlation module (stratified suite)
     ranking: list[dict[str, Any]] = []
     for code in features:
         frows = _rows_for(code)

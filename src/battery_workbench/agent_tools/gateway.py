@@ -60,6 +60,17 @@ class ToolGateway:
         self.service = service
         self.registry = registry or build_default_registry()
         self.audit = audit_log or ToolAuditLog()
+        # bind BRW-027R semantic adapter handlers defined at module level
+        for _name in (
+            "inspect_research_state", "select_target", "inspect_alignment",
+            "inspect_gate_readiness", "analyze_target_relationships",
+            "prepare_ml_safe_dataset", "run_baseline_suite", "get_model_comparison",
+        ):
+            _fn = globals().get(f"_tool_{_name}")
+            if _fn is not None and not hasattr(self, f"_tool_{_name}"):
+                import types as _types
+
+                setattr(self, f"_tool_{_name}", _types.MethodType(_fn, self))
         self.confirmations = confirmations or ConfirmationStore()
         self.eligibility = EligibilityEngine()
 
@@ -1098,3 +1109,153 @@ class _FakeRequest:  # type: ignore[type-arg]
 
     def __init__(self, service: WorkbenchService) -> None:
         self.app = type("App", (), {"state": type("State", (), {"workbench_service": service})()})()
+
+
+# ---------------------------------------------------------------------------
+# BRW-027R high-level semantic adapters — thin orchestration over existing
+# service capabilities; no scientific algorithms here.
+# ---------------------------------------------------------------------------
+
+
+def _tool_inspect_research_state(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    from battery_workbench.api.routes.assistant import _FakeRequestBridge
+    from battery_workbench.api.routes.features_v2 import (
+        alignment_summary as _align_summary,
+    )
+    from battery_workbench.api.routes.features_v2 import (
+        list_targets as _targets,
+    )
+
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    bridge = _FakeRequestBridge(self.service)
+    targets = _targets(bridge, b, e)["data"]["targets"]
+    alignment = _align_summary(bridge, b, e)["data"]
+    return self._wrap(
+        {
+            "targets": targets,
+            "alignment": alignment,
+            "session_refs": {
+                "dataset_id": ctx.dataset_id,
+                "split_id": ctx.split_id,
+                "run_id": ctx.run_id,
+                "current_page": ctx.current_ui_route,
+            },
+        },
+        ctx,
+    )
+
+
+def _tool_select_target(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    from battery_workbench.api.routes.assistant import _FakeRequestBridge
+    from battery_workbench.api.routes.features_v2 import list_targets as _targets
+
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    target_id = inputs["target_id"]
+    bridge = _FakeRequestBridge(self.service)
+    targets = {t["target_id"]: t for t in _targets(bridge, b, e)["data"]["targets"]}
+    if target_id not in targets:
+        return ToolResult(status="BLOCKED", error={"code": "UNKNOWN_TARGET", "message": target_id})
+    t = targets[target_id]
+    ready = t["readiness"] in ("READY", "READY_FOR_LIMITED_EVALUATION")
+    return self._wrap(
+        {"target": t, "ready": ready,
+         "note": "Reference SOC is a retrospective reference label" if target_id == "reference_soc_percent" else None},
+        ctx,
+        status="SUCCEEDED" if ready else "BLOCKED",
+        next_actions=["inspect_alignment"],
+    )
+
+
+def _tool_inspect_alignment(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    from battery_workbench.api.routes.assistant import _FakeRequestBridge
+    from battery_workbench.api.routes.features_v2 import (
+        alignment_exclusions as _excl,
+    )
+    from battery_workbench.api.routes.features_v2 import (
+        alignment_summary as _align_summary,
+    )
+
+    bridge = _FakeRequestBridge(self.service)
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    summary = _align_summary(bridge, b, e)["data"]
+    excl = _excl(bridge, b, e)["data"]["exclusions"]
+    return self._wrap({"summary": summary, "exclusions": excl}, ctx)
+
+
+def _tool_inspect_gate_readiness(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    gates = self._tool_list_gates(ctx, inputs)
+    return self._wrap(
+        {"gates": gates.data.get("gates", []),
+         "note": "gate templates require recalibration on configuration change"},
+        ctx,
+    )
+
+
+def _tool_analyze_target_relationships(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    from battery_workbench.api.routes.assistant import _FakeRequestBridge
+    from battery_workbench.api.routes.features_v2 import feature_target_ranking as _rank
+
+    bridge = _FakeRequestBridge(self.service)
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    body = {
+        "target_id": inputs["target_id"],
+        "features": list(inputs["features"]),
+        "mode": inputs.get("mode", "EXPLORATORY"),
+    }
+    out = _rank(bridge, b, e, body)["data"]
+    return self._wrap(out, ctx)
+
+
+def _tool_prepare_ml_safe_dataset(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    target_id = inputs.get("target_id", "reference_soc_percent")
+    result = self.service.create_dataset(
+        {
+            "battery_id": b,
+            "experiment_id": e,
+            "dataset_family": "SOC",
+            "target": "soc_reference_percent" if target_id == "reference_soc_percent" else target_id,
+            "selected_features": list(inputs.get("features", [])) or None,
+        }
+    )
+    return self._wrap(result, ctx, next_actions=["prepare_grouped_evaluation_split"])
+
+
+def _tool_run_baseline_suite(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    dataset_id = inputs.get("dataset_id") or ctx.dataset_id
+    split_id = inputs.get("split_id") or ctx.split_id
+    if not dataset_id or not split_id:
+        raise PermissionError("dataset_id and split_id required")
+    return self._tool_run_limited_soc_baselines(
+        ctx, {"battery_id": b, "experiment_id": e, "dataset_id": dataset_id, "split_id": split_id}
+    )
+
+
+def _tool_get_model_comparison(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    return self._tool_inspect_model_comparison(ctx, inputs)
+
+
+TOOL_GATEWAY_EXTRA_HANDLERS = True

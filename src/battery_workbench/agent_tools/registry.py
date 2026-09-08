@@ -721,4 +721,118 @@ def build_default_registry() -> AgentToolRegistry:
         )
     )
 
+    # ---------- BRW-027R high-level semantic adapters (thin; orchestrate only) ----------
+    r.register(
+        _t(
+            "inspect_research_state",
+            "聚合当前研究会话上下文：目标/对齐/闸门/特征/数据集/划分/模型/报告（page-aware）",
+            ToolCategory.DISCOVERY,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="research session state",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR},
+            required=["battery_id", "experiment_id"],
+        )
+    )
+    r.register(
+        _t(
+            "select_target",
+            "选择研究目标（Reference SOC/Temperature/SOH/Voltage/Current），带 readiness 检查",
+            ToolCategory.FEATURES_ANALYSIS,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="target selection",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR, "target_id": STR},
+            required=["battery_id", "experiment_id", "target_id"],
+        )
+    )
+    r.register(
+        _t(
+            "inspect_alignment",
+            "查看 canonical 同步对齐（matched unique/ambiguous/unmatched/eligible + provisional 语义）",
+            ToolCategory.DISCOVERY,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="synchronization alignment",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR},
+            required=["battery_id", "experiment_id"],
+        )
+    )
+    r.register(
+        _t(
+            "inspect_gate_readiness",
+            "查看闸门标定就绪状态（gate templates/confirmed/frozen）",
+            ToolCategory.WAVEFORM_GATES,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="gate calibration",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR},
+            required=["battery_id", "experiment_id"],
+        )
+    )
+    r.register(
+        _t(
+            "analyze_target_relationships",
+            "特征-目标关系与排序（SOC/Temperature/SOH/Voltage/Current 分支；exploratory 或 TRAIN-only）",
+            ToolCategory.FEATURES_ANALYSIS,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="feature-target relationship",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR, "target_id": STR,
+                        "features": {"type": "array", "items": {"type": "string"}},
+                        "mode": STR},
+            required=["battery_id", "experiment_id", "target_id", "features"],
+        )
+    )
+    r.register(
+        _t(
+            "prepare_ml_safe_dataset",
+            "构建 ML-safe 数据集（需 TRAIN-only selection 已确认）",
+            ToolCategory.DATASET_EVALUATION,
+            read_only=False,
+            side_effect=True,
+            confirmation=ConfirmationPolicy.USER_CONFIRMATION,
+            scope="dataset",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR, "target_id": STR},
+            required=["battery_id", "experiment_id", "target_id"],
+        )
+    )
+    r.register(
+        _t(
+            "run_baseline_suite",
+            "运行固定 baseline 套件（Dummy-first，无超参搜索）",
+            ToolCategory.DATASET_EVALUATION,
+            read_only=False,
+            side_effect=True,
+            confirmation=ConfirmationPolicy.USER_CONFIRMATION,
+            scope="baseline modeling",
+            properties={"battery_id": STR, "experiment_id": STR, "dataset_id": STR, "split_id": STR},
+            required=["battery_id", "experiment_id", "dataset_id", "split_id"],
+        )
+    )
+    r.register(
+        _t(
+            "get_model_comparison",
+            "获取模型对比（Dummy-first 解释）",
+            ToolCategory.DATASET_EVALUATION,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="model comparison",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR},
+            required=["battery_id", "experiment_id"],
+        )
+    )
     return r
