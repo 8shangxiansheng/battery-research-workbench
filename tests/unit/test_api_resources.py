@@ -169,3 +169,23 @@ def test_get_dataset_metadata_only(client: TestClient) -> None:
     assert "preview" in data
     assert data.get("preview") == []  # metadata only; no bulk rows
     assert "rows" not in data  # no full-table dump
+
+
+# ---------- BRW-013X V2 feature catalogue ----------
+def test_feature_definitions_catalogue_bilingual(client: TestClient) -> None:
+    resp = client.get("/api/v1/feature-definitions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["formula_source_id"] == "USER_MATLAB_TIME_FREQUENCY_FEATURE_FORMULAS_V1"
+    cat = data["catalogue"]
+    assert len(cat) == 33
+    tdstd = next(e for e in cat if e["code"] == "TDSTD")
+    assert tdstd["display_name_en"] == "Standard Deviation"
+    assert tdstd["display_name_zh"] == "标准差"
+    tdrms2 = next(e for e in cat if e["code"] == "TDRMS2")
+    assert tdrms2["existing_alias"] is None  # never aliased to waveform_rms
+    tdei = next(e for e in cat if e["code"] == "TDEI")
+    assert tdei["existing_alias"] is None
+    tdk = next(e for e in cat if e["code"] == "TDK")
+    assert tdk["definition_status"] == "DEFINED_NOT_VALIDATED"
+    assert tdk["parity_status"] == "MATLAB_PARITY_REQUIRED"

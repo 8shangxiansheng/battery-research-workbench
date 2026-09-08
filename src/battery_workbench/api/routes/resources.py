@@ -14,6 +14,10 @@ from fastapi import APIRouter, Query, Request
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.service import validate_id
+from battery_workbench.features.definitions_v2 import (
+    FORMULA_POLICY_VERSION,
+    FORMULA_SOURCE_ID,
+)
 
 router = APIRouter(tags=["scientific-resources", "artifacts"])
 
@@ -53,6 +57,22 @@ def list_gates(request: Request, battery_id: str, experiment_id: str) -> dict[st
     validate_id(experiment_id, "experiment_id")
     return {
         "data": {"gates": get_service(request).list_gates(battery_id, experiment_id)},
+        "meta": {},
+    }
+
+
+# ---------- feature catalogue (BRW-013X V2, read-only) ----------
+@router.get("/feature-definitions")
+def list_feature_definitions(request: Request) -> dict[str, Any]:
+    """Bilingual MATLAB-aligned feature definition catalogue (33 entries)."""
+    from battery_workbench.features.definitions_v2 import default_registry
+
+    return {
+        "data": {
+            "catalogue": default_registry().catalogue(),
+            "formula_source_id": FORMULA_SOURCE_ID,
+            "formula_policy_version": FORMULA_POLICY_VERSION,
+        },
         "meta": {},
     }
 
