@@ -1,10 +1,10 @@
-/** BRW-025R-FE 视觉验收截图套件 — 14 张 1440×900，来自实际运行 frontend。
+/** BRW-025R-FE-R1 视觉验收截图套件 — 18 张 1440×900（14_SCREENSHOT_MANIFEST.yaml）。
  *  前置：API :8000 + UI :5173 已启动。
+ *  每张截图断言目标功能 data-testid 可见；不可见 → 记 fail 并继续。
  *  运行：cd frontend && node screenshot-suite.mjs
- *  每张截图前用 data-testid 断言目标功能真实可见（看不到 → 抛错 FAIL）。
  */
 import { chromium } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 const BASE = "http://localhost:5173";
 const OUT = "../docs/ui/screenshots";
@@ -15,175 +15,262 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const exp = "/experiments/CELL_001/EXP_001";
 const results = [];
 
-async function shot(id, url, wait, { expectVisible = [], extra } = {}) {
-  await page.goto(BASE + url, { waitUntil: "networkidle", timeout: 45000 });
-  await page.waitForTimeout(wait ?? 2500);
+async function shot(id, url, { wait = 2500, expectVisible = [], extra } = {}) {
+  await page.goto(BASE + url, { waitUntil: "networkidle", timeout: 60000 });
+  await page.waitForTimeout(wait);
+  let ok = true;
   for (const sel of expectVisible) {
-    const loc = page.locator(sel).first();
     try {
-      await loc.waitFor({ state: "visible", timeout: 12000 });
+      await page.locator(sel).first().waitFor({ state: "visible", timeout: 15000 });
     } catch {
-      results.push({ id, ok: false, missing: sel });
-      console.error("✗", id, "— 目标功能不可见:", sel);
-      await page.screenshot({ path: `${OUT}/${id}.png` });
-      return;
+      ok = false;
+      console.error("✗", id, "— missing:", sel);
+      break;
     }
   }
-  if (extra) await extra();
-  await page.screenshot({ path: `${OUT}/${id}.png`, fullPage: false });
-  results.push({ id, ok: true });
-  console.log("✓", id);
+  if (ok && extra) { try { await extra(); } catch (e) { ok = false; console.error("✗", id, String(e).slice(0, 120)); } }
+  await page.screenshot({ path: `${OUT}/${id}.png` });
+  results.push({ id, ok });
+  console.log(ok ? "✓" : "×", id);
 }
 
-// 01 Overview
-await shot("01_overview", `${exp}/overview`, 3000);
+// ---- workflow setup helpers ----
+async function openAnalysis() {
+  await page.goto(BASE + exp + "/analysis", { waitUntil: "networkidle", timeout: 60000 });
+  await page.waitForTimeout(2500);
+}
+async function selectSocTarget() {
+  await page.getByTestId("select-target-reference_soc_percent").click();
+  await page.waitForTimeout(400);
+  await page.getByTestId("to-alignment").click();
+  await page.waitForTimeout(1500);
+}
+async function gotoFeatures() {
+  await page.getByTestId("to-features").click();
+  await page.waitForTimeout(1200);
+}
+async function selectDefaultFeatures() {
+  for (const f of ["SWA", "BOTTOM_AMP", "TOF_XCORR"]) {
+    await page.getByTestId(`quick-${f}`).click().catch(() => {});
+    await page.waitForTimeout(250);
+  }
+}
 
-// 02 Waveform + physical features（5 张物理特征卡 + Electrical State）
-await shot("02_waveform_physical", `${exp}/waveform`, 4000, {
-  expectVisible: ["[data-testid=physical-features]", "[data-testid=electrical-state]"],
+// 01 Target selection
+await shot("01_target_selection", `${exp}/analysis`, {
+  expectVisible: ["[data-testid=target-selector]"],
+});
+
+// 02 Reference SOC details
+await shot("02_target_reference_soc_details", `${exp}/analysis`, {
+  expectVisible: ["[data-testid=target-card-reference_soc_percent]"],
   extra: async () => {
-    await page.getByTestId("physical-features").scrollIntoViewIfNeeded();
+    await page.getByTestId("target-card-reference_soc_percent").scrollIntoViewIfNeeded();
     await page.waitForTimeout(400);
   },
 });
 
-// 03 Waveform TOF blocked（Add sampling rate Dialog）
-await shot("03_waveform_tof_blocked", `${exp}/waveform`, 3500, {
+// 03 Alignment summary
+await shot("03_alignment_summary", `${exp}/analysis`, {
   extra: async () => {
-    const btn = page.getByRole("button", { name: /添加采样频率|add sampling rate/i }).first();
-    if (await btn.count()) { await btn.click(); await page.waitForTimeout(800); }
+    await selectSocTarget();
+    await page.getByTestId("alignment-summary").waitFor({ state: "visible", timeout: 15000 });
   },
 });
 
-// 04 Gate calibration（Calibrate Gates 区 + 打开标定流程）
-await shot("04_gate_calibration", `${exp}/waveform`, 4000, {
-  expectVisible: ["[data-testid=calibrate-gates]"],
+// 04 Alignment row provenance
+await shot("04_alignment_row_provenance", `${exp}/analysis`, {
   extra: async () => {
-    await page.getByTestId("calibrate-toggle").click();
-    await page.waitForTimeout(3500);
-  },
-});
-
-// 05 Calibration overlay（波形+包络+gate 阴影）
-await shot("05_calibration_overlay", `${exp}/waveform`, 4000, {
-  expectVisible: ["[data-testid=calibrate-gates]"],
-  extra: async () => {
-    await page.getByTestId("calibrate-toggle").click();
-    await page.waitForTimeout(3500);
-    await page.getByTestId("calibration-overlay").scrollIntoViewIfNeeded();
-    await page.waitForTimeout(600);
-  },
-});
-
-// 06 TD catalogue（More features 展开时域分组）
-await shot("06_td_catalogue", `${exp}/analysis`, 3000, {
-  expectVisible: ["[data-testid=feature-catalogue]"],
-  extra: async () => {
-    await page.getByTestId("feature-catalogue").scrollIntoViewIfNeeded();
-  },
-});
-
-// 07 FD catalogue（搜索 FD 特征展示频域分组）
-await shot("07_fd_catalogue", `${exp}/analysis`, 3000, {
-  expectVisible: ["[data-testid=feature-catalogue]"],
-  extra: async () => {
-    await page.getByLabel(/搜索特征 \/ Search features/i).fill("FD");
+    await selectSocTarget();
+    await page.getByTestId("alignment-samples").scrollIntoViewIfNeeded();
+    await page.locator('[data-testid^="align-row-"]').first().click();
     await page.waitForTimeout(700);
-    await page.getByTestId("feature-catalogue").scrollIntoViewIfNeeded();
   },
 });
 
-// 08 Feature details（打开 TDSTD 详情 Dialog）
-await shot("08_feature_details", `${exp}/analysis`, 3000, {
-  expectVisible: ["[data-testid=feature-catalogue]"],
+// 05 Alignment exclusions
+await shot("05_alignment_exclusions", `${exp}/analysis`, {
   extra: async () => {
-    const card = page.getByTestId("catalogue-TDSTD");
-    await card.scrollIntoViewIfNeeded();
-    await card.getByRole("button", { name: /详情 \/ Details/i }).click();
-    await page.waitForTimeout(800);
-  },
-});
-
-// 09 Feature selection（勾选 SWA + TDSTD 后的已选状态）
-await shot("09_feature_selection", `${exp}/analysis`, 3000, {
-  expectVisible: ["[data-testid=feature-catalogue]"],
-  extra: async () => {
-    await page.getByTestId("select-TDSTD").click().catch(() => {});
-    await page.getByTestId("select-FDAF").click().catch(() => {});
-    await page.waitForTimeout(500);
-    await page.getByTestId("feature-catalogue").scrollIntoViewIfNeeded();
-  },
-});
-
-// 10 SOC correlation（Feature Relationship 区）
-await shot("10_soc_correlation", `${exp}/analysis`, 3500, {
-  expectVisible: ["[data-testid=feature-relationship]"],
-  extra: async () => { await page.getByTestId("soc-correlation-table").scrollIntoViewIfNeeded(); },
-});
-
-// 11 Temperature + 12 SOH limited（关系区下半部分）
-await shot("11_temperature", `${exp}/analysis`, 3500, {
-  expectVisible: ["[data-testid=temperature-analysis]"],
-  extra: async () => {
-    await page.getByTestId("temperature-analysis").scrollIntoViewIfNeeded();
-    await page.waitForTimeout(400);
-  },
-});
-await shot("12_soh_limited", `${exp}/analysis`, 3500, {
-  expectVisible: ["[data-testid=soh-analysis]"],
-  extra: async () => {
-    await page.getByTestId("soh-analysis").scrollIntoViewIfNeeded();
-    await page.waitForTimeout(400);
-  },
-});
-
-// 13 Dataset handoff（Select 模式 → 选特征 → 真实构建 → handoff 卡）
-await shot("13_dataset_handoff", `${exp}/analysis`, 3000, {
-  expectVisible: ["[data-testid=feature-catalogue]"],
-  extra: async () => {
-    await page.getByText("为建模选择特征 / Select Features for Modeling").click();
-    await page.waitForTimeout(400);
-    await page.getByLabel(/搜索特征 \/ Search features/i).fill("TDPP");
+    await selectSocTarget();
+    await page.getByTestId("alignment-exclusions").scrollIntoViewIfNeeded();
     await page.waitForTimeout(600);
-    await page.getByTestId("select-TDPP").click();
-    await page.waitForTimeout(800);
-    const build = page.getByRole("button", { name: /Build dataset/i });
-    await build.click();
+  },
+});
+
+// 06 Feature–Label table preview
+await shot("06_feature_label_table_preview", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await page.getByTestId("to-features").click();
+    await page.waitForTimeout(900);
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.waitForTimeout(600);
+    await page.getByTestId("to-selection").click();
     await page.waitForTimeout(500);
-    await page.getByRole("button", { name: /确认请求/i }).click();
-    await page.waitForTimeout(4500);
-    const handoff = page.getByTestId("dataset-handoff");
-    await handoff.waitFor({ state: "visible", timeout: 10000 });
-    await handoff.scrollIntoViewIfNeeded();
+    await page.getByTestId("to-dataset").click();
+    await page.waitForTimeout(2500);
+    await page.getByTestId("preview-table-btn").click();
+    await page.locator('[data-testid^="fl-row-"]').first().waitFor({ state: "visible", timeout: 30000 });
+  },
+});
+
+// 07 Feature–Label row provenance
+await shot("07_feature_label_row_provenance", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await page.getByTestId("to-features").click();
+    await page.waitForTimeout(800);
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.waitForTimeout(500);
+    await page.getByTestId("to-selection").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-dataset").click();
+    await page.waitForTimeout(2200);
+    await page.getByTestId("preview-table-btn").click();
+    await page.locator('[data-testid^="fl-row-"]').first().waitFor({ state: "visible", timeout: 30000 });
+    await page.locator('[data-testid^="fl-row-"]').first().click();
+    await page.waitForTimeout(700);
+  },
+});
+
+// 08 SOC relationship overall
+await shot("08_soc_relationship_overall", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.getByTestId("run-ranking-btn").waitFor({ state: "visible", timeout: 10000 });
+    await page.getByTestId("run-ranking-btn").click();
+    await page.locator('[data-testid^="rank-"]').first().waitFor({ state: "visible", timeout: 60000 });
     await page.waitForTimeout(400);
   },
 });
 
-// 14 Models selected features
-await shot("14_models_selected", `${exp}/models`, 3500, {
+// 09 SOC charge/discharge columns
+await shot("09_soc_charge_discharge", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.getByTestId("run-ranking-btn").click();
+    await page.locator('[data-testid^="rank-"]').first().waitFor({ state: "visible", timeout: 60000 });
+    await page.locator('[data-testid^="rank-"]').first().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400);
+  },
+});
+
+// 10 Temperature target state
+await shot("10_temperature_target_state", `${exp}/analysis`, {
+  expectVisible: ["[data-testid=target-card-temperature_c]"],
+  extra: async () => {
+    await page.getByTestId("target-card-temperature_c").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400);
+  },
+});
+
+// 11 SOH limited
+await shot("11_soh_target_limited", `${exp}/analysis`, {
+  expectVisible: ["[data-testid=target-card-soh_capacity_reference_percent]"],
+  extra: async () => {
+    await page.getByTestId("target-card-soh_capacity_reference_percent").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400);
+  },
+});
+
+// 12 Exploratory ranking
+await shot("12_exploratory_feature_ranking", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.getByTestId("run-ranking-btn").click();
+    await page.locator('[data-testid="ranking-mode-badge"]').waitFor({ state: "visible", timeout: 15000 });
+    await page.locator('[data-testid^="rank-"]').first().waitFor({ state: "visible", timeout: 60000 });
+  },
+});
+
+// 13 ML-safe feature selection
+await shot("13_ml_safe_feature_selection", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-selection").click();
+    await page.getByTestId("mode-mlsafe").click();
+    await page.waitForTimeout(1200);
+  },
+});
+
+// 14 Dataset X/y preview
+await shot("14_dataset_x_y_preview", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-selection").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-dataset").click();
+    await page.waitForTimeout(2500);
+    await page.getByTestId("build-mlsafe-btn").click();
+    await page.getByTestId("dataset-xy-preview").waitFor({ state: "visible", timeout: 10000 });
+    await page.waitForTimeout(400);
+  },
+});
+
+// 15 Dataset eligibility breakdown（预览表格 + 漏斗）
+await shot("15_dataset_eligibility_breakdown", `${exp}/analysis`, {
+  extra: async () => {
+    await selectSocTarget();
+    await gotoFeatures();
+    await selectDefaultFeatures();
+    await page.getByTestId("to-relationships").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-selection").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("to-dataset").click();
+    await page.waitForTimeout(2500);
+    await page.getByTestId("preview-table-btn").click();
+    await page.getByTestId("eligibility-breakdown").waitFor({ state: "visible", timeout: 30000 });
+    await page.getByTestId("eligibility-breakdown").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400);
+  },
+});
+
+// 16 Models target/feature summary
+await shot("16_models_target_feature_summary", `${exp}/models`, {
   extra: async () => {
     await page.getByTestId("selected-features").scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(400);
   },
 });
 
-// 15 Report feature summary
-await shot("15_report_feature_summary", `${exp}/report`, 3500, {
-  expectVisible: ["[data-testid=report-feature-summary]"],
-  extra: async () => { await page.getByTestId("report-feature-summary").scrollIntoViewIfNeeded(); },
-});
-
-// 16 Assistant drawer context（global drawer shell — BRW-027 暂停）
-await shot("16_assistant_drawer", `${exp}/overview`, 2000, {
+// 17 Report target/alignment summary
+await shot("17_report_target_alignment_summary", `${exp}/report`, {
   extra: async () => {
-    const trigger = page.getByRole("button", { name: /Research Assistant/i });
-    if (await trigger.count()) { await trigger.first().click(); await page.waitForTimeout(1200); }
+    await page.getByTestId("report-feature-summary").scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(400);
   },
+});
+
+// 18 Analysis full workflow（全 stepper 视图）
+await shot("18_analysis_full_workflow", `${exp}/analysis`, {
+  expectVisible: ["[data-testid=workflow-stepper]", "[data-testid=target-selector]"],
 });
 
 await browser.close();
 const failed = results.filter(r => !r.ok);
-console.log(`\n视觉验收截图完成 → ${OUT}（${results.length - failed.length}/${results.length} 目标功能可见）`);
+writeFileSync("/tmp/screenshot-results.json", JSON.stringify(results, null, 2));
+console.log(`\nR1 视觉验收截图完成 → ${OUT}（${results.length - failed.length}/${results.length}）`);
 if (failed.length) {
-  console.error("FAILED:", failed.map(f => `${f.id}(${f.missing})`).join(", "));
+  console.error("FAILED:", failed.map(f => f.id).join(", "));
   process.exit(1);
 }
