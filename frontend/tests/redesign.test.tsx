@@ -34,6 +34,12 @@ const clientMock = {
   createReport: vi.fn(),
   createFeatureAnalysis: vi.fn(),
   createDataset: vi.fn(),
+  listFeatureDefinitions: vi.fn(),
+  listPhysicalFeatures: vi.fn(),
+  getFeatureCorrelations: vi.fn(),
+  getGateCalibration: vi.fn(),
+  freezeGateCalibration: vi.fn(),
+  getArtifact: vi.fn(),
 };
 
 vi.mock("../src/api/client", () => ({ client: clientMock, ApiError: class ApiError extends Error {

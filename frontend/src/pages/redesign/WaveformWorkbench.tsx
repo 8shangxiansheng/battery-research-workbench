@@ -9,6 +9,8 @@ import { Badge } from "../../components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../../components/ui/dialog";
 import { PageHeader, LoadingState, ErrorState, EmptyState, BlockedValue, ScopeNote } from "../../components/workbench/shared";
 import { ParameterDialog } from "../../components/workbench/ParameterDialog";
+import { PhysicalFeatureCards, ElectricalStatePanel } from "../../components/workbench/FrameContextPanels";
+import { CalibrationWorkbench } from "../../components/workbench/CalibrationWorkbench";
 import { numberText } from "../../lib/presentation";
 const WaveformPlot = lazy(()=>import("../../components/workbench/WaveformPlot"));
 
@@ -39,6 +41,9 @@ export function WaveformWorkbench() {
     </section>
     {draft && <div className="notice mt-4 items-center"><div className="flex-1"><h3>新闸门选区</h3><p className="text-sm">当前为草稿，确认后才会保存到实验。</p></div><Button variant="ghost" onClick={()=>setDraft(null)}>丢弃</Button><Button onClick={()=>{setConfirm(true);commit.reset();}}>检查闸门</Button></div>}
     {message && <p role="status" className="notice mt-4">{message}</p>}
+    <PhysicalFeatureCards batteryId={batteryId} experimentId={experimentId} frameIndex={frame?.frame_index} />
+    <ElectricalStatePanel event={unique} />
+    <CalibrationWorkbench batteryId={batteryId} experimentId={experimentId} waveformLength={preview.data?.data.waveform_length} />
     <div className="grid md:grid-cols-3 panel !p-0 mt-6"><BlockedValue name="幅值" reason="将鼠标悬停在波形上可查看采样点幅值。"/><BlockedValue name="飞行时间 TOF" value={tofAvailable ? tof?.value : null} unit="µs" reason={tofAvailable ? "来自 API 结果" : "需要先提供采样频率"} action={!tofAvailable && <ParameterDialog/>}/><BlockedValue name="波速" reason="需要声程长度与后端能力支持" action={<Button variant="link" size="sm" asChild className="px-0"><Link to={`/experiments/${batteryId}/${experimentId}/advanced/parameters`}>Review parameters</Link></Button>}/></div>
     <div className="mt-6 flex flex-wrap items-center gap-3"><h3>已保存的闸门</h3>{gates.data?.data.gates.map((g,i)=><Badge variant="secondary" key={g.gate_id}>{g.gate_name??`闸门 ${i+1}`}</Badge>)}{gates.data?.data.gates.length===0 && <span className="muted text-sm">在上方框选你的第一个区域。</span>}{gates.error && <span role="status">已保存闸门暂不可用，请刷新页面重试。</span>}</div>
     <details className="mt-5"><summary>高级波形细节与键盘闸门选择</summary><p className="muted text-xs">仅当 API 事件预览中存在唯一匹配时才显示帧上下文。充放电阶段与包络信息此接口未提供。</p><p className="text-xs muted">峰峰值 TOF：暂不可用 · 绝对到达时间：需要已验证的时序</p><div className="flex gap-3 items-end mt-3"><label className="field">起始采样点<Input aria-label="闸门起始采样点" type="number" min={0} value={draft?.start??0} onChange={e=>setDraft({start:Number(e.target.value),end:draft?.end??1})}/></label><label className="field">结束采样点<Input aria-label="闸门结束采样点" type="number" min={1} value={draft?.end??1} onChange={e=>setDraft({start:draft?.start??0,end:Number(e.target.value)})}/></label><Button variant="outline" disabled={!draft || draft.end<=draft.start || draft.start<0 || draft.end>=(preview.data?.data.waveform_length??0)} onClick={()=>setConfirm(true)}>检查闸门</Button></div></details><ScopeNote/>

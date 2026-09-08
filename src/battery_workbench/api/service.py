@@ -598,6 +598,8 @@ class WorkbenchService:
                 analysis_mode=payload["analysis_mode"],
                 target=payload["target"],
                 candidate_features=list(payload["candidate_features"]),
+                split_id=payload.get("split_id") or None,
+                fold_index=payload.get("fold_index"),
             )
         except ValueError as e:
             raise APIError(ErrorCode.VALIDATION_ERROR, str(e)) from e

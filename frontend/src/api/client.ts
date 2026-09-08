@@ -359,6 +359,116 @@ export interface MeasurementEventRow {
   voltage_v: number | null;
   current_a: number | null;
   soc_reference_percent: number | null;
+  step_type?: string | null;
+  temperature_c?: number | null;
+}
+
+// ---------- BRW-025R-FE scientific feature workbench DTOs ----------
+
+export interface FeatureDefinitionEntry {
+  code: string;
+  display_name_en: string;
+  display_name_zh: string;
+  family: "TD" | "FD";
+  units: string;
+  formula_source_id: string;
+  formula_policy_version: string;
+  formula_text: string;
+  definition_status: "DEFINED_NOT_VALIDATED" | "DEFINED_AND_VALIDATED";
+  parity_status: string;
+  existing_alias: string | null;
+  scope: string[];
+}
+
+export interface PhysicalFeatureBlock {
+  feature_code: "BOTTOM_AMP" | "SWA" | "TOF_XCORR" | "ATTENUATION" | "BPS";
+  method: string;
+  gate_template_id: string | string[];
+  display_name_en: string;
+  display_name_zh: string;
+  unit: string;
+  values: (number | null)[];
+  physical_time_blocked?: string;
+  reference_frame_index?: number;
+  blocked_features?: { code: string; status: string }[];
+}
+
+export interface CorrelationResultEntry {
+  analysis_id: string;
+  feature_code: string;
+  gate_id: string | null;
+  feature_variant: string;
+  state_variable: string;
+  scope: string;
+  method: string;
+  coefficient: number | null;
+  n_valid: number;
+  missing_feature_count: number;
+  missing_state_count: number;
+  excluded_ineligible_count: number;
+  limitations: string[];
+  status: string;
+}
+
+export interface FeatureCorrelationsResponse {
+  feature_code: string;
+  n_events: number;
+  soc: CorrelationResultEntry[];
+  temperature: CorrelationResultEntry;
+  soh: CorrelationResultEntry;
+  soh_cycle_summary: {
+    cycle: number;
+    soh_percent: number | null;
+    feature_median: number | null;
+    feature_mean: number | null;
+    feature_std: number | null;
+    n_frames: number;
+  }[];
+}
+
+export interface GateTemplateEntry {
+  gate_template_id: string;
+  role_en: string;
+  role_zh: string;
+  matlab_start: number;
+  matlab_end: number;
+  python_start: number;
+  python_end_exclusive: number;
+  length_samples: number;
+}
+
+export interface CalibrationFrameSample {
+  sample_index: number;
+  amplitude_a_u: number;
+  envelope_a_u: number;
+}
+
+export interface GateCalibrationResponse {
+  calibration_frame_ids: number[];
+  frames: { frame_index: number; samples: CalibrationFrameSample[] }[];
+  gate_templates: GateTemplateEntry[];
+  diagnostics: {
+    frame_index: number;
+    peak_sample_in_gate: number;
+    peak_containment_fraction: number;
+    edge_hit: boolean;
+  }[];
+  recommendation: string;
+}
+
+export interface GateCalibrationRecordEntry {
+  gate_calibration_id: string;
+  gate_template_id: string;
+  battery_id: string;
+  experiment_id: string;
+  source_formula_id: string;
+  calibration_frame_ids: number[];
+  calibration_basis: string;
+  confirmed_by: string;
+  status: string;
+  version: number;
+  confirmed_at: string | null;
+  reuse_status: string;
 }
 
 // ---------- client ----------
@@ -473,6 +583,8 @@ export const client = {
     analysis_mode: "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE";
     target: string;
     candidate_features: string[];
+    split_id?: string;
+    fold_index?: number;
   }) =>
     request<{ analysis_id: string; analysis_mode: string; reuse_status: string }>(
       "/feature-analyses",
@@ -626,6 +738,45 @@ export const client = {
     request<{ total: number; events: MeasurementEventRow[] }>(
       `/experiments/${batteryId}/${experimentId}/measurement-events?limit=${limit}${cursor !== undefined ? `&cursor=${cursor}` : ""}`,
     ),
+
+  // ---------- BRW-025R-FE feature workbench ----------
+  listFeatureDefinitions: () =>
+    request<{
+      catalogue: FeatureDefinitionEntry[];
+      formula_source_id: string;
+      formula_policy_version: string;
+    }>("/feature-definitions"),
+  listPhysicalFeatures: (batteryId: string, experimentId: string, limit = 200) =>
+    request<{
+      battery_id: string;
+      experiment_id: string;
+      frame_count: number;
+      features: PhysicalFeatureBlock[];
+    }>(`/experiments/${batteryId}/${experimentId}/physical-features?limit=${limit}`),
+  getFeatureCorrelations: (batteryId: string, experimentId: string, featureCode: string, limit = 4000) =>
+    request<FeatureCorrelationsResponse>(
+      `/experiments/${batteryId}/${experimentId}/feature-correlations?feature_code=${encodeURIComponent(featureCode)}&limit=${limit}`,
+    ),
+  getGateCalibration: (batteryId: string, experimentId: string, nFrames = 32) =>
+    request<GateCalibrationResponse>(
+      `/experiments/${batteryId}/${experimentId}/gate-calibration?n_frames=${nFrames}`,
+    ),
+  listMaterializedAnalyses: (batteryId: string, experimentId: string) =>
+    request<{ analyses: { analysis_id: string; analysis_mode: string; target: string; split_id: string | null; fold_index: number | null; dataset_id: string | null; candidate_features: string[]; selected_features: string[]; selection_basis: string | null; status: string }[] }>(
+      `/experiments/${batteryId}/${experimentId}/feature-analyses`,
+    ),
+  listSplits: (batteryId: string, experimentId: string) =>
+    request<{ splits: { split_id: string; dataset_id: string | null; strategy: string | null; readiness_status: string | null }[] }>(
+      `/experiments/${batteryId}/${experimentId}/splits`,
+    ),
+  freezeGateCalibration: (batteryId: string, experimentId: string, body: {
+    confirmed_by: string;
+    calibration_basis: string;
+  }) =>
+    request<GateCalibrationRecordEntry>(
+      `/experiments/${batteryId}/${experimentId}/gate-calibration`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 };
 
 /** client 覆盖的 API 路径清单 — drift 测试与 openapi-v1.json 对齐用。 */
@@ -689,6 +840,13 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/data-quality" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/synchronization" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/measurement-events" },
+  { method: "GET", path: "/feature-definitions" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/physical-features" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-correlations" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/splits" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-analyses" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
 ];
 
 /** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

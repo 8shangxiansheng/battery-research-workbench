@@ -172,3 +172,30 @@ describe("Data workspace API（§29 T31-T35 后端部分）", () => {
     expect(Array.isArray(assets.data.assets)).toBe(true);
   });
 });
+
+describe("BRW-025R-FE feature workbench endpoints（沙箱契约）", () => {
+  it("feature-definitions 返回双语 33 条 catalogue", async (ctx) => {
+    if (!available) ctx.skip();
+    const d = (await get("/feature-definitions")) as { data: { catalogue: Record<string, unknown>[]; formula_source_id: string } };
+    expect(d.data.catalogue.length).toBe(33);
+    expect(d.data.formula_source_id).toBe("USER_MATLAB_TIME_FREQUENCY_FEATURE_FORMULAS_V1");
+    const tdstd = d.data.catalogue.find((c) => c.code === "TDSTD");
+    expect(tdstd?.display_name_zh).toBe("标准差");
+  });
+
+  it("physical-features / correlations / calibration 无波形产物时 404（沙箱）", async () => {
+    const phys = await fetch(`${api}/experiments/CELL_001/EXP_001/physical-features`);
+    expect([200, 404]).toContain(phys.status);
+    const corr = await fetch(`${api}/experiments/CELL_001/EXP_001/feature-correlations?feature_code=SWA`);
+    expect([200, 404]).toContain(corr.status);
+    const calib = await fetch(`${api}/experiments/CELL_001/EXP_001/gate-calibration`);
+    expect([200, 404]).toContain(calib.status);
+  });
+
+  it("target-informed calibration basis 被拒绝（有产物时 400 / 无产物 404）", async () => {
+    const r = await post("/experiments/CELL_001/EXP_001/gate-calibration", {
+      confirmed_by: "user", calibration_basis: "SOC_CORRELATION",
+    });
+    expect([400, 404]).toContain(r.status);
+  });
+});

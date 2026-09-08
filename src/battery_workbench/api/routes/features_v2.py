@@ -247,7 +247,7 @@ def feature_correlations(
     battery_id: str,
     experiment_id: str,
     feature_code: str = Query(default="SWA"),
-    limit: int = Query(default=400, ge=10, le=2000),
+    limit: int = Query(default=2000, ge=10, le=4000),
 ) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
@@ -264,7 +264,8 @@ def feature_correlations(
             f"unknown feature_code {feature_code}; available: {sorted(series_map)}",
         )
     rows = _correlation_rows(
-        request, battery_id, experiment_id, series_map[feature_code], feature_code
+        request, battery_id, experiment_id, series_map[feature_code], feature_code,
+        max_frames=len(frames),
     )
 
     soc_suite = []
@@ -438,3 +439,68 @@ def freeze_gate_calibration(
         "data": record.model_dump(mode="json") | {"reuse_status": "REUSED" if reused else "CREATED"},
         "meta": {},
     }
+
+
+# ---------- materialized splits (read-only list for ML-safe handoff) ----------
+
+
+@router.get("/experiments/{battery_id}/{experiment_id}/splits")
+def list_splits(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    root = service.processed_root / "splits" / battery_id / experiment_id
+    items: list[dict[str, Any]] = []
+    if root.is_dir():
+        for manifest in sorted(root.rglob("split_manifest.json")):
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            items.append(
+                {
+                    "split_id": data.get("split_id", manifest.parent.name),
+                    "dataset_id": data.get("dataset_id"),
+                    "strategy": data.get("strategy"),
+                    "readiness_status": data.get("readiness_status"),
+                }
+            )
+    return {"data": {"splits": items}, "meta": {}}
+
+
+# ---------- materialized feature analyses (read-only list) ----------
+
+
+@router.get("/experiments/{battery_id}/{experiment_id}/feature-analyses")
+def list_feature_analyses(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    root = service.processed_root / "feature_analysis" / battery_id / experiment_id
+    items: list[dict[str, Any]] = []
+    if root.is_dir():
+        for manifest in sorted(root.rglob("analysis_manifest.json")):
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            selection = data.get("selection") or {}
+            items.append(
+                {
+                    "analysis_id": data.get("analysis_id", manifest.parent.name),
+                    "analysis_mode": data.get("analysis_mode"),
+                    "target": data.get("target"),
+                    "split_id": data.get("split_id"),
+                    "fold_index": data.get("fold_index"),
+                    "dataset_id": data.get("dataset_id"),
+                    "candidate_features": data.get("candidate_features", []),
+                    "selected_features": selection.get("selected_features", []),
+                    "selection_basis": selection.get("selection_basis"),
+                    "status": "AVAILABLE",
+                }
+            )
+    return {"data": {"analyses": items}, "meta": {}}
