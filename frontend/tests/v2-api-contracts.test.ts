@@ -124,7 +124,8 @@ describe("Wizard 全链 API 契约（§27 T07-T20 后端部分）", () => {
     const sid = session.session_id as string;
     expect(String(sid)).toMatch(/^INTAKE::/);
 
-    const FIX = "/tmp/brw024r-fixtures";
+    // deterministic in-repo fixtures (scripts/make_intake_fixtures.py) — /tmp copies do not survive reboots
+    const FIX = resolve(new URL(import.meta.url).pathname, "../../../tests/fixtures/brw024r");
     for (const [role, file] of [
       ["ELECTRICAL", "sample_electrical.xlsx"],
       ["ULTRASOUND", "sample_ultrasound.txt"],

@@ -456,6 +456,46 @@ export interface GateCalibrationResponse {
   recommendation: string;
 }
 
+/** BRW-017R2 canonical envelope-peak TOF */
+export interface CanonicalTofRow {
+  measurement_event_id: string;
+  frame_index_raw: number;
+  tof_method_id: string;
+  tof_definition_version: string;
+  surface_gate_id: string;
+  bottom_gate_id: string;
+  gate_calibration_id: string;
+  surface_peak_sample_index: number | null;
+  bottom_peak_sample_index: number | null;
+  surface_peak_local_index: number | null;
+  bottom_peak_local_index: number | null;
+  tof_samples: number | null;
+  sampling_rate_hz: number | null;
+  tof_us: number | null;
+  tof_status: string;
+  tof_quality_reason: string;
+  parameter_set_id: string | null;
+}
+
+export interface CanonicalTofPayload {
+  tof_method_id: string;
+    sampling_rate_hz: number | null;
+    sampling_rate_verified: boolean;
+    parameter_set_id: string | null;
+    surface_gate_id: string;
+    bottom_gate_id: string;
+    rows: CanonicalTofRow[];
+    audit: {
+      total_frames: number;
+      status_counts: Record<string, number>;
+      surface_valid: number;
+      bottom_valid: number;
+      canonical_tof_valid: number;
+      tof_samples_stats: { min: number; median: number; max: number } | null;
+      tof_us_stats: { min: number; median: number; max: number } | null;
+    };
+}
+
 export interface GateCalibrationRecordEntry {
   gate_calibration_id: string;
   gate_template_id: string;
@@ -924,6 +964,11 @@ export const client = {
     request<GateCalibrationResponse>(
       `/experiments/${batteryId}/${experimentId}/gate-calibration?n_frames=${nFrames}`,
     ),
+  // ---------- BRW-017R2 canonical envelope-peak TOF ----------
+  getCanonicalTof: (batteryId: string, experimentId: string, limit = 200) =>
+    request<CanonicalTofPayload>(
+      `/experiments/${batteryId}/${experimentId}/canonical-tof?limit=${limit}`,
+    ),
   listTargets: (batteryId: string, experimentId: string) =>
     request<{ targets: TargetDefinition[] }>(`/experiments/${batteryId}/${experimentId}/targets`),
   getAlignmentSummary: (batteryId: string, experimentId: string) =>
@@ -1044,6 +1089,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-label-preview" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/canonical-tof" },
 ];
 
 /** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

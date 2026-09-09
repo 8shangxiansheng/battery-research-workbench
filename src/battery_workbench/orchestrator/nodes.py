@@ -867,6 +867,133 @@ class TofActivationNode(WorkflowNode):
         }
 
 
+class CanonicalTofNode(WorkflowNode):
+    """BRW-017R2 — canonical envelope-peak surface→bottom TOF (new identity).
+
+    Independent of the legacy TOF_ACTIVATION artifact: fs/gate changes
+    invalidate this node (and its downstream consumers) only.
+    """
+
+    node_type = "CANONICAL_TOF_FEATURES"
+
+    def requirements(self, plan, inputs):
+        return ArtifactRequirements(
+            artifact_type="CANONICAL_TOF_FEATURES",
+            manifest_name="canonical_tof_manifest.json",
+            identity=ArtifactIdentity(
+                battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
+            ),
+            output_rel_dir=f"features_physical/{plan.project.battery_id}/{plan.project.experiment_id}",
+            id_key="",
+            version_key="",
+        )
+
+    def output_rel_dir(self, plan):
+        return f"features_physical/{plan.project.battery_id}/{plan.project.experiment_id}"
+
+    def run(self, plan, inputs, ctx):
+        import numpy as np
+        import pandas as pd
+        import zarr
+
+        from battery_workbench.features.gate_calibration import (
+            CANONICAL_TOF_METHOD,
+            TOF_DEFINITION_VERSION,
+            TOF_POLICY_VERSION,
+            tof_gate_bindings,
+        )
+        from battery_workbench.features_physical.canonical_tof import (
+            compute_canonical_tof_series,
+            effective_fs,
+        )
+
+        b, e = plan.project.battery_id, plan.project.experiment_id
+        features_path = Path(ctx.processed_root) / "features" / b / e
+        feature_sets = sorted(p for p in features_path.glob("AS::*/FS::*") if p.is_dir())
+        if not feature_sets:
+            raise FileNotFoundError("no ULTRASOUND_FEATURE_SET available for canonical TOF")
+        features = pd.read_parquet(feature_sets[-1] / "ultrasound_features.parquet")
+        zg = zarr.open_group(
+            str(Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr"), mode="r"
+        )
+        arr = np.asarray(zg[str(features["waveform_group"].iloc[0])])
+        rows = features["waveform_row_index"].to_numpy()
+        frames = arr[rows]
+
+        eff = self._load_effective_parameters(inputs)
+        fs, fs_verified = effective_fs(eff, require_verified=True)
+        ps_id = inputs.get("PARAMETER_SET").artifact_id if inputs.get("PARAMETER_SET") else ""
+        bindings = tof_gate_bindings()
+        table = compute_canonical_tof_series(
+            frames,
+            features["measurement_event_id"].tolist(),
+            surface_gate=bindings["surface"],
+            bottom_gate=bindings["bottom"],
+            gate_calibration_id="SOURCE_TEMPLATE_FROZEN_V1",
+            sampling_rate_hz=fs,
+            parameter_set_id=ps_id,
+        )
+        valid = table[table["tof_status"] == "VALID"]
+        out_dir = Path(ctx.processed_root) / "features_physical" / b / e
+        out_dir.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(out_dir / "canonical_tof.parquet", index=False)
+        audit = {
+            "tof_method_id": CANONICAL_TOF_METHOD,
+            "tof_definition_version": TOF_DEFINITION_VERSION,
+            "tof_policy_version": TOF_POLICY_VERSION,
+            "sampling_rate_hz": fs,
+            "sampling_rate_verified": bool(fs_verified),
+            "parameter_set_id": ps_id,
+            "surface_gate_id": bindings["surface"].gate_id,
+            "bottom_gate_id": bindings["bottom"].gate_id,
+            "gate_calibration_id": "SOURCE_TEMPLATE_FROZEN_V1",
+            "audit": {
+                "total_frames": len(table),
+                "status_counts": table["tof_status"].value_counts().to_dict(),
+                "canonical_tof_valid": len(valid),
+                "tof_samples_stats": (
+                    {"min": float(valid.tof_samples.min()),
+                     "median": float(valid.tof_samples.median()),
+                     "max": float(valid.tof_samples.max())}
+                    if len(valid)
+                    else None
+                ),
+                "tof_us_stats": (
+                    {"min": float(valid.tof_us.min()),
+                     "median": float(valid.tof_us.median()),
+                     "max": float(valid.tof_us.max())}
+                    if len(valid)
+                    else None
+                ),
+            },
+        }
+        (out_dir / "canonical_tof_audit.json").write_text(
+            json.dumps(audit, ensure_ascii=False, indent=2) + "\n"
+        )
+        manifest = {
+            "tof_method_id": CANONICAL_TOF_METHOD,
+            "tof_definition_version": TOF_DEFINITION_VERSION,
+            "sampling_rate_hz": fs,
+            "sampling_rate_verified": bool(fs_verified),
+            "parameter_set_id": ps_id,
+            "row_count": len(table),
+            "canonical_tof_valid": len(valid),
+        }
+        (out_dir / "canonical_tof_manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n"
+        )
+        limitations = [] if (fs_verified and len(valid)) else [
+            "canonical tof_us stays null until fs is verified in the Parameter Registry"
+        ]
+        return {
+            "artifact_id": "",
+            "path": str(out_dir),
+            "manifest_path": str(out_dir / "canonical_tof_manifest.json"),
+            "producer_version": TOF_DEFINITION_VERSION,
+            "limitations": limitations,
+        }
+
+
 class GatedFeaturesNode(WorkflowNode):
     node_type = "GATED_FEATURES"
 
@@ -1956,6 +2083,7 @@ def default_nodes() -> list[WorkflowNode]:
         ReferenceLabelsNode(),
         ParameterSetNode(),
         TofActivationNode(),
+        CanonicalTofNode(),
         GatedFeaturesNode(),
         FeatureLabelAnalysisNode(),
         DatasetNode(),

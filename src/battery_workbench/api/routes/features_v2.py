@@ -47,6 +47,7 @@ from battery_workbench.features.state_correlation import (
     soc_correlation_suite,
     soh_cycle_summary,
 )
+from battery_workbench.features_physical.canonical_tof import effective_fs
 
 router = APIRouter(tags=["feature-workbench"])
 
@@ -988,3 +989,105 @@ def feature_target_ranking(
             "meta": {"note": "exploratory ranking; not a formal ML selection"} if analysis_mode == "EXPLORATORY"
             else {"note": "TRAIN-only ranking; held-out targets not consulted"},
             }
+
+
+# ---------------------------------------------------------------------------
+# BRW-017R2 — canonical envelope-peak TOF (read endpoints)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/experiments/{battery_id}/{experiment_id}/canonical-tof")
+def canonical_tof(
+    request: Request,
+    battery_id: str,
+    experiment_id: str,
+    limit: int = Query(default=200, ge=1, le=4000),
+) -> dict[str, Any]:
+    """Canonical envelope-peak TOF series (SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1).
+
+    fs comes from the effective ParameterSet only; both TOF gates must be the
+    frozen source-template bindings; XCorr is never consumed.
+    """
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    events, _ = _load_events_labels(request, battery_id, experiment_id)
+
+    # fs from the effective parameter set — the only legal provenance
+    ps_root = get_service(request).processed_root / "parameters" / battery_id / experiment_id
+    fs_hz, fs_verified = None, False
+    parameter_set_id = None
+    for manifest in sorted(ps_root.glob("PS::*/parameter_set_manifest.json")):
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if data.get("sampling_rate_status") != "RESOLVED":
+            continue
+        parameter_set_id = data.get("parameter_set_id")
+        eff_path = manifest.parent / "effective_parameters.json"
+        eff = json.loads(eff_path.read_text(encoding="utf-8")) if eff_path.is_file() else {}
+        eff = eff.get("effective_parameters") or eff
+        fs_hz, fs_verified = effective_fs(eff, require_verified=True)
+        if fs_verified:
+            break
+    if parameter_set_id is None:
+        raise APIError(
+            ErrorCode.ARTIFACT_NOT_AVAILABLE,
+            "no resolved sampling-rate parameter set (fs alone does not activate TOF)",
+        )
+
+    import pandas as pd
+
+    from battery_workbench.features.gate_calibration import (
+        CANONICAL_TOF_METHOD,
+        tof_gate_bindings,
+    )
+    from battery_workbench.features_physical.canonical_tof import (
+        compute_canonical_tof_series,
+    )
+
+    bindings = tof_gate_bindings()
+    n = min(len(frames), len(events))
+    table = compute_canonical_tof_series(
+        frames[:n],
+        events["measurement_event_id"].iloc[:n].tolist(),
+        surface_gate=bindings["surface"],
+        bottom_gate=bindings["bottom"],
+        gate_calibration_id="SOURCE_TEMPLATE_FROZEN_V1",
+        sampling_rate_hz=fs_hz if fs_verified else None,
+        parameter_set_id=parameter_set_id,
+        frame_index_offset=0,
+    )
+    status_counts = table["tof_status"].value_counts().to_dict()
+    valid = table[table["tof_status"] == "VALID"]
+    tof_series = valid["tof_samples"]
+    tof_us_series = valid["tof_us"]
+
+    def _stats(s: pd.Series | None) -> dict[str, float | None] | None:
+        if s is None or s.empty:
+            return None
+        return {
+            "min": float(s.min()), "median": float(s.median()), "max": float(s.max()),
+        }
+
+    return {
+        "data": {
+            "tof_method_id": CANONICAL_TOF_METHOD,
+            "sampling_rate_hz": fs_hz,
+            "sampling_rate_verified": fs_verified,
+            "parameter_set_id": parameter_set_id,
+            "surface_gate_id": bindings["surface"].gate_id,
+            "bottom_gate_id": bindings["bottom"].gate_id,
+            "rows": json.loads(table.to_json(orient="records")),
+            "audit": {
+                "total_frames": int(n),
+                "status_counts": status_counts,
+                "surface_valid": int(table["surface_peak_sample_index"].notna().sum()),
+                "bottom_valid": int(table["bottom_peak_sample_index"].notna().sum()),
+                "canonical_tof_valid": len(valid),
+                "tof_samples_stats": _stats(tof_series),
+                "tof_us_stats": _stats(tof_us_series),
+            },
+        },
+        "meta": {
+            "note": "fs from Parameter Registry; never from cadence/sample count/filename",
+        },
+    }

@@ -97,10 +97,18 @@ describe("BRW-027R E2E A–O", () => {
     expect(d.status).toBe("SUCCEEDED");
   });
 
-  it("G: missing-fs TOF µs — no fabricated physical time", async (ctx) => {
+  it("G: TOF µs — any µs claim must carry method + fs provenance (BRW-017R2)", async (ctx) => {
     if (!available) ctx.skip();
     const d = await send("算TOF微秒");
-    expect(d.message).not.toMatch(/\d+\s*µs/);
+    if (/\d+\s*µs/.test(d.message)) {
+      // canonical method id + verified-fs provenance are mandatory companions
+      expect(d.message).toContain("SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1");
+      expect(d.message).toMatch(/verified/);
+      expect(d.message).toContain("参数注册表");
+    } else {
+      // no fs → WAITING_FOR_USER, sample domain only
+      expect(d.status).toBe("WAITING_FOR_USER");
+    }
   });
 
   it("H: gate needs calibration — points to Calibrate Gates flow", async (ctx) => {

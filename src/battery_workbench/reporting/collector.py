@@ -126,8 +126,8 @@ def collect_results(
     """Aggregate results from existing artifacts (read-only, no recomputation)."""
     results: list[ScientificResultRecord] = []
     b, e = battery_id, experiment_id
-    DATASET_ID = "DS::6a3142e5186fc684964ff09e"
-    SPLIT_ID = "SPLIT::062cf007d21578a11ab2d728"
+    dataset_id = "DS::6a3142e5186fc684964ff09e"
+    split_id = "SPLIT::062cf007d21578a11ab2d728"
 
     runs_dir = processed_root.parent / "artifacts" / "runs"
     latest_run_id = (
@@ -147,7 +147,7 @@ def collect_results(
                 value=sync.get("matches_frames"),
                 units="rows",
                 scope="experiment",
-                dataset_id=DATASET_ID,
+                dataset_id=dataset_id,
                 evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
                 evidence_ref="synchronization_manifest.json",
                 scientific_status="PROVISIONAL",
@@ -165,7 +165,7 @@ def collect_results(
                 name="SOC method",
                 value=label_manifest.get("soc_method"),
                 scope="experiment",
-                dataset_id=DATASET_ID,
+                dataset_id=dataset_id,
                 evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
                 evidence_ref="label_manifest.json",
                 scientific_status="RETROSPECTIVE",
@@ -174,7 +174,7 @@ def collect_results(
         )
 
     # dataset
-    ds_dir = processed_root / "datasets" / b / e / "SOC" / DATASET_ID
+    ds_dir = processed_root / "datasets" / b / e / "SOC" / dataset_id
     ds_manifest = _load_json(ds_dir / "dataset_manifest.json")
     if ds_manifest:
         results.append(
@@ -184,7 +184,7 @@ def collect_results(
                 name="SOC dataset status",
                 value=ds_manifest.get("dataset_status"),
                 scope="experiment",
-                dataset_id=DATASET_ID,
+                dataset_id=dataset_id,
                 evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
                 evidence_ref="dataset_manifest.json",
                 scientific_status=ds_manifest.get("dataset_status", ""),
@@ -192,7 +192,7 @@ def collect_results(
         )
 
     # split
-    split_dir = processed_root / "splits" / b / e / DATASET_ID / SPLIT_ID
+    split_dir = processed_root / "splits" / b / e / dataset_id / split_id
     split_manifest = _load_json(split_dir / "split_manifest.json")
     if split_manifest:
         results.append(
@@ -202,8 +202,8 @@ def collect_results(
                 name="split evaluation readiness",
                 value=split_manifest.get("readiness_status"),
                 scope="experiment",
-                dataset_id=DATASET_ID,
-                split_id=SPLIT_ID,
+                dataset_id=dataset_id,
+                split_id=split_id,
                 evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
                 evidence_ref="split_manifest.json",
                 scientific_status=split_manifest.get("readiness_status", ""),
@@ -213,7 +213,7 @@ def collect_results(
 
     # model comparison per fold per strategy
     comp_path = (
-        processed_root / "models" / b / e / DATASET_ID / SPLIT_ID / "model_comparison.parquet"
+        processed_root / "models" / b / e / dataset_id / split_id / "model_comparison.parquet"
     )
     if comp_path.exists():
         comp = pd.read_parquet(comp_path)
@@ -228,8 +228,8 @@ def collect_results(
                         units="percent" if metric == "MAE" else "",
                         scope=f"fold:{row['fold_index']}",
                         source_artifact_id=row["model_id"],
-                        dataset_id=DATASET_ID,
-                        split_id=SPLIT_ID,
+                        dataset_id=dataset_id,
+                        split_id=split_id,
                         model_id=row["model_id"],
                         model_family=str(row["strategy"]),
                         evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
@@ -251,8 +251,8 @@ def collect_results(
                     value=c.get("macro_MAE"),
                     units="percent",
                     scope="experiment",
-                    dataset_id=DATASET_ID,
-                    split_id=SPLIT_ID,
+                    dataset_id=dataset_id,
+                    split_id=split_id,
                     source_run_id=latest_run_id,
                     model_family=c["strategy"],
                     evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
@@ -272,7 +272,7 @@ def collect_results(
                 name="TOF status",
                 value=tof.get("tof_status"),
                 scope="experiment",
-                dataset_id=DATASET_ID,
+                dataset_id=dataset_id,
                 evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
                 evidence_ref="tof_activation_manifest.json",
                 scientific_status="BLOCKED",
@@ -280,7 +280,53 @@ def collect_results(
             )
         )
 
+    # BRW-017R2 canonical envelope-peak TOF (surface→bottom) — independent
+    # result record; evidence chain names the full task-pack provenance.
+    canonical_tof = _read_canonical_tof_summary(processed_root, b, e)
+    if canonical_tof is not None:
+        results.append(canonical_tof)
+
     return results
+
+
+def _read_canonical_tof_summary(
+    processed_root: Path, battery_id: str, experiment_id: str
+) -> ScientificResultRecord | None:
+    """R::canonical_tof_status — provenance trace per the 13_REPORT spec."""
+    audit_root = processed_root / "features_physical" / battery_id / experiment_id
+    canonical_path = audit_root / "canonical_tof_audit.json"
+    if not canonical_path.is_file():
+        return None
+    try:
+        payload = json.loads(canonical_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    audit = payload.get("audit") or payload
+    valid = int(audit.get("canonical_tof_valid", 0))
+    total = int(audit.get("total_frames", 0))
+    status = "AVAILABLE" if valid > 0 and payload.get("sampling_rate_verified") else "BLOCKED"
+    return ScientificResultRecord(
+        result_id="R::canonical_tof_status",
+        result_type="READINESS",
+        name="Canonical TOF (envelope peak surface→bottom)",
+        value={
+            "tof_method_id": payload.get("tof_method_id"),
+            "tof_definition_version": payload.get("tof_definition_version"),
+            "surface_gate_id": payload.get("surface_gate_id"),
+            "bottom_gate_id": payload.get("bottom_gate_id"),
+            "parameter_set_id": payload.get("parameter_set_id"),
+            "sampling_rate_hz": payload.get("sampling_rate_hz"),
+            "canonical_tof_valid": valid,
+            "total_frames": total,
+            "tof_us_stats": audit.get("tof_us_stats"),
+        },
+        scope="experiment",
+        dataset_id="DS::6a3142e5186fc684964ff09e",
+        evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
+        evidence_ref="features_physical/canonical_tof_audit.json",
+        scientific_status=status,
+        limitations=[] if status == "AVAILABLE" else ["CANONICAL_TOF_NOT_ACTIVATED"],
+    )
 
 
 def collect_evidence_registry(

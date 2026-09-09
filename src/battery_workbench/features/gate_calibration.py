@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from battery_workbench.features.physical_v2 import GATE_TEMPLATES
 
@@ -278,3 +278,82 @@ def smoothing_split_boundary_warning(variant: str, cycle_ids: list[Any]) -> str 
             "not eligible as an ML-safe predictor (SOURCE_MOVMEAN5_EXPLORATORY_POLICY_V1)"
         )
     return None
+
+# ---------------------------------------------------------------------------
+# BRW-017R2 — TOF gate bindings (canonical envelope-peak method)
+# ---------------------------------------------------------------------------
+
+TOF_GATE_BINDINGS_VERSION = "TOF_GATE_BINDINGS_V1"
+TOF_DEFINITION_VERSION = "0.3.0"
+TOF_POLICY_VERSION = "ENVELOPE_PEAK_V1"
+CANONICAL_TOF_METHOD = "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1"
+
+
+class TOFGateBinding(BaseModel):
+    role: Literal["surface", "bottom"]
+    gate_id: str
+    matlab_range: str
+    python_start: int
+    python_end_exclusive: int
+    length_samples: int
+
+
+TOF_GATE_BINDINGS: dict[str, TOFGateBinding] = {
+    "surface": TOFGateBinding(
+        role="surface", gate_id="TOF_SURFACE_PEAK_GATE",
+        matlab_range="60:260", python_start=59, python_end_exclusive=260,
+        length_samples=201,
+    ),
+    "bottom": TOFGateBinding(
+        role="bottom", gate_id="TOF_BOTTOM_PEAK_GATE",
+        matlab_range="750:1200", python_start=749, python_end_exclusive=1200,
+        length_samples=451,
+    ),
+}
+
+
+def tof_gate_bindings() -> dict[str, TOFGateBinding]:
+    """Source templates — NOT universal constants; experiments must freeze a
+    GateCalibrationRecord per gate before canonical TOF activates."""
+    return dict(TOF_GATE_BINDINGS)
+
+
+class TOFReadiness(BaseModel):
+    level: int  # 0..3 per task pack §E (4 = optional corrected variant)
+    level_name: str
+    fs_verified: bool = False
+    surface_gate_calibrated: bool = False
+    bottom_gate_calibrated: bool = False
+    ready: bool = False
+    missing: list[str] = Field(default_factory=list)
+
+
+def evaluate_tof_readiness(
+    *,
+    sampling_rate_hz: float | None,
+    fs_verified: bool,
+    surface_gate_calibrated: bool,
+    bottom_gate_calibrated: bool,
+) -> TOFReadiness:
+    """Canonical envelope-peak readiness ladder (fs alone never activates)."""
+    missing: list[str] = []
+    if sampling_rate_hz is None or sampling_rate_hz <= 0 or not fs_verified:
+        missing.append("SAMPLING_RATE_VERIFIED")
+    if not surface_gate_calibrated:
+        missing.append("SURFACE_TOF_GATE_CALIBRATED")
+    if not bottom_gate_calibrated:
+        missing.append("BOTTOM_TOF_GATE_CALIBRATED")
+    if not missing:
+        return TOFReadiness(
+            level=2, level_name="FS_AND_BOTH_GATES_CALIBRATED",
+            fs_verified=True, surface_gate_calibrated=True,
+            bottom_gate_calibrated=True, ready=True,
+        )
+    if len(missing) == 1 and missing[0] == "SAMPLING_RATE_VERIFIED":
+        return TOFReadiness(
+            level=1, level_name="TIME_CONVERSION_ONLY",
+            surface_gate_calibrated=surface_gate_calibrated,
+            bottom_gate_calibrated=bottom_gate_calibrated,
+            missing=missing,
+        )
+    return TOFReadiness(level=0, level_name="NO_FS", missing=missing)

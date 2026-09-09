@@ -48,6 +48,7 @@ class ResearchIntent(str, Enum):
     SELECT_TARGET = "SELECT_TARGET"
     CHECK_ALIGNMENT = "CHECK_ALIGNMENT"
     CALIBRATE_GATES = "CALIBRATE_GATES"
+    INSPECT_CANONICAL_TOF = "INSPECT_CANONICAL_TOF"
     INSPECT_FEATURES = "INSPECT_FEATURES"
     ANALYZE_RELATIONSHIP = "ANALYZE_RELATIONSHIP"
     RANK_CANDIDATE_FEATURES = "RANK_CANDIDATE_FEATURES"
@@ -75,6 +76,8 @@ _INTENT_PATTERNS: list[tuple[ResearchIntent, tuple[str, ...]]] = [
      "换成温度", "换温度", "看看温度", "study soc", "switch to temperature")),
     (ResearchIntent.CHECK_ALIGNMENT, ("对齐", "同步", "匹配", "3999", "为什么只有", "alignment", "matched")),
     (ResearchIntent.CALIBRATE_GATES, ("标定", "标定闸门", "calibrate", "gate calibration")),
+    (ResearchIntent.INSPECT_CANONICAL_TOF, ("算tof", "计算tof", "tof怎么算", "tof 是多少",
+     "tof是多少", "飞行时间", "compute tof", "envelope peak tof", "包络峰值")),
     (ResearchIntent.INSPECT_FEATURES, ("特征列表", "有哪些特征", "查看特征", "inspect features", "x和y", "x 和 y")),
     (ResearchIntent.ANALYZE_RELATIONSHIP, ("关系", "相关", "relationship", "correlation", "和soc关系", "和温度")),
     (ResearchIntent.RANK_CANDIDATE_FEATURES, ("哪些特征", "排序", "ranking", "关系明显", "candidate")),

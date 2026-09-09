@@ -780,6 +780,20 @@ def build_default_registry() -> AgentToolRegistry:
     )
     r.register(
         _t(
+            "inspect_canonical_tof",
+            "BRW-017R2 规范 TOF 审计（包络峰值 surface→bottom；fs 来自参数注册表；XCorr 不参与）",
+            ToolCategory.WAVEFORM_GATES,
+            read_only=True,
+            side_effect=False,
+            confirmation=ConfirmationPolicy.NO_CONFIRMATION,
+            scope="canonical tof audit",
+            idempotent=True,
+            properties={"battery_id": STR, "experiment_id": STR, "limit": {"type": "integer"}},
+            required=["battery_id", "experiment_id"],
+        )
+    )
+    r.register(
+        _t(
             "analyze_target_relationships",
             "特征-目标关系与排序（SOC/Temperature/SOH/Voltage/Current 分支；exploratory 或 TRAIN-only）",
             ToolCategory.FEATURES_ANALYSIS,

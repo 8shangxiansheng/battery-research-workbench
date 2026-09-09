@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { PageHeader, LoadingState, ErrorState, EmptyState, BlockedValue, ScopeNote } from "../../components/workbench/shared";
 import { ParameterDialog } from "../../components/workbench/ParameterDialog";
 import { PhysicalFeatureCards, ElectricalStatePanel } from "../../components/workbench/FrameContextPanels";
+import { CanonicalTofPanel } from "../../components/workbench/CanonicalTofPanel";
 import { CalibrationWorkbench } from "../../components/workbench/CalibrationWorkbench";
 import { numberText } from "../../lib/presentation";
 const WaveformPlot = lazy(()=>import("../../components/workbench/WaveformPlot"));
@@ -42,6 +43,7 @@ export function WaveformWorkbench() {
     {draft && <div className="notice mt-4 items-center"><div className="flex-1"><h3>新闸门选区</h3><p className="text-sm">当前为草稿，确认后才会保存到实验。</p></div><Button variant="ghost" onClick={()=>setDraft(null)}>丢弃</Button><Button onClick={()=>{setConfirm(true);commit.reset();}}>检查闸门</Button></div>}
     {message && <p role="status" className="notice mt-4">{message}</p>}
     <PhysicalFeatureCards batteryId={batteryId} experimentId={experimentId} frameIndex={frame?.frame_index} />
+    <CanonicalTofPanel batteryId={batteryId} experimentId={experimentId} />
     <ElectricalStatePanel event={unique} />
     <CalibrationWorkbench batteryId={batteryId} experimentId={experimentId} waveformLength={preview.data?.data.waveform_length} />
     <div className="grid md:grid-cols-3 panel !p-0 mt-6"><BlockedValue name="幅值" reason="将鼠标悬停在波形上可查看采样点幅值。"/><BlockedValue name="飞行时间 TOF" value={tofAvailable ? tof?.value : null} unit="µs" reason={tofAvailable ? "来自 API 结果" : "需要先提供采样频率"} action={!tofAvailable && <ParameterDialog/>}/><BlockedValue name="波速" reason="需要声程长度与后端能力支持" action={<Button variant="link" size="sm" asChild className="px-0"><Link to={`/experiments/${batteryId}/${experimentId}/advanced/parameters`}>Review parameters</Link></Button>}/></div>

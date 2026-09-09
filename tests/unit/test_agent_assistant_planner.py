@@ -125,10 +125,21 @@ class TestNoGuess:
                        "import numpy"):
             assert banned not in src, f"planner must not import {banned}"
 
-    def test_a14_no_fs_tof_answer_is_sample_domain(self, workspace):
+    def test_a14_no_fs_tof_answer_is_sample_domain(self, workspace, monkeypatch):
+        # fs missing in the parameter registry → WAITING_FOR_USER, never µs.
+        # (The demo share now carries an officially activated verified PS, so
+        # the fs-less branch is exercised through an explicit sandbox.)
+        from battery_workbench.api.routes import features_v2 as fv2
+
+        def _no_fs(request, battery_id, experiment_id, limit=200):
+            raise fv2.APIError(
+                fv2.ErrorCode.ARTIFACT_NOT_AVAILABLE,
+                "no resolved sampling-rate parameter set (fs alone does not activate TOF)",
+            )
+
+        monkeypatch.setattr(fv2, "canonical_tof", _no_fs)
         planner, session, _ = workspace
         r = _send(planner, session, "算TOF微秒")
-        # no fabricated numeric µs value without fs
         import re as _re
         assert not _re.search(r"\d+\s*µs", r.message), r.message
 
@@ -326,3 +337,42 @@ class TestToolBoundary:
         r = _send(planner, session, "哪些特征和SOC关系明显？")
         assert "ToolResult" not in r.message
         assert "scientific_context=" not in r.message
+
+    # ---- BRW-017R2: canonical envelope-peak TOF ----
+
+    def test_a45_tof_intent_classified(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "算TOF")
+        assert r.intent == ResearchIntent.INSPECT_CANONICAL_TOF.value
+
+    def test_a46_tof_question_explains_method(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "TOF怎么算？")
+        assert "包络峰值" in r.message or "envelope" in r.message.lower()
+        # honest wording: no forbidden claims
+        low = r.message.lower()
+        for p in FORBIDDEN_PHRASES:
+            assert p not in low
+
+    def test_a47_tof_unverified_fs_waits_for_user(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "算TOF")
+        # the demo share carries only UNVERIFIED fs in the base parameter set;
+        # whichever branch, the answer must never fabricate tof_us numbers
+        if r.status == "WAITING_FOR_USER":
+            assert "采样频率" in r.message or "fs" in r.message.lower()
+        else:
+            assert "VALID" in r.message or "状态分布" in r.message
+
+    def test_a48_tof_registry_lists_canonical_tool(self, workspace):
+        _, _, gateway = workspace
+        from battery_workbench.agent_tools.models import AgentScientificContext
+
+        r = gateway.execute(
+            "inspect_canonical_tof",
+            AgentScientificContext(battery_id=B, experiment_id=E),
+            {"limit": 50},
+        )
+        assert r.status == "SUCCEEDED"
+        data = r.data
+        assert data["tof_method_id"] == "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1"

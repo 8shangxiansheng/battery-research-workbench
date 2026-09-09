@@ -63,7 +63,8 @@ class ToolGateway:
         # bind BRW-027R semantic adapter handlers defined at module level
         for _name in (
             "inspect_research_state", "select_target", "inspect_alignment",
-            "inspect_gate_readiness", "analyze_target_relationships",
+            "inspect_gate_readiness", "inspect_canonical_tof",
+            "analyze_target_relationships",
             "prepare_ml_safe_dataset", "run_baseline_suite", "get_model_comparison",
         ):
             _fn = globals().get(f"_tool_{_name}")
@@ -1200,6 +1201,24 @@ def _tool_inspect_gate_readiness(
          "note": "gate templates require recalibration on configuration change"},
         ctx,
     )
+
+
+def _tool_inspect_canonical_tof(
+    self, ctx: AgentScientificContext, inputs: dict[str, Any]
+) -> ToolResult:
+    """BRW-017R2 — canonical envelope-peak TOF readiness + audit summary.
+
+    Reads fs provenance and computes the canonical series summary through the
+    same route the API exposes; no fs guessing, no XCorr reuse.
+    """
+    from battery_workbench.api.routes.assistant import _FakeRequestBridge
+    from battery_workbench.api.routes.features_v2 import canonical_tof as _route
+
+    bridge = _FakeRequestBridge(self.service)
+    b = inputs.get("battery_id") or ctx.battery_id
+    e = inputs.get("experiment_id") or ctx.experiment_id
+    out = _route(bridge, b, e, limit=min(int(inputs.get("limit", 200)), 4000))["data"]
+    return self._wrap(out, ctx)
 
 
 def _tool_analyze_target_relationships(

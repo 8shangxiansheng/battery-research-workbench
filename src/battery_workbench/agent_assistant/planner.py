@@ -181,6 +181,52 @@ class ResearchPlanner:
         self.store.save(ctx)
         return resp
 
+    # ---- INSPECT_CANONICAL_TOF (BRW-017R2) ----
+    def _on_inspect_canonical_tof(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
+        """Canonical envelope-peak TOF: check fs + both gates first; never guess."""
+        result = self._execute("inspect_canonical_tof", ctx, {"limit": 200})
+        data = result.data or {}
+        audit = data.get("audit", {})
+        fs = data.get("sampling_rate_hz")
+        fs_verified = bool(data.get("sampling_rate_verified"))
+        status_counts = audit.get("status_counts", {})
+        stats = audit.get("tof_us_stats")
+
+        missing: list[str] = []
+        if fs is None or not fs_verified:
+            missing.append("已验证的采样频率 (fs)")
+        if audit.get("canonical_tof_valid", 0) == 0:
+            missing.append("冻结的 surface/bottom TOF 闸门标定")
+
+        if missing:
+            ctx.phase = "WAITING_FOR_USER"
+            return PlannerResponse(
+                message=("规范 TOF（包络峰值 surface→bottom）尚未激活：缺少 "
+                         + "、".join(missing)
+                         + "。采样频率只能在参数工作台以 verified 方式录入，"
+                           "闸门需在 波形与闸门 标定冻结；我不能从节奏、采样点数或文件名猜测。"),
+                intent=classified.intent.value, phase=ctx.phase,
+                status="WAITING_FOR_USER",
+                evidence_refs=self._evidence(result))
+
+        surface = data.get("surface_gate_id")
+        bottom = data.get("bottom_gate_id")
+        msg = (
+            f"规范 TOF 方法 {data.get('tof_method_id')}："
+            f"fs={fs/1e6:g} MHz（参数注册表 verified）"
+            + (f"，parameter set {data.get('parameter_set_id')}" if data.get("parameter_set_id") else "")
+            + f"。闸门 {surface} → {bottom}。"
+            f"{audit.get('canonical_tof_valid', 0)}/{audit.get('total_frames', 0)} 帧 VALID，"
+            f"状态分布 {status_counts}。"
+        )
+        if stats:
+            msg += (f"tof_samples 中位数见审计；tof_us 范围 "
+                    f"{stats.get('min'):.2f}–{stats.get('max'):.2f} µs。")
+        msg += " XCorr 仅作诊断，不进入规范 tof_us。"
+        return PlannerResponse(
+            message=msg, intent=classified.intent.value, phase=ctx.phase,
+            evidence_refs=self._evidence(result))
+
     # ---- SELECT_TARGET ----
     def _on_select_target(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
         target_id = classified.target_id

@@ -24,15 +24,15 @@ pytestmark = pytest.mark.skipif(
     reason="canonical CELL_001/EXP_001 artifacts unavailable",
 )
 
-FULL_PLAN = dict(
-    profile="FULL_PRE_MODEL",
-    battery_id="CELL_001",
-    experiment_id="EXP_001",
-    dry_run=False,
-    target="soc_reference_percent",
-    features={"selected_features": ["amplitude_a_u"]},
-    split={"strategy": "LEAVE_ONE_GROUP_OUT", "split_unit": "CYCLE"},
-    feature_analysis={
+FULL_PLAN = {
+    "profile": "FULL_PRE_MODEL",
+    "battery_id": "CELL_001",
+    "experiment_id": "EXP_001",
+    "dry_run": False,
+    "target": "soc_reference_percent",
+    "features": {"selected_features": ["amplitude_a_u"]},
+    "split": {"strategy": "LEAVE_ONE_GROUP_OUT", "split_unit": "CYCLE"},
+    "feature_analysis": {
         "analysis_mode": "TRAIN_ONLY_ML_SAFE",
         "target": "soc_reference_percent",
         "fold_index": 2,
@@ -41,16 +41,16 @@ FULL_PLAN = dict(
         "selection": {"requested": True, "mode": "TRAIN_ONLY_RULE_BASED",
                       "policy": {"min_abs_spearman": 0.12, "max_missing_fraction": 0.05}},
     },
-    modeling={"strategies": ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
+    "modeling": {"strategies": ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
                              "RANDOM_FOREST", "GRADIENT_BOOSTING"]},
-    gates={"gate_specs": [
+    "gates": {"gate_specs": [
         {k: v for k, v in g.items() if k != "waveform_length"}
         for g in json.loads(
             (REPO / "data/processed/gated_features/CELL_001/EXP_001"
              / "GATESET::8633ce421ad5e26fe686/gate_specs.json").read_text(encoding="utf-8")
         )
     ]},
-)
+}
 
 UPSTREAM = [
     "ELECTRICAL_CANONICAL", "ULTRASOUND_CANONICAL", "TIME_ANCHOR",
