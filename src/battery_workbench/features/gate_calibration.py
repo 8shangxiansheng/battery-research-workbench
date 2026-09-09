@@ -23,6 +23,7 @@ Smoothing policy (§136–137):
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -357,3 +358,140 @@ def evaluate_tof_readiness(
             missing=missing,
         )
     return TOFReadiness(level=0, level_name="NO_FS", missing=missing)
+
+
+# ---------------------------------------------------------------------------
+# BRW-018R2 — per-experiment TOF gate calibration record (frozen, versioned)
+# ---------------------------------------------------------------------------
+
+TOF_GATE_CALIBRATION_POLICY_ID = "TOF_GATE_CALIBRATION_POLICY_V1"
+# canonical-TOF fallback identity when no confirmed experiment record exists
+SOURCE_TEMPLATE_FROZEN = "SOURCE_TEMPLATE_FROZEN_V1"
+
+
+class TOFPeakDiagnostics(BaseModel):
+    """Per-gate peak diagnostics over the calibration frames (target-blind)."""
+
+    gate_id: str
+    peak_global_indices: list[int]
+    peak_local_indices: list[int]
+    peak_amplitudes_a_u: list[float]
+    peak_containment_fractions: list[float]
+    edge_hit_count: int
+    spread_samples: int  # max(peak index) - min(peak index)
+
+
+class TOFGateCalibrationRecord(BaseModel):
+    """Immutable per-experiment TOF surface/bottom gate calibration.
+
+    Freeze creates version N; any modification re-freezes as version N+1 with
+    a new gate_calibration_id. Prior versions remain on disk (immutable).
+    """
+
+    gate_calibration_id: str
+    calibration_policy_id: str = TOF_GATE_CALIBRATION_POLICY_ID
+    battery_id: str
+    experiment_id: str
+    calibration_frame_ids: list[int]
+    calibration_basis: CalibrationBasis
+    surface_gate_id: str
+    surface_start_sample: int
+    surface_end_sample_exclusive: int
+    bottom_gate_id: str
+    bottom_start_sample: int
+    bottom_end_sample_exclusive: int
+    surface_diagnostics: TOFPeakDiagnostics
+    bottom_diagnostics: TOFPeakDiagnostics
+    version: int = 1
+    prior_gate_calibration_id: str | None = None
+    confirmed_by: str = "user"
+    status: Literal["DRAFT", "FROZEN"] = "DRAFT"
+    confirmed_at: str | None = None
+    notes: str = ""
+
+    def freeze(self, confirmed_at: str) -> TOFGateCalibrationRecord:
+        if self.status == "FROZEN":
+            raise ValueError("record already frozen")
+        return self.model_copy(update={"status": "FROZEN", "confirmed_at": confirmed_at})
+
+
+def tof_calibration_fingerprint(
+    *,
+    battery_id: str,
+    experiment_id: str,
+    frame_ids: list[int],
+    surface_start: int,
+    surface_end: int,
+    bottom_start: int,
+    bottom_end: int,
+    basis: str,
+) -> str:
+    """Deterministic fingerprint of the calibration's identity inputs."""
+    payload = "|".join(
+        str(x)
+        for x in (
+            battery_id, experiment_id, sorted(frame_ids),
+            surface_start, surface_end, bottom_start, bottom_end, basis,
+        )
+    )
+    return payload
+
+
+def tof_calibration_id_from_fingerprint(fingerprint: str, version: int) -> str:
+    import hashlib
+
+    return "GC-TOF::" + hashlib.sha256(f"{fingerprint}|v{version}".encode()).hexdigest()[:24]
+
+
+def resolve_tof_gate_calibration(
+    battery_id: str, experiment_id: str, processed_root: Path
+) -> dict[str, Any]:
+    """Latest confirmed experiment TOF calibration, else the source template.
+
+    Priority: newest FROZEN experiment record > SOURCE_TEMPLATE_FROZEN_V1.
+    Never silently falls back on a save failure: the fallback identity is
+    explicit in the returned provenance.
+    """
+    import json as _json
+
+    root = (
+        processed_root
+        / "gate_calibrations"
+        / battery_id
+        / experiment_id
+    )
+    best: dict[str, Any] | None = None
+    if root.is_dir():
+        for p in sorted(root.glob("GC-TOF::*.json")):
+            try:
+                record = _json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, _json.JSONDecodeError):
+                continue
+            if record.get("status") != "FROZEN":
+                continue
+            if best is None or record.get("version", 0) > best.get("version", 0):
+                best = record
+    if best is not None:
+        return {
+            "gate_calibration_id": best["gate_calibration_id"],
+            "source": "EXPERIMENT_CONFIRMED",
+            "surface_gate_id": best["surface_gate_id"],
+            "surface_start": best["surface_start_sample"],
+            "surface_end_exclusive": best["surface_end_sample_exclusive"],
+            "bottom_gate_id": best["bottom_gate_id"],
+            "bottom_start": best["bottom_start_sample"],
+            "bottom_end_exclusive": best["bottom_end_sample_exclusive"],
+            "version": best["version"],
+        }
+    bindings = tof_gate_bindings()
+    return {
+        "gate_calibration_id": SOURCE_TEMPLATE_FROZEN,
+        "source": "SOURCE_TEMPLATE",
+        "surface_gate_id": bindings["surface"].gate_id,
+        "surface_start": bindings["surface"].python_start,
+        "surface_end_exclusive": bindings["surface"].python_end_exclusive,
+        "bottom_gate_id": bindings["bottom"].gate_id,
+        "bottom_start": bindings["bottom"].python_start,
+        "bottom_end_exclusive": bindings["bottom"].python_end_exclusive,
+        "version": 0,
+    }

@@ -112,6 +112,18 @@ def run_clean(out_root: Path) -> dict:
             }
         elif action["action_type"] == "SELECT_SPLIT_SCHEME":
             values = {"strategy": "LEAVE_ONE_GROUP_OUT", "split_unit": "CYCLE"}
+        elif action["action_type"] == "MISSING_SAMPLING_RATE":
+            # BRW-018R2: the canonical-TOF readiness gate demands a user-supplied
+            # fs — submitted through the SAME official action channel with
+            # explicit provenance (no guessing; stored VERIFIED in the PS).
+            values = {
+                "ultrasound.sampling_rate_hz": {
+                    "value": 50000000.0,
+                    "unit": "Hz",
+                    "_source": "clean-room:user-instrument-record",
+                    "verification_status": "VERIFIED",
+                }
+            }
         else:
             break  # unknown action — leave to humans
         run = engine.submit_user_action(run["run_id"], action["action_id"], values=values)

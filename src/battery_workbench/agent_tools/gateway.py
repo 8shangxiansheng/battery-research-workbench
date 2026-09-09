@@ -589,7 +589,66 @@ class ToolGateway:
             raise SecurityViolation(
                 f"setting {name} requires an explicit user-provided source (no inference)"
             )
-        # 参数写入通过 run 的 user_overrides 通道（BRW-015），此处返回用户动作指引
+        # BRW-018R2: sampling-rate values go through the shared submission
+        # service — real parameter-set write + pending-action resolution +
+        # same-run resume (never a guidance-only reply).
+        if name == "ultrasound.sampling_rate_hz":
+            from battery_workbench.api.errors import APIError
+
+            b = inputs.get("battery_id") or ctx.battery_id
+            e = inputs.get("experiment_id") or ctx.experiment_id
+            numeric = float(value)
+            unit = inputs.get("unit", "Hz")
+            if unit == "MHz":
+                numeric *= 1e6
+                unit = "Hz"
+            elif unit == "kHz":
+                numeric *= 1e3
+                unit = "Hz"
+            try:
+                sub = self.service.submit_sampling_parameter(
+                    b,
+                    e,
+                    {
+                        "values": {
+                            "ultrasound.sampling_rate_hz": {
+                                "value": numeric,
+                                "unit": unit,
+                            }
+                        },
+                        "source": source,
+                        "verified": bool(inputs.get("verified")),
+                        "run_id": inputs.get("run_id") or ctx.run_id,
+                    },
+                )
+            except APIError as exc:
+                raise SecurityViolation(f"sampling-rate submission rejected: {exc}") from exc
+            except (ValueError, TypeError) as exc:
+                raise SecurityViolation(f"invalid sampling-rate value: {exc}") from exc
+            return self._wrap(
+                {
+                    "parameter_name": name,
+                    "value": numeric,
+                    "unit": unit,
+                    "source": source,
+                    "submission_id": sub["submission_id"],
+                    "save_status": sub["save_status"],
+                    "parameter_set_id": sub["parameter_set_id"],
+                    "resume_status": sub["resume_status"],
+                    "run_id": sub["run_id"],
+                    "run_state": sub["run_state"],
+                    "note": (
+                        "fs persisted through the shared submission service; "
+                        "no value inferred; replaying the same submission is idempotent"
+                    ),
+                },
+                ctx,
+                next_actions=[
+                    "inspect canonical TOF readiness",
+                    "if gates not frozen, run gate calibration",
+                ],
+            )
+        # Non-fs parameters keep the user_overrides guidance (BRW-015 contract)
         return self._wrap(
             {
                 "parameter_name": name,

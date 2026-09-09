@@ -334,6 +334,39 @@ def _calibration_diagnostics(
     return diagnostics
 
 
+def _tof_gate_diagnostics(
+    frames: np.ndarray, start: int, end_exclusive: int
+) -> dict[str, Any]:
+    """Envelope-peak diagnostics for one TOF gate over calibration frames."""
+    peaks_global: list[int] = []
+    peaks_local: list[int] = []
+    amps: list[float] = []
+    containments: list[float] = []
+    edge_hits = 0
+    width = end_exclusive - start
+    for frame in frames:
+        segment = frame[start:end_exclusive]
+        env = np.abs(hilbert(segment))
+        local = int(np.argmax(env))
+        peaks_local.append(local)
+        peaks_global.append(start + local)
+        amps.append(float(env[local]))
+        central = env[int(width * 0.1): int(width * 0.9)]
+        containments.append(round(float(np.sum(central**2) / max(np.sum(env**2), 1e-12)), 4))
+        if local < 2 or local > width - 3:
+            edge_hits += 1
+    return {
+        "gate_start": start,
+        "gate_end_exclusive": end_exclusive,
+        "peak_global_indices": peaks_global,
+        "peak_local_indices": peaks_local,
+        "peak_amplitudes_a_u": amps,
+        "peak_containment_fractions": containments,
+        "edge_hit_count": edge_hits,
+        "spread_samples": int(max(peaks_global) - min(peaks_global)),
+    }
+
+
 def _frame_envelopes(frames: np.ndarray, frame_ids: list[int]) -> list[dict[str, Any]]:
     out = []
     for fid in frame_ids:
@@ -375,12 +408,33 @@ def gate_calibration(
         get_gate_template("TOF_BOTTOM_GATE"),
         get_gate_template("ATTENUATION_BOTTOM_GATE"),
     )]
+    # BRW-018R2: TOF surface/bottom gate peak diagnostics over the same
+    # target-blind calibration frames (A-scan + envelope + per-gate peaks).
+    from battery_workbench.features.gate_calibration import (
+        SOURCE_TEMPLATE_FROZEN,
+        resolve_tof_gate_calibration,
+    )
+
+    service_for_resolve = get_service(request)
+    tof_cal = resolve_tof_gate_calibration(
+        battery_id, experiment_id, service_for_resolve.processed_root
+    )
+    tof_diagnostics = {
+        "surface": _tof_gate_diagnostics(
+            calibration_frames, int(tof_cal["surface_start"]), int(tof_cal["surface_end_exclusive"])
+        ),
+        "bottom": _tof_gate_diagnostics(
+            calibration_frames, int(tof_cal["bottom_start"]), int(tof_cal["bottom_end_exclusive"])
+        ),
+    }
     return {
         "data": {
             "calibration_frame_ids": frame_ids,
             "frames": _frame_envelopes(frames, frame_ids),
             "gate_templates": templates,
             "diagnostics": _calibration_diagnostics(calibration_frames, "SWA_SURFACE_GATE"),
+            "tof_calibration": tof_cal | {"fallback_identity": SOURCE_TEMPLATE_FROZEN},
+            "tof_gate_diagnostics": tof_diagnostics,
             "recommendation": "review peak containment and edge hits, then confirm",
         },
         "meta": {
@@ -440,6 +494,170 @@ def freeze_gate_calibration(
     return {
         "data": record.model_dump(mode="json") | {"reuse_status": "REUSED" if reused else "CREATED"},
         "meta": {},
+    }
+
+
+@router.post("/experiments/{battery_id}/{experiment_id}/tof-gate-calibration")
+def freeze_tof_gate_calibration(
+    request: Request, battery_id: str, experiment_id: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    """Freeze a per-experiment TOF surface/bottom calibration record (BRW-018R2).
+
+    Immutable + versioned: identical identity inputs reuse the existing frozen
+    record; any changed bound/basis freezes a NEW version (vN+1) linked to the
+    prior id. Basis must be target-blind. Saves never silently fall back to
+    the source template — failures raise.
+    """
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    confirmed_by = str(body.get("confirmed_by", "user"))
+    basis = str(body.get("calibration_basis", "PREDECLARED_PROTOCOL_GATE"))
+    if basis in ("SOC_CORRELATION", "MODEL_SCORE", "HELD_OUT_RESIDUAL", "TARGET_OPTIMIZED"):
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "target-informed calibration basis is forbidden",
+        )
+    confirmed_at = str(body.get("confirmed_at", "")) or None
+    surface = body.get("surface") or {}
+    bottom = body.get("bottom") or {}
+    if not surface or not bottom:
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "surface and bottom gate bounds are required",
+        )
+    try:
+        s_start, s_end = int(surface["start"]), int(surface["end"])
+        b_start, b_end = int(bottom["start"]), int(bottom["end"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "gate bounds must be {start, end} integers",
+        ) from exc
+
+    service = get_service(request)
+    frames = _load_frames(request, battery_id, experiment_id)
+    n_total = frames.shape[0]
+    frame_ids = select_calibration_frames(n_total)
+    calibration_frames = frames[[int(i) for i in frame_ids]]
+
+    surface_diag = _tof_gate_diagnostics(calibration_frames, s_start, s_end)
+    bottom_diag = _tof_gate_diagnostics(calibration_frames, b_start, b_end)
+
+    from battery_workbench.features.gate_calibration import (
+        TOFGateCalibrationRecord,
+        TOFPeakDiagnostics,
+        resolve_tof_gate_calibration,
+        tof_calibration_fingerprint,
+        tof_calibration_id_from_fingerprint,
+    )
+
+    fingerprint = tof_calibration_fingerprint(
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        frame_ids=list(frame_ids),
+        surface_start=s_start,
+        surface_end=s_end,
+        bottom_start=b_start,
+        bottom_end=b_end,
+        basis=basis,
+    )
+    out_dir = service.processed_root / "gate_calibrations" / battery_id / experiment_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    prior = resolve_tof_gate_calibration(battery_id, experiment_id, service.processed_root)
+    prior_version = int(prior.get("version", 0)) if prior["source"] == "EXPERIMENT_CONFIRMED" else 0
+
+    # idempotent: an exact re-freeze of the latest record's identity → reuse it
+    # (no version bump, no new id) — checked BEFORE any fingerprint versioning.
+    if prior["source"] == "EXPERIMENT_CONFIRMED":
+        same_identity = (
+            prior["surface_start"] == s_start
+            and prior["surface_end_exclusive"] == s_end
+            and prior["bottom_start"] == b_start
+            and prior["bottom_end_exclusive"] == b_end
+        )
+        if same_identity:
+            calibration_id = prior["gate_calibration_id"]
+            version = prior_version
+            out_path = out_dir / f"{calibration_id}.json"
+            return {
+                "data": {
+                    "gate_calibration_id": calibration_id,
+                    "version": version,
+                    "reuse_status": "REUSED",
+                    "prior_gate_calibration_id": None,
+                    "surface_diagnostics": surface_diag,
+                    "bottom_diagnostics": bottom_diag,
+                },
+                "meta": {
+                    "policy_id": "TOF_GATE_CALIBRATION_POLICY_V1",
+                    "selection_basis": "PREDECLARED_PROTOCOL_GATE (deterministic, target-blind)",
+                    "immutability": "identical identity → existing frozen record reused",
+                },
+            }
+
+    # new version: changed bounds/basis freeze vN+1 linked to the prior record
+    version = prior_version + 1
+    calibration_id = tof_calibration_id_from_fingerprint(fingerprint, version)
+    out_path = out_dir / f"{calibration_id}.json"
+
+    reused = out_path.is_file()
+    if not reused:
+        record = TOFGateCalibrationRecord(
+            gate_calibration_id=calibration_id,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            calibration_frame_ids=list(frame_ids),
+            calibration_basis=basis,  # type: ignore[arg-type]
+            surface_gate_id=str(body.get("surface_gate_id", "TOF_SURFACE_PEAK_GATE")),
+            surface_start_sample=s_start,
+            surface_end_sample_exclusive=s_end,
+            bottom_gate_id=str(body.get("bottom_gate_id", "TOF_BOTTOM_PEAK_GATE")),
+            bottom_start_sample=b_start,
+            bottom_end_sample_exclusive=b_end,
+            surface_diagnostics=TOFPeakDiagnostics(
+                gate_id=str(body.get("surface_gate_id", "TOF_SURFACE_PEAK_GATE")),
+                **{k: surface_diag[k] for k in (
+                    "peak_global_indices", "peak_local_indices",
+                    "peak_amplitudes_a_u", "peak_containment_fractions",
+                    "edge_hit_count", "spread_samples")},
+            ),
+            bottom_diagnostics=TOFPeakDiagnostics(
+                gate_id=str(body.get("bottom_gate_id", "TOF_BOTTOM_PEAK_GATE")),
+                **{k: bottom_diag[k] for k in (
+                    "peak_global_indices", "peak_local_indices",
+                    "peak_amplitudes_a_u", "peak_containment_fractions",
+                    "edge_hit_count", "spread_samples")},
+            ),
+            version=version,
+            prior_gate_calibration_id=(
+                prior["gate_calibration_id"]
+                if prior["source"] == "EXPERIMENT_CONFIRMED" and version > 1
+                else None
+            ),
+            confirmed_by=confirmed_by,
+            notes=str(body.get("notes", "")),
+        ).freeze(confirmed_at=confirmed_at or "user-confirmed")
+        out_path.write_text(
+            json.dumps(record.model_dump(mode="json"), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return {
+        "data": {
+            "gate_calibration_id": calibration_id,
+            "version": version,
+            "reuse_status": "REUSED" if reused else "CREATED",
+            "prior_gate_calibration_id": (
+                prior["gate_calibration_id"] if prior["source"] == "EXPERIMENT_CONFIRMED" else None
+            ),
+            "surface_diagnostics": surface_diag,
+            "bottom_diagnostics": bottom_diag,
+        },
+        "meta": {
+            "policy_id": "TOF_GATE_CALIBRATION_POLICY_V1",
+            "selection_basis": "PREDECLARED_PROTOCOL_GATE (deterministic, target-blind)",
+            "immutability": "any bound/basis change freezes a new version; prior records remain",
+        },
     }
 
 
@@ -1038,20 +1256,37 @@ def canonical_tof(
 
     from battery_workbench.features.gate_calibration import (
         CANONICAL_TOF_METHOD,
-        tof_gate_bindings,
+        TOFGateBinding,
+        resolve_tof_gate_calibration,
     )
     from battery_workbench.features_physical.canonical_tof import (
         compute_canonical_tof_series,
     )
 
-    bindings = tof_gate_bindings()
+    # confirmed experiment calibration takes priority over the source template;
+    # the fallback identity is always explicit provenance, never a silent one
+    cal = resolve_tof_gate_calibration(
+        battery_id, experiment_id, get_service(request).processed_root
+    )
+    surface_binding = TOFGateBinding(
+        role="surface", gate_id=cal["surface_gate_id"], matlab_range="",
+        python_start=cal["surface_start"],
+        python_end_exclusive=cal["surface_end_exclusive"],
+        length_samples=cal["surface_end_exclusive"] - cal["surface_start"],
+    )
+    bottom_binding = TOFGateBinding(
+        role="bottom", gate_id=cal["bottom_gate_id"], matlab_range="",
+        python_start=cal["bottom_start"],
+        python_end_exclusive=cal["bottom_end_exclusive"],
+        length_samples=cal["bottom_end_exclusive"] - cal["bottom_start"],
+    )
     n = min(len(frames), len(events))
     table = compute_canonical_tof_series(
         frames[:n],
         events["measurement_event_id"].iloc[:n].tolist(),
-        surface_gate=bindings["surface"],
-        bottom_gate=bindings["bottom"],
-        gate_calibration_id="SOURCE_TEMPLATE_FROZEN_V1",
+        surface_gate=surface_binding,
+        bottom_gate=bottom_binding,
+        gate_calibration_id=cal["gate_calibration_id"],
         sampling_rate_hz=fs_hz if fs_verified else None,
         parameter_set_id=parameter_set_id,
         frame_index_offset=0,
@@ -1074,8 +1309,10 @@ def canonical_tof(
             "sampling_rate_hz": fs_hz,
             "sampling_rate_verified": fs_verified,
             "parameter_set_id": parameter_set_id,
-            "surface_gate_id": bindings["surface"].gate_id,
-            "bottom_gate_id": bindings["bottom"].gate_id,
+            "surface_gate_id": surface_binding.gate_id,
+            "bottom_gate_id": bottom_binding.gate_id,
+            "gate_calibration_source": cal["source"],
+            "gate_calibration_version": cal["version"],
             "rows": json.loads(table.to_json(orient="records")),
             "audit": {
                 "total_frames": int(n),

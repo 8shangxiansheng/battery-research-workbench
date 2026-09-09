@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
+from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
 from battery_workbench.orchestrator.resolver import (
     ArtifactIdentity,
     ArtifactRequirements,
@@ -891,6 +892,62 @@ class CanonicalTofNode(WorkflowNode):
     def output_rel_dir(self, plan):
         return f"features_physical/{plan.project.battery_id}/{plan.project.experiment_id}"
 
+    def validate_readiness(self, plan, inputs):
+        """fs+gates readiness ladder for the canonical TOF (BRW-018R2).
+
+        Missing/unverified fs raises a blocking MISSING_SAMPLING_RATE action;
+        fs alone never activates, and neither does calibration without fs.
+        """
+        eff = self._load_effective_parameters(inputs)
+        from battery_workbench.features_physical.canonical_tof import effective_fs
+
+        _fs, fs_verified = effective_fs(eff, require_verified=True)
+        if not fs_verified:
+            return Readiness(
+                ok=False,
+                reason="sampling_rate_hz UNKNOWN/UNVERIFIED — required for canonical TOF",
+                user_action=UserActionRequired(
+                    action_id=_action_id(self.node_type, "MISSING_SAMPLING_RATE"),
+                    node_id=self.node_type,
+                    action_type="MISSING_SAMPLING_RATE",
+                    message="请输入采样频率（Hz/kHz/MHz；后端以 Hz 存储；绝不猜测）",
+                    required_fields=[
+                        {"field": "ultrasound.sampling_rate_hz", "unit": "Hz", "example": 50000000.0}
+                    ],
+                    scientific_reason=(
+                        "Canonical envelope-peak TOF needs a VERIFIED sampling rate "
+                        "from the Parameter Registry. Frame cadence and sample count "
+                        "cannot provide it; the orchestrator never guesses."
+                    ),
+                    blocking=True,
+                ),
+            )
+        return Readiness(ok=True, reason="fs verified; gate calibration resolves at run time")
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        """Invalidate on gate-calibration identity change (TOF downstream only)."""
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        cal = resolve_tof_gate_calibration(
+            plan.project.battery_id, plan.project.experiment_id, Path(processed_root)
+        )
+        stored_cal = manifest.get("gate_calibration_id")
+        stored_source = manifest.get("gate_calibration_source")
+        if stored_cal != cal["gate_calibration_id"] or (
+            stored_source is not None and stored_source != cal["source"]
+        ):
+            return None, "TOF gate calibration changed — canonical TOF recompute required"
+        # fs verification state change also invalidates (verified↔unverified)
+        eff = self._load_effective_parameters(inputs)
+        from battery_workbench.features_physical.canonical_tof import effective_fs
+
+        _fs, fs_verified = effective_fs(eff, require_verified=True)
+        if bool(manifest.get("sampling_rate_verified")) != fs_verified:
+            return None, "fs verification state changed — canonical TOF recompute required"
+        return ref, reason
+
     def run(self, plan, inputs, ctx):
         import numpy as np
         import pandas as pd
@@ -900,7 +957,8 @@ class CanonicalTofNode(WorkflowNode):
             CANONICAL_TOF_METHOD,
             TOF_DEFINITION_VERSION,
             TOF_POLICY_VERSION,
-            tof_gate_bindings,
+            TOFGateBinding,
+            resolve_tof_gate_calibration,
         )
         from battery_workbench.features_physical.canonical_tof import (
             compute_canonical_tof_series,
@@ -923,13 +981,27 @@ class CanonicalTofNode(WorkflowNode):
         eff = self._load_effective_parameters(inputs)
         fs, fs_verified = effective_fs(eff, require_verified=True)
         ps_id = inputs.get("PARAMETER_SET").artifact_id if inputs.get("PARAMETER_SET") else ""
-        bindings = tof_gate_bindings()
+        # BRW-018R2: confirmed experiment calibration > source template; the
+        # resolved identity goes into the artifact (provenance, no silent fallback)
+        cal = resolve_tof_gate_calibration(b, e, Path(ctx.processed_root))
+        surface_binding = TOFGateBinding(
+            role="surface", gate_id=cal["surface_gate_id"], matlab_range="",
+            python_start=cal["surface_start"],
+            python_end_exclusive=cal["surface_end_exclusive"],
+            length_samples=cal["surface_end_exclusive"] - cal["surface_start"],
+        )
+        bottom_binding = TOFGateBinding(
+            role="bottom", gate_id=cal["bottom_gate_id"], matlab_range="",
+            python_start=cal["bottom_start"],
+            python_end_exclusive=cal["bottom_end_exclusive"],
+            length_samples=cal["bottom_end_exclusive"] - cal["bottom_start"],
+        )
         table = compute_canonical_tof_series(
             frames,
             features["measurement_event_id"].tolist(),
-            surface_gate=bindings["surface"],
-            bottom_gate=bindings["bottom"],
-            gate_calibration_id="SOURCE_TEMPLATE_FROZEN_V1",
+            surface_gate=surface_binding,
+            bottom_gate=bottom_binding,
+            gate_calibration_id=cal["gate_calibration_id"],
             sampling_rate_hz=fs,
             parameter_set_id=ps_id,
         )
@@ -944,9 +1016,11 @@ class CanonicalTofNode(WorkflowNode):
             "sampling_rate_hz": fs,
             "sampling_rate_verified": bool(fs_verified),
             "parameter_set_id": ps_id,
-            "surface_gate_id": bindings["surface"].gate_id,
-            "bottom_gate_id": bindings["bottom"].gate_id,
-            "gate_calibration_id": "SOURCE_TEMPLATE_FROZEN_V1",
+            "surface_gate_id": surface_binding.gate_id,
+            "bottom_gate_id": bottom_binding.gate_id,
+            "gate_calibration_id": cal["gate_calibration_id"],
+            "gate_calibration_source": cal["source"],
+            "gate_calibration_version": cal["version"],
             "audit": {
                 "total_frames": len(table),
                 "status_counts": table["tof_status"].value_counts().to_dict(),

@@ -82,6 +82,10 @@ export function CalibrationWorkbench({ batteryId, experimentId, waveformLength }
   const [gates, setGates] = useState<Record<string, { start: number; end: number }>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [frozen, setFrozen] = useState<{ id: string; reuse: string } | null>(null);
+  // BRW-018R2: TOF gate freeze state (Saving/Saved/Failed — no silent no-op)
+  const [tofFreezeState, setTofFreezeState] = useState<
+    { phase: "SAVING" | "SAVED" | "FAILED"; id?: string; version?: number; reuse?: string; error?: string } | null
+  >(null);
 
   const calib = useQuery({
     queryKey: ["gate-calibration", batteryId, experimentId],
@@ -96,6 +100,33 @@ export function CalibrationWorkbench({ batteryId, experimentId, waveformLength }
       setConfirmOpen(false);
       setFrozen({ id: r.data.gate_calibration_id, reuse: r.data.reuse_status });
       void qc.invalidateQueries({ queryKey: ["gate-calibration", batteryId, experimentId] });
+    },
+  });
+
+  // BRW-018R2 — freeze the per-experiment TOF surface/bottom record
+  const tofFreeze = useMutation({
+    mutationFn: () => {
+      const tofCal = calib.data?.data.tof_calibration;
+      const surface = tofCal && tofCal.source === "EXPERIMENT_CONFIRMED"
+        ? { start: gates["TOF_SURFACE_PEAK_GATE"]?.start ?? tofCal.surface_start, end: gates["TOF_SURFACE_PEAK_GATE"]?.end ?? tofCal.surface_end_exclusive }
+        : { start: gates["TOF_SURFACE_PEAK_GATE"]?.start ?? 59, end: gates["TOF_SURFACE_PEAK_GATE"]?.end ?? 260 };
+      const bottom = tofCal && tofCal.source === "EXPERIMENT_CONFIRMED"
+        ? { start: gates["TOF_BOTTOM_PEAK_GATE"]?.start ?? tofCal.bottom_start, end: gates["TOF_BOTTOM_PEAK_GATE"]?.end ?? tofCal.bottom_end_exclusive }
+        : { start: gates["TOF_BOTTOM_PEAK_GATE"]?.start ?? 749, end: gates["TOF_BOTTOM_PEAK_GATE"]?.end ?? 1200 };
+      return client.freezeTofGateCalibration(batteryId, experimentId, {
+        surface, bottom,
+        confirmed_by: "user",
+        calibration_basis: "PREDECLARED_PROTOCOL_GATE",
+      });
+    },
+    onSuccess: r => {
+      const d = r.data;
+      setTofFreezeState({ phase: "SAVED", id: d.gate_calibration_id, version: d.version, reuse: d.reuse_status });
+      void qc.invalidateQueries({ queryKey: ["gate-calibration", batteryId, experimentId] });
+      void qc.invalidateQueries({ queryKey: ["canonical-tof", batteryId, experimentId] });
+    },
+    onError: e => {
+      setTofFreezeState({ phase: "FAILED", error: e instanceof Error ? e.message : String(e) });
     },
   });
 
@@ -149,9 +180,36 @@ export function CalibrationWorkbench({ batteryId, experimentId, waveformLength }
             </Badge>;
           })}
         </div>
+        {data.tof_gate_diagnostics && data.tof_calibration && (
+          <div className="mt-3 space-y-2" data-testid="tof-gate-diagnostics">
+            <p className="text-sm font-medium">TOF 闸门诊断（包络峰值）· 当前校准：{data.tof_calibration.source === "EXPERIMENT_CONFIRMED" ? "实验确认记录" : "源模板"} v{data.tof_calibration.version}</p>
+            {(["surface", "bottom"] as const).map(g => {
+              const d = data.tof_gate_diagnostics![g];
+              const gateId = g === "surface" ? data.tof_calibration!.surface_gate_id : data.tof_calibration!.bottom_gate_id;
+              return <div key={g} className="text-xs muted" data-testid={`tof-diag-${g}`}>
+                {gateId}: 峰值范围 {Math.min(...d.peak_global_indices)}–{Math.max(...d.peak_global_indices)} · spread {d.spread_samples} samples · 平均 containment {numberText(d.peak_containment_fractions.reduce((a, b) => a + b, 0) / Math.max(d.peak_containment_fractions.length, 1) * 100, 1)}% · edge hits {d.edge_hit_count}
+              </div>;
+            })}
+            <div className="flex flex-wrap gap-2 items-center">
+              <Button size="sm" data-testid="freeze-tof-gates" disabled={tofFreezeState?.phase === "SAVING"} onClick={() => { setTofFreezeState({ phase: "SAVING" }); tofFreeze.mutate(); }}>
+                {tofFreezeState?.phase === "SAVING" ? "冻结中…" : "冻结 TOF 闸门 / Freeze TOF Gates"}
+              </Button>
+              {tofFreezeState?.phase === "SAVED" && (
+                <span className="notice text-xs" role="status" data-testid="tof-freeze-saved">
+                  ✓ 已冻结 {tofFreezeState.id} · v{tofFreezeState.version} · {tofFreezeState.reuse === "REUSED" ? "复用同记录（幂等）" : "新版本记录"}
+                </span>
+              )}
+              {tofFreezeState?.phase === "FAILED" && (
+                <span className="text-xs text-red-700" role="alert" data-testid="tof-freeze-failed">
+                  ✗ 冻结失败：{tofFreezeState.error}（不会静默回退到源模板）
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         <details className="mt-3"><summary className="text-sm">高级信息 / Advanced</summary>
           <p className="text-xs muted mt-2">Source template: MATLAB 1-based inclusive → Python 0-based half-open · 标定帧 IDs: {data.calibration_frame_ids.slice(0, 8).join(", ")}…</p>
-          <p className="text-xs muted">配置（probe/battery）变更后需要重新标定；冻结记录包含完整 provenance。</p>
+          <p className="text-xs muted">配置（probe/battery）变更后需要重新标定；冻结记录包含完整 provenance。TOF 记录不可变：修改边界将冻结新版本并链接前版。</p>
         </details>
         <div className="mt-4"><Button onClick={() => setConfirmOpen(true)} data-testid="confirm-gates">Confirm Gates / 确认闸门</Button></div>
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}><DialogContent>

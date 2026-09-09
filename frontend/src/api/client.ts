@@ -454,6 +454,42 @@ export interface GateCalibrationResponse {
     edge_hit: boolean;
   }[];
   recommendation: string;
+  /** BRW-018R2 */
+  tof_calibration?: TofCalibrationProvenance;
+  tof_gate_diagnostics?: Record<"surface" | "bottom", TofGateDiagnostics>;
+}
+
+export interface TofCalibrationProvenance {
+  gate_calibration_id: string;
+  source: "EXPERIMENT_CONFIRMED" | "SOURCE_TEMPLATE";
+  surface_gate_id: string;
+  surface_start: number;
+  surface_end_exclusive: number;
+  bottom_gate_id: string;
+  bottom_start: number;
+  bottom_end_exclusive: number;
+  version: number;
+  fallback_identity?: string;
+}
+
+export interface TofGateDiagnostics {
+  gate_start: number;
+  gate_end_exclusive: number;
+  peak_global_indices: number[];
+  peak_local_indices: number[];
+  peak_amplitudes_a_u: number[];
+  peak_containment_fractions: number[];
+  edge_hit_count: number;
+  spread_samples: number;
+}
+
+export interface TofGateFreezeResult {
+  gate_calibration_id: string;
+  version: number;
+  reuse_status: "REUSED" | "CREATED";
+  prior_gate_calibration_id: string | null;
+  surface_diagnostics: TofGateDiagnostics;
+  bottom_diagnostics: TofGateDiagnostics;
 }
 
 /** BRW-017R2 canonical envelope-peak TOF */
@@ -477,9 +513,26 @@ export interface CanonicalTofRow {
   parameter_set_id: string | null;
 }
 
+/** BRW-018R2 sampling-parameter submission result */
+export interface SamplingSubmissionResult {
+  submission_id: string;
+  parameter_set_id: string | null;
+  save_status: "SAVED" | "FAILED";
+  save_error: string | null;
+  fs_value: number | null;
+  fs_unit: string | null;
+  source: string | null;
+  verification_status?: string;
+  run_id: string | null;
+  pending_action_resolved: boolean;
+  resume_status: "RESUMED" | "FAILED" | "NOT_ATTEMPTED";
+  resume_error: string | null;
+  run_state: string | null;
+  replayed?: boolean;
+}
+
 export interface CanonicalTofPayload {
-  tof_method_id: string;
-    sampling_rate_hz: number | null;
+  tof_method_id: string;    sampling_rate_hz: number | null;
     sampling_rate_verified: boolean;
     parameter_set_id: string | null;
     surface_gate_id: string;
@@ -964,10 +1017,45 @@ export const client = {
     request<GateCalibrationResponse>(
       `/experiments/${batteryId}/${experimentId}/gate-calibration?n_frames=${nFrames}`,
     ),
+  freezeTofGateCalibration: (batteryId: string, experimentId: string, body: {
+    surface: { start: number; end: number };
+    bottom: { start: number; end: number };
+    confirmed_by?: string;
+    calibration_basis?: string;
+    surface_gate_id?: string;
+    bottom_gate_id?: string;
+    notes?: string;
+  }) =>
+    request<TofGateFreezeResult>(
+      `/experiments/${batteryId}/${experimentId}/tof-gate-calibration`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   // ---------- BRW-017R2 canonical envelope-peak TOF ----------
   getCanonicalTof: (batteryId: string, experimentId: string, limit = 200) =>
     request<CanonicalTofPayload>(
       `/experiments/${batteryId}/${experimentId}/canonical-tof?limit=${limit}`,
+    ),
+  // ---------- BRW-018R2 sampling-parameter submission ----------
+  submitSamplingParameter: (
+    batteryId: string,
+    experimentId: string,
+    body: {
+      values: Record<string, { value: number; unit: string }>;
+      source: string;
+      verified: boolean;
+      run_id?: string;
+      action_id?: string;
+      submission_id?: string;
+    },
+  ) =>
+    request<SamplingSubmissionResult>(
+      `/experiments/${batteryId}/${experimentId}/sampling-parameter-submission`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  retrySubmissionResume: (batteryId: string, experimentId: string, submissionId: string) =>
+    request<SamplingSubmissionResult>(
+      `/experiments/${batteryId}/${experimentId}/sampling-parameter-submission/${encodeURIComponent(submissionId)}/retry-resume`,
+      { method: "POST" },
     ),
   listTargets: (batteryId: string, experimentId: string) =>
     request<{ targets: TargetDefinition[] }>(`/experiments/${batteryId}/${experimentId}/targets`),
@@ -1090,6 +1178,9 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/canonical-tof" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/tof-gate-calibration" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume" },
 ];
 
 /** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

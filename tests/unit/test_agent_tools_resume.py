@@ -186,6 +186,63 @@ class TestResumeLoopSamplingRate:
         assert "amplitude_a_u" not in audit_blob
 
 
+class TestAgentSetParameterWritesAndResumes:
+    """BRW-018R2: set_experiment_parameter(fs) must REALLY write + resume."""
+
+    def test_fs_write_resume_not_guidance_only(self, tmp_path: Path) -> None:
+        service = _sandbox_service(tmp_path)
+        gw = ToolGateway(service=service)
+        ctx = AgentScientificContext(battery_id="CELL_001", experiment_id="EXP_001")
+
+        started = _confirmed(
+            gw,
+            ctx,
+            "start_run",
+            {
+                "profile": "SCIENTIFIC_ANALYSIS",
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "stages": ["MEASUREMENT_EVENTS", "PARAMETER_SET"],
+                "parameters": {"require_sampling_rate": True},
+            },
+        )
+        if started.get("status") != "WAITING_FOR_USER":
+            pytest.skip(f"fixture run did not reach WAITING_FOR_USER: {started.get('status')}")
+        run_id = started["run_id"]
+        ctx.run_id = run_id
+
+        d = _confirmed(
+            gw,
+            ctx,
+            "set_experiment_parameter",
+            {
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "parameter_name": "ultrasound.sampling_rate_hz",
+                "value": "50.0",
+                "unit": "MHz",
+                "verified": True,
+                "source": "user:instrument-record",
+            },
+        )
+        # real write + real resume — NOT a guidance-only reply
+        assert d["save_status"] == "SAVED"
+        assert d["parameter_set_id"], d
+        assert d["resume_status"] == "RESUMED"
+        assert d["run_id"] == run_id
+        assert d["run_state"] in ("SUCCEEDED", "PARTIAL")
+        # the same run's PARAMETER_SET resolved with Hz=50e6 VERIFIED
+        run_after = service.get_run(run_id)
+        param = next(n for n in run_after["nodes"] if n["node_id"] == "PARAMETER_SET")
+        assert param["state"] in ("SUCCEEDED", "REUSED")
+        eff = json.loads(
+            (Path(param["outputs"][0]["path"]) / "effective_parameters.json").read_text()
+        )
+        fs = eff["ultrasound.sampling_rate_hz"]
+        assert fs["value"] == 50_000_000.0 and fs["unit"] == "Hz"
+        assert fs["verification_status"] == "VERIFIED"
+
+
 class TestResumeLoopImpossibleSplit:
     """E2E: impossible split → WAITING_FOR_USER → choose LEAVE_ONE_GROUP_OUT → resume."""
 

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "01_before_canonical_tof",
+    "ok": true
+  },
+  {
+    "id": "02_dialog_open_empty",
+    "ok": true
+  },
+  {
+    "id": "03_dialog_filled_verified",
+    "ok": true
+  },
+  {
+    "id": "04_saving_state",
+    "ok": true
+  },
+  {
+    "id": "05_saved_state",
+    "ok": true
+  },
+  {
+    "id": "06_after_saved_tof_refresh",
+    "ok": true
+  },
+  {
+    "id": "07_failed_no_source",
+    "ok": true
+  },
+  {
+    "id": "08_calibration_tof_diagnostics",
+    "ok": true
+  },
+  {
+    "id": "09_tof_freeze_saved",
+    "ok": true
+  },
+  {
+    "id": "10_agent_canonical_tof",
+    "ok": true
+  },
+  {
+    "id": "11_overview_after_submission",
+    "ok": true
+  },
+  {
+    "id": "12_runs_after_resume",
+    "ok": true
+  }
+]

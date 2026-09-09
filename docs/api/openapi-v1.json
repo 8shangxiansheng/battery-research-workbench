@@ -2028,6 +2028,137 @@
         }
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission": {
+      "post": {
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ],
+        "summary": "Submit Sampling Parameter",
+        "description": "Save fs + resolve the pending action + resume the same run.\n\nBody: {values: {ultrasound.sampling_rate_hz: {value, unit}}, source,\nverified?, run_id?, action_id?, submission_id?}. Idempotent per\nsubmission_id; partial success reports save vs resume separately.",
+        "operationId": "submit_sampling_parameter_api_v1_experiments__battery_id___experiment_id__sampling_parameter_submission_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Submit Sampling Parameter Api V1 Experiments  Battery Id   Experiment Id  Sampling Parameter Submission Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume": {
+      "post": {
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ],
+        "summary": "Retry Submission Resume",
+        "description": "Retry only the resume leg; the parameter set is never re-written.",
+        "operationId": "retry_submission_resume_api_v1_experiments__battery_id___experiment_id__sampling_parameter_submission__submission_id__retry_resume_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retry Submission Resume Api V1 Experiments  Battery Id   Experiment Id  Sampling Parameter Submission  Submission Id  Retry Resume Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/gates": {
       "post": {
         "tags": [
@@ -3471,6 +3602,72 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Freeze Gate Calibration Api V1 Experiments  Battery Id   Experiment Id  Gate Calibration Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/tof-gate-calibration": {
+      "post": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "Freeze Tof Gate Calibration",
+        "description": "Freeze a per-experiment TOF surface/bottom calibration record (BRW-018R2).\n\nImmutable + versioned: identical identity inputs reuse the existing frozen\nrecord; any changed bound/basis freezes a NEW version (vN+1) linked to the\nprior id. Basis must be target-blind. Saves never silently fall back to\nthe source template — failures raise.",
+        "operationId": "freeze_tof_gate_calibration_api_v1_experiments__battery_id___experiment_id__tof_gate_calibration_post",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Freeze Tof Gate Calibration Api V1 Experiments  Battery Id   Experiment Id  Tof Gate Calibration Post"
                 }
               }
             }

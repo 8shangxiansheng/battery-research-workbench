@@ -33,16 +33,28 @@ describe("概览交互闭环", () => {
     await waitFor(() => expect(within(drawer).getByText("验证通过")).toBeInTheDocument());
     expect(screen.getByTestId("overview-primary")).toHaveAttribute("href", "/experiments/B/E/analysis");
   });
-  it("采样率保存后刷新状态但不伪造验证通过", async () => {
-    vi.spyOn(client, "createParameters").mockResolvedValue({ data: { parameter_set_id: "p", sampling_rate_status: "UNVERIFIED", status: "SAVED" } });
+  it("采样率保存后刷新状态但不伪造验证通过（BRW-018R2 共享提交服务）", async () => {
+    vi.spyOn(client, "submitSamplingParameter").mockResolvedValue({
+      data: {
+        submission_id: "SUB::t", parameter_set_id: "p", save_status: "SAVED",
+        save_error: null, fs_value: 20_000_000, fs_unit: "Hz", source: "instrument configuration",
+        run_id: null, pending_action_resolved: false, resume_status: "NOT_ATTEMPTED",
+        resume_error: null, run_state: null,
+      },
+    } as Awaited<ReturnType<typeof client.submitSamplingParameter>>);
     mount(); const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Add sampling rate" }));
-    await user.type(screen.getByLabelText("Sampling frequency (MHz)"), "20");
+    await user.type(screen.getByTestId("fs-dialog-value"), "20");
     await user.type(screen.getByLabelText("Instrument record or source"), "instrument configuration");
-    await user.click(screen.getByRole("button", { name: "Save parameter" }));
-    expect(await screen.findByText(/Parameter saved/)).toBeInTheDocument();
-    expect(client.createParameters).toHaveBeenCalledWith("B", "E", expect.objectContaining({ verified: false, values: { "ultrasound.sampling_rate_hz": { value: 20, unit: "MHz" } } }));
+    // verified checkbox intentionally NOT checked → honest UNVERIFIED save
+    await user.click(screen.getByTestId("fs-dialog-save"));
+    expect(await screen.findByTestId("submission-saved")).toBeInTheDocument();
+    expect(client.submitSamplingParameter).toHaveBeenCalledWith("B", "E", expect.objectContaining({
+      verified: false,
+      values: { "ultrasound.sampling_rate_hz": { value: 20, unit: "MHz" } },
+    }));
     await waitFor(() => expect(client.getStatus).toHaveBeenCalledTimes(2));
+    // UNVERIFIED fs must not flip the overview primary into a verified state
     expect(screen.getByTestId("overview-primary")).toHaveTextContent("完善前置参数");
   });
   it("报错上下文进入全局助手，不发送 AI 请求", async () => {

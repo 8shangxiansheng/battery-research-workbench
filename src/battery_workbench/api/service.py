@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import uuid
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -383,6 +385,262 @@ class WorkbenchService:
         return self._runs.retry_node(run_id, node_id, runs_root=self.runs_root)
 
     # ---------- parameters (BRW-015) ----------
+    # ---------- BRW-018R2 sampling-parameter submission (shared service) ----------
+    # One submission = parameter set persist + pending-action resolution +
+    # same-run resume, with explicit partial-success when resume fails after a
+    # successful save. Submissions are journaled for idempotent replay.
+
+    def submit_sampling_parameter(
+        self,
+        battery_id: str,
+        experiment_id: str,
+        payload: dict[str, Any],
+        *,
+        submission_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a user-supplied sampling rate, then recover the WAITING run.
+
+        payload: {values: {name: {value, unit}}, source, verified?, run_id?,
+        action_id?}. The value is stored in canonical Hz by the parameter
+        registry's unit normalization (Hz/kHz/MHz/GHz accepted; no guessing).
+        Idempotent: a replayed submission_id returns the journaled result
+        without re-writing parameters or re-resuming the run.
+        """
+        self._require_experiment(battery_id, experiment_id)
+        sid = submission_id or f"SUB::{uuid.uuid4().hex[:16]}"
+        journal = self._submission_journal(battery_id, experiment_id)
+        if sid in journal:
+            prior = dict(journal[sid])
+            if prior.get("payload_fingerprint") != self._submission_fingerprint(payload):
+                raise APIError(
+                    ErrorCode.CONFLICT,
+                    "submission id reused with different payload",
+                    {"submission_id": sid},
+                )
+            prior["submission_id"] = sid
+            prior["replayed"] = True
+            return prior
+
+        values = payload.get("values") or {}
+        source = str(payload.get("source") or "").strip()
+        if not source:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "sampling-rate submission requires an explicit source (no guessing)",
+            )
+        if "ultrasound.sampling_rate_hz" not in values:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "submission must set ultrasound.sampling_rate_hz",
+            )
+        entry = values["ultrasound.sampling_rate_hz"]
+        if not isinstance(entry, dict) or entry.get("value") is None:
+            raise APIError(ErrorCode.VALIDATION_ERROR, "sampling rate value required")
+        unit = str(entry.get("unit", "Hz"))
+        # validate positivity and finiteness before persisting; unit
+        # normalization to Hz is enforced by the parameter registry.
+        try:
+            numeric = float(entry["value"])
+        except (TypeError, ValueError):
+            numeric = 0.0
+        if not numeric > 0 or not math.isfinite(numeric):
+            raise APIError(ErrorCode.VALIDATION_ERROR, "sampling rate must be a positive finite number")
+
+        ps_payload = {
+            "values": values,
+            "source": source,
+            "verified": bool(payload.get("verified")),
+        }
+        save_error: str | None = None
+        parameter_set_id: str | None = None
+        try:
+            ps = self.create_parameter_set(battery_id, experiment_id, ps_payload)
+            parameter_set_id = ps["parameter_set_id"]
+        except APIError as exc:
+            save_error = f"{exc.error_code.value}: {exc.detail if hasattr(exc, 'detail') else exc}"
+
+        run_id = payload.get("run_id")
+        action_id = payload.get("action_id")
+        resume_status = "NOT_ATTEMPTED"
+        resume_error: str | None = None
+        resolved_action = False
+        run_state: str | None = None
+
+        if parameter_set_id is not None:
+            # resolve the pending action on the run when one is attached
+            target_run = run_id or self._latest_waiting_run(battery_id, experiment_id)
+            if target_run:
+                try:
+                    target_action = action_id or self._pending_fs_action(target_run)
+                    if target_action:
+                        self._runs.submit_user_action(
+                            target_run,
+                            target_action,
+                            values={
+                                "ultrasound.sampling_rate_hz": {
+                                    "value": numeric,
+                                    "unit": unit,
+                                    "_source": source,
+                                    "verification_status": (
+                                        "VERIFIED" if bool(payload.get("verified")) else "UNVERIFIED"
+                                    ),
+                                }
+                            },
+                            runs_root=self.runs_root,
+                        )
+                        resolved_action = True
+                    else:
+                        self._runs.resume_run(target_run, runs_root=self.runs_root)
+                    run = self._runs.get_run(target_run, runs_root=self.runs_root)
+                    run_id = target_run
+                    run_state = run.get("status")
+                    resume_status = "RESUMED"
+                except (OrchestratorError, ValueError, FileNotFoundError, OSError) as exc:
+                    # partial-success boundary: PS persisted, resume leg failed
+                    resume_status = "FAILED"
+                    resume_error = f"{type(exc).__name__}: {exc}"
+
+        result = {
+            "submission_id": sid,
+            "payload_fingerprint": self._submission_fingerprint(payload),
+            "parameter_set_id": parameter_set_id,
+            "save_status": "SAVED" if parameter_set_id else "FAILED",
+            "save_error": save_error,
+            "fs_value": numeric,
+            "fs_unit": unit,
+            "source": source,
+            "verification_status": "VERIFIED" if bool(payload.get("verified")) else "UNVERIFIED",
+            "run_id": run_id,
+            "pending_action_resolved": resolved_action,
+            "resume_status": resume_status,
+            "resume_error": resume_error,
+            "run_state": run_state,
+        }
+        if parameter_set_id is not None:
+            self._journal_submission(battery_id, experiment_id, sid, result)
+        return result
+
+    def retry_submission_resume(
+        self, battery_id: str, experiment_id: str, submission_id: str
+    ) -> dict[str, Any]:
+        """Retry ONLY the resume leg of a partially-successful submission.
+
+        Never re-writes the parameter set (no duplicate PS creation).
+        """
+        journal = self._submission_journal(battery_id, experiment_id)
+        prior = journal.get(submission_id)
+        if prior is None:
+            raise APIError(ErrorCode.NOT_FOUND, "submission not found")
+        run_id = prior.get("run_id")
+        if not run_id:
+            raise APIError(ErrorCode.VALIDATION_ERROR, "submission has no attached run")
+        try:
+            target_action = self._pending_fs_action(run_id)
+            if target_action:
+                self._runs.submit_user_action(
+                    run_id,
+                    target_action,
+                    values={
+                        "ultrasound.sampling_rate_hz": {
+                            "value": prior.get("fs_value"),
+                            "unit": prior.get("fs_unit", "Hz"),
+                            "_source": prior.get("source", "retry"),
+                            "verification_status": prior.get(
+                                "verification_status", "UNVERIFIED"
+                            ),
+                        }
+                    },
+                    runs_root=self.runs_root,
+                )
+            run = self._runs.resume_run(run_id, runs_root=self.runs_root)
+            updated = dict(prior)
+            updated.update(
+                {
+                    "resume_status": "RESUMED",
+                    "resume_error": None,
+                    "pending_action_resolved": True,
+                    "run_state": run.get("status"),
+                }
+            )
+            self._journal_submission(battery_id, experiment_id, submission_id, updated)
+            return updated
+        except Exception as exc:  # surfaced to Retry Resume UI
+            updated = dict(prior)
+            updated.update({"resume_status": "FAILED", "resume_error": f"{type(exc).__name__}: {exc}"})
+            self._journal_submission(battery_id, experiment_id, submission_id, updated)
+            raise APIError(
+                ErrorCode.SCIENTIFIC_ACTION_REQUIRED,
+                f"resume failed again: {exc}",
+            ) from exc
+
+    @staticmethod
+    def _submission_fingerprint(payload: dict[str, Any]) -> str:
+        canonical = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _submission_journal_path(self, battery_id: str, experiment_id: str) -> Path:
+        return (
+            self.processed_root
+            / "parameter_submissions"
+            / battery_id
+            / experiment_id
+            / "submissions.json"
+        )
+
+    def _submission_journal(self, battery_id: str, experiment_id: str) -> dict[str, Any]:
+        p = self._submission_journal_path(battery_id, experiment_id)
+        if not p.is_file():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _journal_submission(
+        self, battery_id: str, experiment_id: str, sid: str, result: dict[str, Any]
+    ) -> None:
+        p = self._submission_journal_path(battery_id, experiment_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        journal = self._submission_journal(battery_id, experiment_id)
+        journal[sid] = result
+        p.write_text(json.dumps(journal, indent=2), encoding="utf-8")
+
+    def _latest_waiting_run(self, battery_id: str, experiment_id: str) -> str | None:
+        runs_dir = self.runs_root
+        if not runs_dir.is_dir():
+            return None
+        best: tuple[str, str] | None = None
+        for d in sorted(runs_dir.iterdir()):
+            manifest = d / "run_manifest.json"
+            if not manifest.is_file():
+                continue
+            try:
+                m = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            waiting_fs = (
+                m.get("battery_id") == battery_id
+                and m.get("experiment_id") == experiment_id
+                and m.get("status") == "WAITING_FOR_USER"
+                and any(
+                    a.get("action_type") == "MISSING_SAMPLING_RATE"
+                    for a in m.get("user_actions", [])
+                )
+            )
+            if waiting_fs and (best is None or d.name > best[0]):
+                best = (d.name, "RUN::" + d.name)
+        return best[1] if best else None
+
+    def _pending_fs_action(self, run_id: str) -> str | None:
+        try:
+            actions = self._runs.list_user_actions(run_id, runs_root=self.runs_root)
+        except (FileNotFoundError, OrchestratorError):
+            return None
+        for a in actions:
+            if a.get("action_type") == "MISSING_SAMPLING_RATE":
+                return a["action_id"]
+        return None
+
     def create_parameter_set(
         self, battery_id: str, experiment_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:

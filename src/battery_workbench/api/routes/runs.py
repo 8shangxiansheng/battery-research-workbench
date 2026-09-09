@@ -14,15 +14,34 @@ router = APIRouter(tags=["runs"])
 _PROFILES = ("INGEST_TO_MEASUREMENT_EVENTS", "SCIENTIFIC_ANALYSIS", "FULL_PRE_MODEL")
 
 
+_PLAN_FIELD_ALLOWLIST = (
+    # BRW-018R2: pass through plan-level fields beyond the profile defaults
+    # (additive; unknown keys still rejected by build_plan validation)
+    "stages",
+    "parameters",
+    "target",
+    "features",
+    "analysis_slice",
+    "split",
+    "gates",
+    "feature_analysis",
+    "modeling",
+)
+
+
 def _profile_payload(body: dict[str, Any]) -> dict[str, Any]:
     profile = body.get("profile")
     if profile not in _PROFILES:
         raise APIError(ErrorCode.VALIDATION_ERROR, "unknown profile", {"profile": profile})
-    return {
+    payload: dict[str, Any] = {
         "profile": profile,
         "battery_id": body.get("battery_id", "CELL_001"),
         "experiment_id": body.get("experiment_id", "EXP_001"),
     }
+    for key in _PLAN_FIELD_ALLOWLIST:
+        if key in body and body[key] is not None:
+            payload[key] = body[key]
+    return payload
 
 
 @router.post("/runs/plan")

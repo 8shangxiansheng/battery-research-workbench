@@ -83,11 +83,23 @@ def clean_root(tmp_path_factory) -> Path:
         if not actions:
             break
         action = actions[0]
-        values = {
-            f["field"]: f.get("value")
-            for f in action.get("required_fields", [])
-            if f.get("value") is not None
-        }
+        if action["action_type"] == "MISSING_SAMPLING_RATE":
+            # BRW-018R2: canonical-TOF readiness gate — official channel,
+            # explicit provenance, no guessing.
+            values = {
+                "ultrasound.sampling_rate_hz": {
+                    "value": 50000000.0,
+                    "unit": "Hz",
+                    "_source": "brw028:user-instrument-record",
+                    "verification_status": "VERIFIED",
+                }
+            }
+        else:
+            values = {
+                f["field"]: f.get("value")
+                for f in action.get("required_fields", [])
+                if f.get("value") is not None
+            }
         run = engine.submit_user_action(run["run_id"], action["action_id"], values=values)
         if run["status"] == "WAITING_FOR_USER":
             run = engine.resume_run(run["run_id"])

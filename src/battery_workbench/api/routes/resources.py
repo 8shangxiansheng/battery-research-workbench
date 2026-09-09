@@ -40,6 +40,42 @@ def create_parameters(
     return {"data": data, "meta": {}}
 
 
+# ---------- BRW-018R2 sampling-parameter submission (shared service) ----------
+@router.post("/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission")
+def submit_sampling_parameter(
+    request: Request, battery_id: str, experiment_id: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    """Save fs + resolve the pending action + resume the same run.
+
+    Body: {values: {ultrasound.sampling_rate_hz: {value, unit}}, source,
+    verified?, run_id?, action_id?, submission_id?}. Idempotent per
+    submission_id; partial success reports save vs resume separately.
+    """
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    submission_id = body.get("submission_id")
+    if submission_id is not None:
+        validate_id(str(submission_id), "submission_id")
+    data = get_service(request).submit_sampling_parameter(
+        battery_id, experiment_id, body, submission_id=submission_id
+    )
+    return {"data": data, "meta": {}}
+
+
+@router.post("/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume")
+def retry_submission_resume(
+    request: Request, battery_id: str, experiment_id: str, submission_id: str
+) -> dict[str, Any]:
+    """Retry only the resume leg; the parameter set is never re-written."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    validate_id(submission_id, "submission_id")
+    data = get_service(request).retry_submission_resume(
+        battery_id, experiment_id, submission_id
+    )
+    return {"data": data, "meta": {}}
+
+
 # ---------- gates (BRW-018) ----------
 @router.post("/gates")
 def create_gate(request: Request, body: dict[str, Any]) -> dict[str, Any]:
