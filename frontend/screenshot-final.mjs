@@ -27,7 +27,11 @@ async function shot(id, url, { wait = 3000, expectVisible = [], extra } = {}) {
 }
 
 await shot("01_overview_real_experiment", `${exp}/overview`, {
-  expectVisible: ["[data-testid=assistant-drawer]"],
+  // the Research Assistant drawer mounts only when opened — click the trigger
+  extra: async () => {
+    await page.getByLabel("Research Assistant").click();
+    await page.locator("[data-testid=assistant-drawer]").waitFor({ state: "visible", timeout: 15000 });
+  },
 });
 await shot("02_waveform_gates", `${exp}/waveform`, {
   expectVisible: ["[data-testid=physical-features]", "[data-testid=calibrate-gates]"],

@@ -47,7 +47,6 @@ async function ask(msg) {
 
 // 01 SOC goal
 await shot("01_assistant_soc_goal", `${exp}/analysis`, {
-  expectVisible: ["[data-testid=assistant-drawer]"],
   extra: async () => { await openDrawer(); await ask("帮我研究SOC"); },
 });
 
