@@ -40,6 +40,25 @@ def create_parameters(
     return {"data": data, "meta": {}}
 
 
+# ---------- BRW-025R-OV research overview (aggregate read-only) ----------
+@router.get("/experiments/{battery_id}/{experiment_id}/research-overview")
+def research_overview(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
+    """Single read-only aggregation for the Overview first screen.
+
+    Metadata strip, electrical/TOF snapshots, readiness matrix, scientific
+    snapshot, model baseline comparison, limitations, next actions — all from
+    existing artifacts; the frontend computes no science and this endpoint
+    never writes scientific artifacts.
+    """
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    from battery_workbench.api.research_overview import get_research_overview_data
+
+    data = get_research_overview_data(service.processed_root, battery_id, experiment_id)
+    return {"data": data, "meta": {}}
+
+
 # ---------- BRW-018R2 sampling-parameter submission (shared service) ----------
 @router.post("/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission")
 def submit_sampling_parameter(

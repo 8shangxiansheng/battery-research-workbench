@@ -34,7 +34,7 @@
   summary { color: #40575c; padding: 8px 0; }
 }
 .app-topbar { height: 72px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; padding: 0 32px; background: #fff; position: sticky; top: 0; z-index: 20; }
-.app-content { max-width: 1800px; margin: 0 auto; padding: 24px 32px 48px; }
+.app-content { max-width: none; margin: 0; padding: 24px 40px 48px; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
 .eyebrow { color: #586d72; font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 12px; }
 .muted { color: var(--muted); }
@@ -54,6 +54,11 @@
 .empty-state { min-height: 350px; border: 1px dashed #cbd5d4; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; background: white; }
 .field { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }
 .overview-workbench .page-heading { margin-bottom: 20px; }
+.research-overview .panel h2 { font-size: 15px; font-weight: 600; }
+.research-overview .meta-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.research-overview .meta-item > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.research-overview table td, .research-overview table th { padding: 6px 8px; font-size: 12px; }
+@media (min-width: 1600px) { .research-overview .panel !p-5 { padding: 22px; } }
 .overview-workbench .page-heading h1 { font-size: 26px; margin-bottom: 6px; }
 .overview-workbench .page-heading p:last-child { font-family: ui-monospace, monospace; }
 .pipeline-card { border: 1px solid var(--border); border-radius: 8px; background: white; padding: 16px 24px; margin-bottom: 16px; }

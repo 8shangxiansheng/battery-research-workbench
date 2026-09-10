@@ -2028,6 +2028,61 @@
         }
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/research-overview": {
+      "get": {
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ],
+        "summary": "Research Overview",
+        "description": "Single read-only aggregation for the Overview first screen.\n\nMetadata strip, electrical/TOF snapshots, readiness matrix, scientific\nsnapshot, model baseline comparison, limitations, next actions — all from\nexisting artifacts; the frontend computes no science and this endpoint\nnever writes scientific artifacts.",
+        "operationId": "research_overview_api_v1_experiments__battery_id___experiment_id__research_overview_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Research Overview Api V1 Experiments  Battery Id   Experiment Id  Research Overview Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission": {
       "post": {
         "tags": [

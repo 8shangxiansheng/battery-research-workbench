@@ -1039,6 +1039,11 @@ export const client = {
       `/experiments/${batteryId}/${experimentId}/tof-gate-calibration`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  // ---------- BRW-025R-OV research overview (aggregate read) ----------
+  getResearchOverview: (batteryId: string, experimentId: string) =>
+    request<ResearchOverviewPayload>(
+      `/experiments/${batteryId}/${experimentId}/research-overview`,
+    ),
   // ---------- BRW-017R2 canonical envelope-peak TOF ----------
   getCanonicalTof: (batteryId: string, experimentId: string, limit = 200) =>
     request<CanonicalTofPayload>(
@@ -1108,6 +1113,126 @@ export const client = {
       { method: "POST", body: JSON.stringify(body) },
     ),
 };
+
+/** BRW-025R-OV research overview aggregate payload */
+export interface ResearchMetadataEntry {
+  status: string;
+  value?: unknown;
+  hz?: number | null;
+  verified?: boolean;
+  parameter_set_id?: string | null;
+  channel?: string[] | null;
+  range_c?: [number, number];
+  start?: string | null;
+  end?: string | null;
+}
+
+export interface ResearchOverviewPayload {
+  schema_version: string;
+  metadata: {
+    battery_id: string;
+    experiment_id: string;
+    chemistry: ResearchMetadataEntry;
+    nominal_capacity_ah: ResearchMetadataEntry;
+    probe: ResearchMetadataEntry;
+    channel: ResearchMetadataEntry;
+    temperature: ResearchMetadataEntry;
+    sampling_rate: ResearchMetadataEntry;
+    acquisition_window: ResearchMetadataEntry;
+    timebase: { status: string };
+  };
+  electrical: {
+    status: string;
+    record_count: number | null;
+    cycle_count: number | null;
+    step_count: number | null;
+    voltage_range_v: [number, number] | null;
+    current_range_a: [number, number] | null;
+    voltage_sparkline_v: (number | null)[];
+    current_sparkline_a: (number | null)[];
+    cycles: {
+      cycle_index_raw: number;
+      charge_capacity_ah: number | null;
+      discharge_capacity_ah: number | null;
+      apparent_coulombic_efficiency_percent: number | null;
+      protocol: string;
+    }[];
+  };
+  ultrasound_tof: {
+    status: string;
+    tof_method_id: string;
+    tof_definition_version: string | null;
+    sampling_rate_hz: number | null;
+    sampling_rate_verified: boolean;
+    gate_calibration_id: string;
+    gate_calibration_source: string;
+    gate_calibration_version: number;
+    surface_gate_id: string;
+    surface_peak_sample_range: [number, number];
+    bottom_gate_id: string;
+    bottom_peak_sample_range: [number, number];
+    artifact_status_counts: Record<string, number>;
+    artifact_tof_us_summary: { min: number; median: number; max: number } | null;
+    artifact_current: boolean;
+    waveform_tof: { event_count: number | null; ambiguous_events: number | null; note: string };
+    feature_target_eligible: { eligible_count: number | null; note: string };
+  };
+  signal_quality: {
+    snr: { status: string; value: null; reason: string };
+    saturation_check: { status: string; definition: string };
+  };
+  readiness_matrix: {
+    acquisition: string;
+    synchronization: string;
+    tof: string;
+    targets: string;
+    modeling: string;
+  };
+  scientific_snapshot: {
+    target: { target_id: string; readiness: string; note: string };
+    leading_exploratory_candidate: {
+      analysis_id: string;
+      feature_name: string;
+      method: string;
+      coefficient: number | null;
+      n: number | null;
+      note: string;
+    } | null;
+    selected_features: string[];
+    model_evidence: {
+      dummy_first_conclusion: string | null;
+      dummy_macro_mae: number | null;
+      note: string;
+    };
+    feature_definition: ResearchFeatureDefinitionState;
+  };
+  model_comparison: {
+    status: string;
+    artifact_path: string;
+    strategies: {
+      strategy: string;
+      macro_mae: number | null;
+      macro_rmse: number | null;
+      macro_r2: number | null;
+      vs_dummy: number | null;
+    }[];
+    dummy: { strategy: string; macro_mae: number | null } | null;
+    dummy_first_conclusion: string | null;
+    feature_definition: ResearchFeatureDefinitionState;
+  };
+  limitations_first_screen: { code: string; severity: string; description: string }[];
+  next_actions: { action_id: string; label: string; route: string }[];
+  research_status_banner: { level: string; message: string };
+}
+
+export interface ResearchFeatureDefinitionState {
+  feature_set_id: string;
+  dataset_definition_version: string | null;
+  current_policy: string;
+  uses_previous_feature_definition: boolean;
+  refresh_required: boolean;
+  note: string;
+}
 
 /** client 覆盖的 API 路径清单 — drift 测试与 openapi-v1.json 对齐用。 */
 export const CLIENT_PATHS: { method: string; path: string }[] = [
@@ -1190,6 +1315,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/tof-gate-calibration" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/research-overview" },
 ];
 
 /** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

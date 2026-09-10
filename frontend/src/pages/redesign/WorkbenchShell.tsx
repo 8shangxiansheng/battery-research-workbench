@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/pop
 import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "../../components/ui/command";
 import { SidebarProvider, Sidebar, SidebarHeader, SidebarContent, SidebarFooter, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarInset, SidebarTrigger, SidebarGroup } from "../../components/ui/sidebar";
 import { OverviewPage } from "./OverviewPage";
+import { ResearchOverview } from "./ResearchOverview";
 import { WaveformWorkbench } from "./WaveformWorkbench";
 import { AnalysisWorkbench } from "./AnalysisWorkbench";
 import { ModelsWorkbench } from "./ModelsWorkbench";
@@ -43,7 +44,7 @@ function ExperimentLayout() {
     <SidebarFooter className="px-4 pb-6"><SidebarMenu><SidebarMenuItem><SidebarMenuButton asChild className="h-11"><NavLink to={`${base}/advanced/parameters`}><Settings2/><span>高级</span></NavLink></SidebarMenuButton></SidebarMenuItem><SidebarMenuItem><SidebarMenuButton asChild className="h-11"><Link to="/"><Library/><span>实验库</span></Link></SidebarMenuButton></SidebarMenuItem></SidebarMenu><p className="text-xs muted px-3 pt-5">电池科研工作台</p></SidebarFooter>
   </Sidebar><SidebarInset className="bg-[#fafbfa] min-w-0"><div className="app-topbar"><SidebarTrigger/><div className="h-5 border-l"/><ExperimentSwitcher/><div className="ml-auto"><AssistantDrawer/></div></div>
   <div id="main-content" className="app-content w-full" key={`main-${batteryId}/${experimentId}`}><Routes>
-    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<OverviewPage/>}/><Route path="waveform" element={<WaveformWorkbench/>}/><Route path="analysis" element={<AnalysisWorkbench/>}/><Route path="models" element={<ModelsWorkbench/>}/><Route path="report" element={<ReportWorkbench/>}/><Route path="advanced/:section" element={<AdvancedPage/>}/>
+    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<ResearchOverview/>}/><Route path="overview-classic" element={<OverviewPage/>}/><Route path="waveform" element={<WaveformWorkbench/>}/><Route path="analysis" element={<AnalysisWorkbench/>}/><Route path="models" element={<ModelsWorkbench/>}/><Route path="report" element={<ReportWorkbench/>}/><Route path="advanced/:section" element={<AdvancedPage/>}/>
     <Route path="modeling" element={<Navigate to={`${base}/models`} replace/>}/><Route path="reports" element={<Navigate to={`${base}/report`} replace/>}/><Route path="features" element={<Navigate to={`${base}/analysis`} replace/>}/>
     {['data','dataset-split','evidence','workspace','runs'].map(p=><Route key={p} path={p} element={<Navigate to={`${base}/advanced/${p}`} replace/>}/>)}<Route path="*" element={<Navigate to={`${base}/overview`} replace/>}/>
   </Routes></div></SidebarInset></SidebarProvider></AssistantProvider>;

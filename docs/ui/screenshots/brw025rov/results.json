@@ -1,0 +1,58 @@
+[
+  {
+    "id": "01_overview_first_screen",
+    "ok": true
+  },
+  {
+    "id": "02_metadata_strip",
+    "ok": true
+  },
+  {
+    "id": "03_research_status_banner",
+    "ok": true
+  },
+  {
+    "id": "04_electrical_snapshot",
+    "ok": true
+  },
+  {
+    "id": "05_tof_snapshot",
+    "ok": true
+  },
+  {
+    "id": "06_coverage_distinction",
+    "ok": true
+  },
+  {
+    "id": "07_readiness_matrix_actions",
+    "ok": true
+  },
+  {
+    "id": "08_limitations_first_screen",
+    "ok": true
+  },
+  {
+    "id": "09_scientific_snapshot",
+    "ok": true
+  },
+  {
+    "id": "10_model_baseline_comparison",
+    "ok": true
+  },
+  {
+    "id": "11_quick_actions_max3",
+    "ok": true
+  },
+  {
+    "id": "12_assistant_injected_context",
+    "ok": true
+  },
+  {
+    "id": "13_fs_inline_config",
+    "ok": true
+  },
+  {
+    "id": "14_widescreen_1920",
+    "ok": true
+  }
+]
