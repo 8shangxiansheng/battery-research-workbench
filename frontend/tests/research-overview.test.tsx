@@ -68,7 +68,7 @@ const overviewPayload = {
     target: { target_id: "reference_soc_percent", readiness: "READY_FOR_LIMITED_EVALUATION", note: "retrospective" },
     leading_exploratory_candidate: { analysis_id: "AN::t", feature_name: "amplitude_a_u", method: "spearman", coefficient: -0.1341, n: 3995, note: "" },
     selected_features: ["amplitude_a_u"],
-    model_evidence: { dummy_first_conclusion: "no model beat the Dummy baseline", dummy_macro_mae: 29.61, note: "" },
+    model_evidence: { dummy_first_conclusion: "当前同口径评估中没有任何模型跑赢 Dummy 基准", dummy_macro_mae: 29.61, note: "" },
     feature_definition: { feature_set_id: "FS::t", dataset_definition_version: "0.1.0", current_policy: "MATLAB_ALIGNED_FEATURE_FORMULAS_V1", uses_previous_feature_definition: true, refresh_required: true, note: "previous definition" },
   },
   model_comparison: {
@@ -81,14 +81,14 @@ const overviewPayload = {
       { strategy: "RANDOM_FOREST", macro_mae: 35.56, macro_rmse: 43.4, macro_r2: -0.71, vs_dummy: 5.95 },
     ],
     dummy: { strategy: "DUMMY_MEAN", macro_mae: 29.61 },
-    dummy_first_conclusion: "no model beat the Dummy baseline (current same-scope evaluation)",
+    dummy_first_conclusion: "当前同口径评估中没有任何模型跑赢 Dummy 基准",
     feature_definition: { feature_set_id: "FS::t", dataset_definition_version: "0.1.0", current_policy: "MATLAB_ALIGNED_FEATURE_FORMULAS_V1", uses_previous_feature_definition: true, refresh_required: true, note: "previous definition" },
   },
   limitations_first_screen: [
-    { code: "PROVISIONAL_TIMEBASE", severity: "LIMITATION", description: "sync timebase is provisional (not validated)" },
-    { code: "SOH_INDEPENDENT_STATES_TOO_FEW", severity: "BLOCKING_FOR_MODELING", description: "SOH has only 2 independent states" },
-    { code: "LIMITED_CROSS_CYCLE_GENERALIZATION", severity: "LIMITATION", description: "within-battery cross-cycle evaluation only" },
-    { code: "ONE_BATTERY_ONLY", severity: "BLOCKING_FOR_CLAIM", description: "only 1 battery in dataset" },
+    { code: "PROVISIONAL_TIMEBASE", severity: "LIMITATION", description: "sync timebase is provisional", description_zh: "同步时间基准为临时基准（尚未验证）" },
+    { code: "SOH_INDEPENDENT_STATES_TOO_FEW", severity: "BLOCKING_FOR_MODELING", description: "SOH has only 2 independent states", description_zh: "SOH 仅有 2 个独立状态（事件行不独立），不足以建模" },
+    { code: "LIMITED_CROSS_CYCLE_GENERALIZATION", severity: "LIMITATION", description: "within-battery cross-cycle evaluation only", description_zh: "仅限同电池跨循环评估，不外推泛化" },
+    { code: "ONE_BATTERY_ONLY", severity: "BLOCKING_FOR_CLAIM", description: "only 1 battery in dataset", description_zh: "数据集仅含 1 块电池——无法进行跨电池评估" },
   ],
   next_actions: [
     { action_id: "CALIBRATE_TOF_GATES", label: "标定并冻结 TOF 双闸门", route: "/experiments/CELL_001/EXP_001/waveform" },
@@ -142,20 +142,21 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
     mount();
     await screen.findByTestId("research-status-banner");
     expect(screen.getByTestId("meta-Battery")).toHaveTextContent("CELL_001");
+    expect(screen.getByTestId("meta-Battery")).toHaveTextContent("电池");
     expect(screen.getByTestId("meta-Sampling Rate")).toHaveTextContent("50 MHz");
-    expect(screen.getByTestId("meta-Sampling Rate")).toHaveTextContent("verified");
+    expect(screen.getByTestId("meta-Sampling Rate")).toHaveTextContent("已验证");
     expect(screen.getByTestId("meta-Temperature")).toHaveTextContent("T1");
   });
   it("O05 未知 metadata 显示 Not configured（chemistry/probe/capacity），禁止猜", async () => {
     mount();
     await screen.findByTestId("research-status-banner");
-    expect(screen.getByTestId("meta-Chemistry")).toHaveTextContent("Not configured");
-    expect(screen.getByTestId("meta-Probe")).toHaveTextContent("Not configured");
-    expect(screen.getByTestId("meta-Nominal Capacity")).toHaveTextContent("Not configured");
+    expect(screen.getByTestId("meta-Chemistry")).toHaveTextContent("未配置");
+    expect(screen.getByTestId("meta-Probe")).toHaveTextContent("未配置");
+    expect(screen.getByTestId("meta-Nominal Capacity")).toHaveTextContent("未配置");
   });
   it("O06 Timebase 显示 Provisional", async () => {
     mount();
-    expect(await screen.findByTestId("meta-Timebase")).toHaveTextContent("Provisional");
+    expect(await screen.findByTestId("meta-Timebase")).toHaveTextContent("临时基准");
   });
 
   // O07–O10 electrical snapshot
@@ -170,7 +171,7 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
     await screen.findByTestId("electrical-cycles");
     expect(screen.getByTestId("electrical-snapshot")).toHaveTextContent("99.53%");
     expect(screen.getByTestId("electrical-snapshot")).toHaveTextContent("99.58%");
-    expect(screen.getByTestId("electrical-snapshot")).toHaveTextContent("Apparent CE");
+    expect(screen.getByTestId("electrical-snapshot")).toHaveTextContent("表观库仑效率");
   });
   it("O09 sparkline 渲染（无科学计算）", async () => {
     mount();
@@ -180,7 +181,7 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
   });
   it("O10 electrical protocol 语义标注", async () => {
     mount();
-    expect(await screen.findByTestId("electrical-snapshot")).toHaveTextContent("Protocol: 解析器记录");
+    expect(await screen.findByTestId("electrical-snapshot")).toHaveTextContent("协议：解析器记录");
   });
 
   // O11–O14 TOF snapshot
@@ -189,7 +190,7 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
     await screen.findByTestId("tof-snapshot");
     expect(screen.getByTestId("tof-snapshot")).toHaveTextContent("SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1");
     expect(screen.getByTestId("tof-snapshot")).toHaveTextContent("EXPERIMENT_CONFIRMED v1");
-    expect(screen.getByTestId("tof-snapshot")).toHaveTextContent("50 MHz · verified");
+    expect(screen.getByTestId("tof-snapshot")).toHaveTextContent("50 MHz · 已验证");
   });
   it("O12 双 gate 与范围显示", async () => {
     mount();
@@ -217,7 +218,7 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
     mount();
     const banner = await screen.findByTestId("research-status-banner");
     expect(banner).toHaveTextContent("阻断");
-    expect(screen.getByTestId("readiness-tof")).toHaveTextContent("BLOCKED");
+    expect(screen.getByTestId("readiness-tof")).toHaveTextContent("阻断");
   });
 
   // O15 signal quality
@@ -232,9 +233,9 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
   it("O16 readiness matrix 五维状态", async () => {
     mount();
     await screen.findByTestId("readiness-matrix");
-    expect(screen.getByTestId("readiness-acquisition")).toHaveTextContent("READY");
-    expect(screen.getByTestId("readiness-synchronization")).toHaveTextContent("PROVISIONAL");
-    expect(screen.getByTestId("readiness-modeling")).toHaveTextContent("LIMITED");
+    expect(screen.getByTestId("readiness-acquisition")).toHaveTextContent("就绪");
+    expect(screen.getByTestId("readiness-synchronization")).toHaveTextContent("临时基准");
+    expect(screen.getByTestId("readiness-modeling")).toHaveTextContent("受限");
   });
   it("O17 Quick Actions ≤3 且由 readiness 生成", async () => {
     mount();
@@ -246,10 +247,10 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
   it("O18 limitations 首屏可见（4 条）", async () => {
     mount();
     const limits = await screen.findByTestId("limitations-first-screen");
-    expect(limits).toHaveTextContent("provisional");
-    expect(limits).toHaveTextContent("2 independent states");
-    expect(limits).toHaveTextContent("within-battery");
-    expect(limits).toHaveTextContent("1 battery");
+    expect(limits).toHaveTextContent("临时基准");
+    expect(limits).toHaveTextContent("2 个独立状态");
+    expect(limits).toHaveTextContent("跨循环评估");
+    expect(limits).toHaveTextContent("1 块电池");
   });
 
   // O19–O21 scientific snapshot
@@ -276,7 +277,7 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
   });
   it("O21 model evidence 区 Dummy-first 结论", async () => {
     mount();
-    expect(await screen.findByTestId("model-evidence-note")).toHaveTextContent("no model beat the Dummy baseline");
+    expect(await screen.findByTestId("model-evidence-note")).toHaveTextContent("没有任何模型跑赢 Dummy 基准");
   });
 
   // O22–O24 model baseline comparison
@@ -291,13 +292,13 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
   });
   it("O23 stale 工件显示 refresh required", async () => {
     mount();
-    expect(await screen.findByTestId("model-refresh-required")).toHaveTextContent("refresh required");
-    expect(screen.getByTestId("model-evidence-note")).toHaveTextContent("从未使用 canonical envelope-peak TOF");
+    expect(await screen.findByTestId("model-refresh-required")).toHaveTextContent("需要刷新");
+    expect(screen.getByTestId("model-evidence-note")).toHaveTextContent("从未使用 canonical 包络峰值 TOF");
   });
   it("O24 Available vs Used 区分（非 Dummy 未用于当前结论）", async () => {
     mount();
     await screen.findByTestId("model-comparison-table");
-    expect(screen.getByTestId("model-comparison-table")).toHaveTextContent("Available（未用于当前结论）");
+    expect(screen.getByTestId("model-comparison-table")).toHaveTextContent("可用（未用于当前结论）");
   });
 
   // O25–O26 inline fs submission（BRW-018R2 复用）

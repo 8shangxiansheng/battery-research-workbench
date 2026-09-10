@@ -252,11 +252,11 @@ def _tof_snapshot(processed_root: Path, b: str, e: str) -> dict[str, Any]:
         "waveform_tof": {
             "event_count": event_count,
             "ambiguous_events": ambiguous,
-            "note": "waveform-level TOF rows (one per MeasurementEvent frame)",
+            "note": "波形级 TOF 行（每 MeasurementEvent 帧一行）",
         },
         "feature_target_eligible": {
             "eligible_count": eligible,
-            "note": "Feature–Target eligible rows (analysis_eligible) — differs from waveform TOF valid count",
+            "note": "特征–目标可用行（analysis_eligible）——与波形 TOF 有效数不同",
         },
     }
 
@@ -309,11 +309,11 @@ def _feature_definition_state(processed_root: Path, b: str, e: str) -> dict[str,
         "uses_previous_feature_definition": bool(stale),
         "refresh_required": bool(stale),
         "note": (
-            "the current model artifact predates the BRW-013X V2 feature "
-            "definitions and never used the BRW-017R2 canonical envelope-peak TOF"
+            "当前模型工件早于 BRW-013X V2 特征定义，且从未使用 "
+            "BRW-017R2 canonical 包络峰值 TOF"
         )
         if stale
-        else "feature definition matches the current policy",
+        else "特征定义与当前策略一致",
     }
 
 
@@ -350,7 +350,7 @@ def _leading_exploratory(processed_root: Path, b: str, e: str) -> dict[str, Any]
         "method": str(row.get("method")),
         "coefficient": round(float(row["coefficient"]), 4) if pd.notna(row["coefficient"]) else None,
         "n": int(row["n"]) if pd.notna(row["n"]) else None,
-        "note": "spearman from the persisted EXPLORATORY_FULL_DATA analysis (not re-computed)",
+        "note": "取自持久化的 EXPLORATORY_FULL_DATA 分析（未重新计算）",
     }
 
 
@@ -411,13 +411,25 @@ def _model_comparison(processed_root: Path, b: str, e: str) -> dict[str, Any]:
         "strategies": strategies,
         "dummy": dummy,
         "dummy_first_conclusion": (
-            "no model beat the Dummy baseline (current same-scope evaluation)"
+            "当前同口径评估中没有任何模型跑赢 Dummy 基准"
             if dummy is not None
-            and all((s["macro_mae"] or 0) >= (dummy["macro_mae"] or 0) for s in strategies if s["strategy"] != "DUMMY_MEAN")
+            and all(
+                (s["macro_mae"] or 0) >= (dummy["macro_mae"] or 0)
+                for s in strategies
+                if s["strategy"] != "DUMMY_MEAN"
+            )
             else None
         ),
         "feature_definition": feature_state,
     }
+
+
+_LIMITATION_ZH: dict[str, str] = {
+    "ONE_BATTERY_ONLY": "数据集仅含 1 块电池——无法进行跨电池评估",
+    "SOH_INDEPENDENT_STATES_TOO_FEW": "SOH 仅有 2 个独立状态（事件行不独立），不足以建模",
+    "LIMITED_CROSS_CYCLE_GENERALIZATION": "仅限同电池跨循环评估，不外推泛化",
+    "PROVISIONAL_TIMEBASE": "同步时间基准为临时基准（尚未验证）",
+}
 
 
 def _limitations_first_screen() -> list[dict[str, str]]:
@@ -425,7 +437,12 @@ def _limitations_first_screen() -> list[dict[str, str]]:
 
     codes = {"PROVISIONAL_TIMEBASE", "SOH_INDEPENDENT_STATES_TOO_FEW",
              "LIMITED_CROSS_CYCLE_GENERALIZATION", "ONE_BATTERY_ONLY"}
-    return [l for l in collect_limitation_registry() if l["code"] in codes]
+    out = []
+    for l in collect_limitation_registry():
+        if l["code"] not in codes:
+            continue
+        out.append({**l, "description_zh": _LIMITATION_ZH.get(l["code"], l["description"])})
+    return out
 
 
 def _next_actions(processed_root: Path, b: str, e: str) -> list[dict[str, str]]:

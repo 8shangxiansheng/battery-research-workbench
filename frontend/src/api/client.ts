@@ -1220,7 +1220,7 @@ export interface ResearchOverviewPayload {
     dummy_first_conclusion: string | null;
     feature_definition: ResearchFeatureDefinitionState;
   };
-  limitations_first_screen: { code: string; severity: string; description: string }[];
+  limitations_first_screen: { code: string; severity: string; description: string; description_zh?: string }[];
   next_actions: { action_id: string; label: string; route: string }[];
   research_status_banner: { level: string; message: string };
 }

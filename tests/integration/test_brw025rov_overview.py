@@ -118,7 +118,8 @@ class TestResearchOverviewE2E:
         fd = d["feature_definition"]
         assert fd["uses_previous_feature_definition"] is True
         assert fd["refresh_required"] is True
-        assert "never used" in fd["note"] or "canonical envelope-peak TOF" in fd["note"]
+        # BRW-025R-OV-R1: 中文 UI 文案（BRW-025R-OV 实验台中文化）
+        assert "从未使用" in fd["note"] and "包络峰值 TOF" in fd["note"]
 
     def test_read_only_no_artifact_writes(self, tmp_path: Path) -> None:
         sandbox = _sandbox(tmp_path)
