@@ -203,9 +203,11 @@ class TestBRW018R2E2E:
         assert r2.json()["data"]["version"] == 2
         rc2 = client.get(f"/api/v1/experiments/{B}/{E}/canonical-tof?limit=3")
         assert rc2.json()["data"]["gate_calibration_version"] == 2
-        # legacy TOF artifact untouched throughout
+        # status.tof reflects the live ladder (BRW-018R2): VERIFIED fs + frozen
+        # calibration → READY; the legacy arrival artifact stays untouched
         legacy = client.get(f"/api/v1/experiments/{B}/{E}/status").json()["data"]
-        assert legacy["tof"]["status"] in ("BLOCKED", "AVAILABLE")
+        assert legacy["tof"]["status"] == "READY"
+        assert legacy["tof"]["gate_calibration_source"] == "EXPERIMENT_CONFIRMED"
 
     def test_e5_idempotent_replay_zero_new_ps(self, tmp_path: Path) -> None:
         client, _runs = _client(tmp_path)

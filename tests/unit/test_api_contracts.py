@@ -227,11 +227,12 @@ def test_t28_scientific_blocked_states_are_not_500(api: tuple[TestClient, object
     response = client.get("/api/v1/experiments/CELL_001/EXP_001/status")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["tof"] == {
-        "value": None,
-        "status": "BLOCKED",
-        "reason": "sampling rate/time-zero and arrival detector are not validated",
-    }
+    # BRW-018R2: tof resolves live from the fs/calibration ladder — in this
+    # sandbox no fs exists, so the blocked reason must be the honest one
+    assert data["tof"]["value"] is None
+    assert data["tof"]["status"] == "BLOCKED"
+    assert "VERIFIED" in data["tof"]["reason"]
+    assert data["tof"]["sampling_rate_verified"] is False
     assert data["soh"]["value"] is None
     assert data["soh"]["status"] == "NOT_READY"
 

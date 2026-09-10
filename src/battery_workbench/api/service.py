@@ -163,7 +163,13 @@ class WorkbenchService:
         }
 
     def get_status(self, battery_id: str, experiment_id: str) -> dict[str, Any]:
-        """Canonical status: TOF/SOH/SOC/sync with null+reason, never fake values."""
+        """Canonical status: TOF/SOH/SOC/sync with null+reason, never fake values.
+
+        BRW-018R2: TOF readiness is resolved live from the same ladder the
+        canonical-TOF pipeline uses (VERIFIED fs from the Parameter Registry +
+        gate-calibration priority). A saved fs must be reflected here without
+        a restart — otherwise the overview shows 'no reaction' after saving.
+        """
         self._require_experiment(battery_id, experiment_id)
         return {
             "battery_id": battery_id,
@@ -179,8 +185,61 @@ class WorkbenchService:
                 "status": "NOT_READY",
                 "reason": "two independent states; no model evaluation",
             },
-            "tof": {"value": None, "status": "BLOCKED", "reason": _TOF_REASON},
+            "tof": self._resolve_tof_status(battery_id, experiment_id),
             "scientific_status": "READY_FOR_LIMITED_EVALUATION",
+        }
+
+    def _resolve_tof_status(self, battery_id: str, experiment_id: str) -> dict[str, Any]:
+        """Live TOF readiness: fs (verified) + gate calibration provenance.
+
+        value stays None (a single number is not the experiment's TOF); the
+        status reports what the canonical pipeline would resolve right now.
+        """
+        # fs from the newest resolved parameter set (registry is the only source)
+        fs_hz, fs_verified = None, False
+        ps_dir = self.processed_root / "parameters" / battery_id / experiment_id
+        if ps_dir.is_dir():
+            from battery_workbench.features_physical.canonical_tof import effective_fs
+
+            for manifest in sorted(ps_dir.glob("PS::*/effective_parameters.json")):
+                try:
+                    eff = json.loads(manifest.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                eff = eff.get("effective_parameters") or eff
+                fs, verified = effective_fs(eff, require_verified=True)
+                if verified:
+                    fs_hz, fs_verified = fs, True
+                    break
+                if fs is not None and fs_hz is None:
+                    fs_hz = fs
+        if not fs_verified:
+            return {
+                "value": None,
+                "status": "BLOCKED",
+                "reason": (
+                    "sampling_rate_hz not VERIFIED in the Parameter Registry "
+                    "(save alone does not verify; never guessed)"
+                ),
+                "sampling_rate_hz": fs_hz,
+                "sampling_rate_verified": False,
+            }
+        # gates: confirmed experiment calibration or the explicit source template
+        from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
+
+        cal = resolve_tof_gate_calibration(battery_id, experiment_id, self.processed_root)
+        return {
+            "value": None,
+            "status": "READY",
+            "reason": (
+                f"fs VERIFIED ({fs_hz / 1e6:g} MHz) + gate calibration "
+                f"{cal['gate_calibration_id']} ({cal['source']}) — canonical "
+                "envelope-peak TOF active"
+            ),
+            "sampling_rate_hz": fs_hz,
+            "sampling_rate_verified": True,
+            "gate_calibration_id": cal["gate_calibration_id"],
+            "gate_calibration_source": cal["source"],
         }
 
     _EXPERIMENT_BASES = (

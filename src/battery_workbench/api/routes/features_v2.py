@@ -972,6 +972,106 @@ def alignment_samples(
     return {"data": {"samples": items, "total": total}, "meta": {"filter": filter, "cursor": cursor, "limit": limit}}
 
 
+
+
+# ---------------------------------------------------------------------------
+# BRW-018R2 fix — shared feature-series resolver for the full catalogue.
+#
+# ranking/preview previously accepted only the 7 physical codes while the
+# catalogue exposes 33 (19 TD + 14 FD) — selecting any TD/FD feature produced
+# NOT_FOUND ("unknown features"). Both endpoints now resolve every catalogue
+# code through the same deterministic formula layer (matlab_features +
+# spectral_transform + raw/envelope + physical gates). No value is invented
+# here; this is a series resolver, not a new science path.
+# ---------------------------------------------------------------------------
+
+_PREDEFINED_PHYSICAL_CODES = (
+    "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "ATTEN_MEAN", "ATTEN_ENERGY", "BPS",
+)
+
+_ALIAS_TO_RAW: dict[str, str] = {
+    "waveform_mean_a_u": "waveform_mean_a_u",
+    "waveform_std_a_u": "waveform_std_a_u",
+    "waveform_max_a_u": "waveform_max_a_u",
+    "waveform_min_a_u": "waveform_min_a_u",
+    "waveform_p2p_a_u": "waveform_p2p_a_u",
+}
+
+
+def _catalogue_feature_series(
+    frames: np.ndarray, features: list[str]
+) -> dict[str, np.ndarray]:
+    """Series per requested feature code (catalogue codes + physical codes).
+
+    TD codes run compute_time_domain over the full waveform; FD codes run the
+    default explicit spectral transform (no fs requirement). Only codes the
+    catalogue defines are accepted; unknown codes raise NOT_FOUND upstream.
+    """
+    from battery_workbench.features.envelope import compute_envelope_features
+    from battery_workbench.features.matlab_features import (
+        FD_CODES,
+        TD_CODES,
+        compute_frequency_domain,
+        compute_time_domain,
+    )
+    from battery_workbench.features.raw_features import compute_raw_amplitude_features
+    from battery_workbench.features.spectral_transform import (
+        SpectralTransformDefinition,
+        spectrum_from_waveform,
+    )
+
+    requested = set(features)
+    out: dict[str, np.ndarray] = {}
+    n = frames.shape[0]
+
+    td_needed = sorted(requested & set(TD_CODES))
+    fd_needed = sorted(requested & set(FD_CODES))
+    if td_needed or fd_needed:
+        td_rows: dict[str, list[float]] = {c: [] for c in td_needed}
+        fd_rows: dict[str, list[float]] = {c: [] for c in fd_needed}
+        transform = SpectralTransformDefinition(spectral_transform_id="PREVIEW_DEFAULT")
+        for i in range(n):
+            x = np.asarray(frames[i], dtype=np.float64)
+            if td_needed:
+                td_vals = compute_time_domain(x)
+                for c in td_needed:
+                    td_rows[c].append(float(td_vals[c]))
+            if fd_needed:
+                f_axis, y = spectrum_from_waveform(x, transform)
+                fd_vals = compute_frequency_domain(f_axis, y)
+                for c in fd_needed:
+                    fd_rows[c].append(float(fd_vals[c]))
+        for c, vals in td_rows.items():
+            out[c] = np.asarray(vals, dtype=np.float64)
+        for c, vals in fd_rows.items():
+            out[c] = np.asarray(vals, dtype=np.float64)
+
+    raw_needed = sorted(
+        requested & {_ALIAS_TO_RAW[a] for a in _ALIAS_TO_RAW}
+    )
+    if raw_needed:
+        rows: dict[str, list[float | None]] = {c: [] for c in raw_needed}
+        for i in range(n):
+            raw = compute_raw_amplitude_features(np.asarray(frames[i], dtype=np.float64))
+            for c in raw_needed:
+                rows[c].append(raw.get(c))
+        for c, vals in rows.items():
+            out[c] = np.asarray(
+                [float(v) if v is not None else np.nan for v in vals], dtype=np.float64
+            )
+
+    env_needed = sorted(requested & {"envelope_peak_a_u"})
+    if env_needed:
+        vals = [
+            compute_envelope_features(np.asarray(frames[i], dtype=np.float64))["envelope_peak_a_u"]
+            for i in range(n)
+        ]
+        out["envelope_peak_a_u"] = np.asarray(
+            [float(v) if v is not None else np.nan for v in vals], dtype=np.float64
+        )
+    return out
+
+
 @router.post("/experiments/{battery_id}/{experiment_id}/feature-label-preview")
 def feature_label_preview(
     request: Request, battery_id: str, experiment_id: str, body: dict[str, Any]
@@ -999,22 +1099,37 @@ def feature_label_preview(
     frames = _load_frames(request, battery_id, experiment_id)
     n_frames = frames.shape[0]
 
-    # ultrasound features per frame from the physical modules (canonical methods)
-    bottom = bottom_wave_amplitude(frames)["raw"]
-    swa = surface_wave_amplitude(frames)["raw"]
-    tof = surface_bottom_xcorr_tof(frames)["tof_samples"].astype(float)
-    atten = bottom_attenuation_explicit(frames)
-    bps = bottom_wave_phase_shift(frames)["raw_radian"]
-    series_by_code: dict[str, np.ndarray] = {
-        "BOTTOM_AMP": bottom, "SWA": swa, "TOF_XCORR": tof,
-        "ATTEN_MAX": np.asarray(atten["amp_max"]),
-        "ATTEN_MEAN": np.asarray(atten["amp_mean"]),
-        "ATTEN_ENERGY": np.asarray(atten["amp_energy"]),
-        "BPS": bps,
+    # BRW-018R2 fix: catalogue-wide resolution (7 physical codes + 33 TD/FD
+    # codes + raw aliases). Unknown codes still raise NOT_FOUND — but only for
+    # codes the catalogue genuinely does not define.
+    from battery_workbench.features.definitions_v2 import default_registry
+
+    physical_series: dict[str, np.ndarray] = {
+        "BOTTOM_AMP": bottom_wave_amplitude(frames)["raw"],
+        "SWA": surface_wave_amplitude(frames)["raw"],
+        "TOF_XCORR": surface_bottom_xcorr_tof(frames)["tof_samples"].astype(float),
+        "ATTEN_MAX": np.asarray(bottom_attenuation_explicit(frames)["amp_max"]),
+        "ATTEN_MEAN": np.asarray(bottom_attenuation_explicit(frames)["amp_mean"]),
+        "ATTEN_ENERGY": np.asarray(bottom_attenuation_explicit(frames)["amp_energy"]),
+        "BPS": bottom_wave_phase_shift(frames)["raw_radian"],
     }
-    missing_features = [f for f in features if f not in series_by_code]
-    if missing_features:
-        raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {missing_features}")
+    catalogue = default_registry()
+    resolved_alias: dict[str, str] = {}
+    unknown_features = []
+    for f in features:
+        if f in physical_series:
+            continue
+        if f in catalogue._defs:
+            continue
+        if f in _ALIAS_TO_RAW:
+            resolved_alias[f] = _ALIAS_TO_RAW[f]
+            continue
+        unknown_features.append(f)
+    if unknown_features:
+        raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {unknown_features}")
+
+    series_by_code: dict[str, np.ndarray] = dict(physical_series)
+    series_by_code.update(_catalogue_feature_series(frames, features))
 
     events, labels = _load_events_labels(request, battery_id, experiment_id)
     import pandas as join_pd
@@ -1098,8 +1213,12 @@ def feature_target_ranking(
         raise APIError(ErrorCode.VALIDATION_ERROR, "features required")
     analysis_mode = "TRAIN_ONLY_ML_SAFE" if mode == "TRAIN_ONLY_ML_SAFE" else "EXPLORATORY"
 
-    feature_codes = ["BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "ATTEN_MEAN", "ATTEN_ENERGY", "BPS"]
-    missing = [f for f in features if f not in feature_codes]
+    # BRW-018R2 fix: catalogue-wide acceptance (see feature_label_preview)
+    from battery_workbench.features.definitions_v2 import default_registry
+
+    catalogue = default_registry()
+    known_codes = set(_PREDEFINED_PHYSICAL_CODES) | set(catalogue._defs) | set(_ALIAS_TO_RAW)
+    missing = [f for f in features if f not in known_codes]
     if missing:
         raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {missing}")
 
@@ -1113,6 +1232,7 @@ def feature_target_ranking(
         "ATTEN_ENERGY": np.asarray(bottom_attenuation_explicit(frames)["amp_energy"]),
         "BPS": bottom_wave_phase_shift(frames)["raw_radian"],
     }
+    series_map.update(_catalogue_feature_series(frames, features))
 
     rows = _correlation_rows(
         request, battery_id, experiment_id, series_map[features[0]], features[0],

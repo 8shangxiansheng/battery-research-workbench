@@ -95,7 +95,16 @@ export interface StatusBlock {
   synchronization: { validated_sync: boolean; timebase_status: string };
   soc: { value: number | null; status: string; reason: string };
   soh: { value: number | null; status: string; reason?: string };
-  tof: { value: number | null; status: string; reason: string };
+  tof: {
+    value: number | null;
+    status: string;
+    reason: string;
+    /** BRW-018R2 live readiness ladder fields */
+    sampling_rate_hz?: number | null;
+    sampling_rate_verified?: boolean;
+    gate_calibration_id?: string;
+    gate_calibration_source?: string;
+  };
   scientific_status: string;
 }
 

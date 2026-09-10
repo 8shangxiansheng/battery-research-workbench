@@ -333,3 +333,47 @@ def test_feature_target_ranking_direction_dependent(client: TestClient) -> None:
     )
     assert soh.json()["data"]["group_summary"]
     assert soh.json()["data"]["ranking"] == []  # no frame-level SOH leaderboard
+
+
+def test_brw018r2_catalogue_features_accepted(client: TestClient) -> None:
+    """TD/FD/raw-alias codes rank and preview without NOT_FOUND (user bugfix)."""
+    if not has_real:
+        pytest.skip("real artifacts not available")
+    for features in (["SWA", "TDM", "TDPP"], ["waveform_p2p_a_u"], ["FDM"], ["SWA", "FDEQ"]):
+        r = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/feature-target-ranking",
+            json={"target_id": "reference_soc_percent", "features": features},
+        )
+        assert r.status_code == 200, (features, r.text)
+        codes = [e["feature_code"] for e in r.json()["data"]["ranking"]]
+        assert codes == features
+    rp = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-label-preview",
+        json={"target_id": "reference_soc_percent", "features": ["SWA", "TDM"], "limit": 5},
+    )
+    assert rp.status_code == 200
+    assert set(rp.json()["data"]["rows"][0]["values"]) == {"SWA", "TDM"}
+
+
+def test_brw018r2_unknown_feature_still_not_found(client: TestClient) -> None:
+    if not has_real:
+        pytest.skip("real artifacts not available")
+    r = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-target-ranking",
+        json={"target_id": "reference_soc_percent", "features": ["NOT_A_FEATURE"]},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_brw018r2_status_tof_reflects_registry(client: TestClient) -> None:
+    """status.tof resolves live from the fs/calibration ladder (no hardcode)."""
+    if not has_real:
+        pytest.skip("real artifacts not available")
+    r = client.get("/api/v1/experiments/CELL_001/EXP_001/status")
+    tof = r.json()["data"]["tof"]
+    assert tof["status"] in ("READY", "BLOCKED")
+    assert "sampling_rate_verified" in tof
+    if tof["status"] == "READY":
+        assert tof["sampling_rate_verified"] is True
+        assert "gate_calibration_id" in tof
