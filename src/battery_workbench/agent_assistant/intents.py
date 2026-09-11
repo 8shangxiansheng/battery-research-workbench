@@ -49,6 +49,7 @@ class ResearchIntent(str, Enum):
     CHECK_ALIGNMENT = "CHECK_ALIGNMENT"
     CALIBRATE_GATES = "CALIBRATE_GATES"
     INSPECT_CANONICAL_TOF = "INSPECT_CANONICAL_TOF"
+    SHOW_MODEL_INPUT_TABLE = "SHOW_MODEL_INPUT_TABLE"
     INSPECT_FEATURES = "INSPECT_FEATURES"
     ANALYZE_RELATIONSHIP = "ANALYZE_RELATIONSHIP"
     RANK_CANDIDATE_FEATURES = "RANK_CANDIDATE_FEATURES"
@@ -78,6 +79,10 @@ _INTENT_PATTERNS: list[tuple[ResearchIntent, tuple[str, ...]]] = [
     (ResearchIntent.CALIBRATE_GATES, ("标定", "标定闸门", "calibrate", "gate calibration")),
     (ResearchIntent.INSPECT_CANONICAL_TOF, ("算tof", "计算tof", "tof怎么算", "tof 是多少",
      "tof是多少", "飞行时间", "compute tof", "envelope peak tof", "包络峰值")),
+    (ResearchIntent.SHOW_MODEL_INPUT_TABLE, ("送进模型的表", "模型输入表", "最后的表", "数据集长什么样",
+     "x和y是什么", "x 和 y", "什么是x", "什么是y", "看数据表", "预览数据表",
+     "held-out的y", "held-out y", "看held", "看 held",
+     "show model input table", "what are x and y")),
     (ResearchIntent.INSPECT_FEATURES, ("特征列表", "有哪些特征", "查看特征", "inspect features", "x和y", "x 和 y")),
     (ResearchIntent.ANALYZE_RELATIONSHIP, ("关系", "相关", "relationship", "correlation", "和soc关系", "和温度")),
     (ResearchIntent.RANK_CANDIDATE_FEATURES, ("哪些特征", "排序", "ranking", "关系明显", "candidate")),

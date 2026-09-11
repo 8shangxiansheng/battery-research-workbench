@@ -636,6 +636,67 @@ export interface FeatureLabelPreviewRow {
   values: Record<string, number>;
   sync_error_s: number | null;
   electrical_asset_id: string | null;
+  /** BRW-025R-FE-R2 row provenance + split awareness */
+  electrical_record_locator?: string | null;
+  electrical_row_index?: number | null;
+  electrical_timestamp?: string | null;
+  match_status?: string | null;
+  y_redacted?: boolean;
+  split_role?: string;
+  fold?: string | null;
+}
+
+export interface FeatureMetaEntry {
+  label_en: string;
+  label_zh: string;
+  units: string;
+  definition_status: string;
+  parity_status: string;
+  source: string;
+  resolved_name?: string;
+  canonical_note?: string;
+}
+
+export interface TofProvenance {
+  canonical_method: string;
+  tof_definition_version: string;
+  fs_hz: number | null;
+  fs_verified: boolean;
+  fs_parameter_set_id: string | null;
+  gate_calibration_id: string;
+  gate_calibration_source: string;
+  gate_calibration_version: number;
+  surface_gate_id: string;
+  bottom_gate_id: string;
+  note: string;
+}
+
+export interface AmbiguousPreviewRow {
+  measurement_event_id: string;
+  frame_index_raw: number | null;
+  state: string;
+  electrical_identity: null;
+  target: null;
+  candidate_count: number | null;
+  values: Record<string, number>;
+  note: string;
+}
+
+export interface MaterializedDatasetInfo {
+  dataset_id: string;
+  materialization_status: string;
+  stale_tof: boolean;
+  refresh_required: boolean;
+  stale_note: string;
+  feature_definition_version: string | null;
+}
+
+export interface RedactionSummary {
+  split_id: string;
+  fold: string;
+  train_rows: number;
+  held_out_rows: number;
+  policy: string;
 }
 
 export interface FeatureLabelPreviewResponse {
@@ -654,6 +715,15 @@ export interface FeatureLabelPreviewResponse {
     missing_values: number;
     alignment_status: string;
   };
+  /** BRW-025R-FE-R2 preview hardening */
+  feature_meta?: Record<string, FeatureMetaEntry>;
+  ambiguous_rows?: AmbiguousPreviewRow[];
+  tof_provenance?: TofProvenance;
+  preview_state?: "PREVIEW_DRAFT";
+  spec_hash?: string;
+  materialized_dataset?: MaterializedDatasetInfo | null;
+  redaction_summary?: RedactionSummary | null;
+  grain?: string;
 }
 
 export interface FeatureRankingEntry {
@@ -1081,7 +1151,7 @@ export const client = {
     ),
   getAlignmentExclusions: (batteryId: string, experimentId: string) =>
     request<AlignmentExclusionsResponse>(`/experiments/${batteryId}/${experimentId}/alignment-exclusions`),
-  postFeatureLabelPreview: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; limit?: number }) =>
+  postFeatureLabelPreview: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; limit?: number; split_id?: string; fold_index?: string }) =>
     request<FeatureLabelPreviewResponse>(`/experiments/${batteryId}/${experimentId}/feature-label-preview`, {
       method: "POST", body: JSON.stringify(body),
     }),

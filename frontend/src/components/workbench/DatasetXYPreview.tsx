@@ -1,20 +1,23 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { TriangleAlert } from "lucide-react";
-import { client, type FeatureLabelPreviewResponse, type TargetDefinition } from "../../api/client";
+import { client, type MaterializedDatasetInfo, type RedactionSummary, type FeatureLabelPreviewResponse, type TargetDefinition } from "../../api/client";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "../ui/dialog";
 import { numberText } from "../../lib/presentation";
 
 /** X/y preview shown BEFORE any dataset build (requirement 19). */
-export function DatasetXYPreview({ open, onClose, target, summary, features, mode, onBuild, building, built, buildError }: {
+export function DatasetXYPreview({ open, onClose, target, summary, features, mode, onBuild, building, built, buildError,
+  specHash, excludedByReason, materialized, redactionSummary }: {
   open: boolean; onClose: () => void;
   target: TargetDefinition | undefined;
   summary: FeatureLabelPreviewResponse["summary"] | null;
   features: string[];
   mode: "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE";
   onBuild: () => void; building: boolean; built: boolean; buildError: unknown;
+  specHash?: string; excludedByReason?: Record<string, number>;
+  materialized?: MaterializedDatasetInfo | null; redactionSummary?: RedactionSummary | null;
 }) {
   const isMlSafe = mode === "TRAIN_ONLY_ML_SAFE";
   return <Dialog open={open} onOpenChange={o => { if (!o) onClose(); }}>
@@ -23,6 +26,19 @@ export function DatasetXYPreview({ open, onClose, target, summary, features, mod
         <DialogTitle>{isMlSafe ? "Build ML-safe Dataset / 构建模型安全数据集" : "Build Exploratory Feature Table / 构建探索性特征表"}</DialogTitle>
         <DialogDescription>Build 前确认 Predictors (X) 与 Target (y)。你的确认仅授权本次请求。</DialogDescription>
       </DialogHeader>
+      {/* BRW-025R-FE-R2 Build 前确认：target/X/rows/split/mode/missing policy/exclusions/producer versions */}
+      <div className="grid md:grid-cols-2 gap-x-6 gap-y-1 text-xs" data-testid="build-confirm-spec">
+        <span className="muted">Rows（eligible）</span><span className="font-mono">{numberText(summary?.eligible_rows ?? 0, 0)}</span>
+        <span className="muted">Selection mode</span><span className="font-mono">{mode}</span>
+        <span className="muted">Split</span><span className="font-mono">{redactionSummary ? `${redactionSummary.split_id}（${redactionSummary.fold}：TRAIN ${numberText(redactionSummary.train_rows, 0)} / HELD_OUT ${numberText(redactionSummary.held_out_rows, 0)}）` : "—"}</span>
+        <span className="muted">Missing policy</span><span>eligible = analysis_eligible ∧ y 存在 ∧ X 全有限；缺失行预览即排除</span>
+        <span className="muted">Exclusions</span><span className="font-mono">{excludedByReason ? Object.entries(excludedByReason).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ") : "—"}</span>
+        <span className="muted">Producer versions</span><span className="font-mono">dataset_builder 0.1.0 · preview spec {specHash ?? "—"}</span>
+        {materialized && <><span className="muted">已物化数据集</span><span className="font-mono">{materialized.dataset_id}{materialized.refresh_required ? "（stale TOF · refresh required）" : ""}</span></>}
+      </div>
+      {!isMlSafe && <p className="notice !py-2 text-sm mt-3" data-testid="not-mlsafe-warning">
+        <TriangleAlert size={14} className="inline mr-1 text-[#9b782e]"/>Exploratory Preview：全部 eligible X/y 可见（exploratory）——<strong>Not ML-safe</strong>，不得用于建模结论。
+      </p>}
       <div className="grid md:grid-cols-2 gap-4" data-testid="dataset-xy-preview">
         <div className="feature-card !p-4">
           <h3 className="text-sm font-medium">Predictors (X) / 输入特征</h3>
@@ -61,23 +77,31 @@ export function DatasetXYPreview({ open, onClose, target, summary, features, mod
   </Dialog>;
 }
 
-export function DatasetBuildButtons({ batteryId, experimentId, targetId, features, mode, target, summary, onBuilt }: {
+export function DatasetBuildButtons({ batteryId, experimentId, targetId, features, mode, target, summary, onBuilt,
+  specHash, excludedByReason, materialized, redactionSummary }: {
   batteryId: string; experimentId: string; targetId: string; features: string[];
   mode: "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE";
   target: TargetDefinition | undefined;
   summary: FeatureLabelPreviewResponse["summary"] | null;
   onBuilt: (kind: "exploratory" | "mlsafe") => void;
+  specHash?: string; excludedByReason?: Record<string, number>;
+  materialized?: MaterializedDatasetInfo | null; redactionSummary?: RedactionSummary | null;
 }) {
   return <BuildButtonsInner batteryId={batteryId} experimentId={experimentId} targetId={targetId}
-    features={features} mode={mode} target={target} summary={summary} onBuilt={onBuilt} />;
+    features={features} mode={mode} target={target} summary={summary} onBuilt={onBuilt}
+    specHash={specHash} excludedByReason={excludedByReason} materialized={materialized}
+    redactionSummary={redactionSummary} />;
 }
 
-function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, target, summary, onBuilt }: {
+function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, target, summary, onBuilt,
+  specHash, excludedByReason, materialized, redactionSummary }: {
   batteryId: string; experimentId: string; targetId: string; features: string[];
   mode: "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE";
   target: TargetDefinition | undefined;
   summary: FeatureLabelPreviewResponse["summary"] | null;
   onBuilt: (kind: "exploratory" | "mlsafe") => void;
+  specHash?: string; excludedByReason?: Record<string, number>;
+  materialized?: MaterializedDatasetInfo | null; redactionSummary?: RedactionSummary | null;
 }) {
   const [open, setOpen] = useState(false);
   const mutation = useMutation({
@@ -99,6 +123,8 @@ function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, 
     <DatasetXYPreview open={open} onClose={() => setOpen(false)} target={target} summary={summary}
       features={features} mode={mode} building={mutation.isPending}
       built={mutation.isSuccess} buildError={mutation.error}
-      onBuild={() => mutation.mutate()} />
+      onBuild={() => mutation.mutate()}
+      specHash={specHash} excludedByReason={excludedByReason} materialized={materialized}
+      redactionSummary={redactionSummary} />
   </>;
 }

@@ -376,3 +376,23 @@ class TestToolBoundary:
         assert r.status == "SUCCEEDED"
         data = r.data
         assert data["tof_method_id"] == "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1"
+
+    # ---- BRW-025R-FE-R2: model input table + held-out y protection ----
+
+    def test_a49_table_intent_classified(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "给我看看最后要送进模型的表")
+        assert r.intent == ResearchIntent.SHOW_MODEL_INPUT_TABLE.value
+        assert "一行 = 一个 eligible" in r.message
+        assert "PREVIEW_DRAFT" in r.message
+
+    def test_a50_xy_question_explains_grain(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "X和y是什么")
+        assert "X =" in r.message and "y =" in r.message
+
+    def test_a51_held_out_y_peek_blocked(self, workspace):
+        planner, session, _ = workspace
+        r = _send(planner, session, "让我看看held-out的y")
+        assert r.status == "SCIENTIFIC_BLOCK"
+        assert "结构性隔离" in r.message

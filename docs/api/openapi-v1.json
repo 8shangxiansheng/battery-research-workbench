@@ -4101,7 +4101,7 @@
           "feature-workbench"
         ],
         "summary": "Feature Label Preview",
-        "description": "Event-grain preview: selected ultrasound features + exactly one target.\n\nRead-only aggregation of canonical artifacts — no recomputation.",
+        "description": "Event-grain preview: selected ultrasound features + exactly one target.\n\nRead-only aggregation of canonical artifacts — no recomputation, no\nartifact writes (hash-stable).\n\nBRW-025R-FE-R2 additions (additive):\n- grain declared explicitly (one row = one eligible MeasurementEvent)\n- row provenance: electrical locator/row/timestamp + match status\n- ambiguous rows returned separately (electrical identity null, target\n  unavailable — never auto-nearest)\n- split_id → TRAIN/HELD_OUT role awareness with BACKEND y redaction for\n  HELD_OUT rows (target=null + y_redacted=true; not CSS hiding)\n- tof_provenance: SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1 + current fs +\n  GateCalibrationRecord (BRW-017R2/018R2); TOF_XCORR column stays the\n  legacy diagnostic and is never canonical\n- feature_meta: bilingual labels + units + definition status per column\n- preview_state=PREVIEW_DRAFT + spec_hash + materialized dataset lookup\n  with stale-TOF / refresh-required markers",
         "operationId": "feature_label_preview_api_v1_experiments__battery_id___experiment_id__feature_label_preview_post",
         "parameters": [
           {

@@ -227,6 +227,37 @@ class ResearchPlanner:
             message=msg, intent=classified.intent.value, phase=ctx.phase,
             evidence_refs=self._evidence(result))
 
+    # ---- SHOW_MODEL_INPUT_TABLE (BRW-025R-FE-R2) ----
+    def _on_show_model_input_table(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
+        """数据表预览：X = selected features；y = 恰好一个 Target。
+
+        禁止提前看 HELD_OUT y：exploratory preview 只展示 eligible 行且永远
+        不是 ML-safe；ML-safe Review 中 HELD_OUT 行的 y 由后端封锁
+        （PREVIEW 层不可见，evaluation 物化后才恢复）。
+        """
+        lowered = message.lower()
+        if "held" in lowered and ("y" in lowered or "看" in lowered):
+            return PlannerResponse(
+                message=("HELD_OUT y 在 evaluation 物化前不可见——这是结构性隔离，"
+                         "不是界面隐藏。ML-safe Review 中后端对 HELD_OUT 行直接封锁 "
+                         "y（PREVIEW 层 target=null）；TRAIN 行的 X+y 可见。"),
+                intent=classified.intent.value, phase=ctx.phase, status="SCIENTIFIC_BLOCK")
+        result = self._execute("inspect_alignment", ctx, {})
+        selected = ctx.selected_features or []
+        x_desc = "、".join(selected) if selected else "尚未选择特征（到特征分析页选择）"
+        target_desc = ctx.selected_target or "尚未选择目标"
+        msg = (
+            "最后送进模型的是一张 Feature–Label 表：一行 = 一个 eligible "
+            "MeasurementEvent（measurement_event_id 精确 join）。"
+            f"当前 X = [{x_desc}]；y = {target_desc}（恰好一个目标）。"
+            "预览状态是 PREVIEW_DRAFT，不等于已物化的 MATERIALIZED_DATASET；"
+            "Exploratory Preview 全部 eligible X/y 可见但 Not ML-safe；"
+            "ML-safe 数据集必须先有 Grouped Split，HELD_OUT 行的 y 由后端封锁。"
+        )
+        return PlannerResponse(
+            message=msg, intent=classified.intent.value, phase=ctx.phase,
+            evidence_refs=self._evidence(result))
+
     # ---- SELECT_TARGET ----
     def _on_select_target(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
         target_id = classified.target_id

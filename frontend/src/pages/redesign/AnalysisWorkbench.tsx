@@ -14,7 +14,7 @@ import { FeatureLabelTablePreview, TARGET_LABELS } from "../../components/workbe
 import { FeatureRankingTable } from "../../components/workbench/FeatureTargetWorkbench";
 import { DatasetBuildButtons } from "../../components/workbench/DatasetXYPreview";
 
-const PHYSICAL_FEATURES = ["BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS"];
+const PHYSICAL_FEATURES = ["BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
 
 export function AnalysisWorkbench() {
   const { batteryId = "", experimentId = "" } = useParams();
@@ -34,14 +34,18 @@ export function AnalysisWorkbench() {
 
   // preview data for dataset step (fetched once features+target chosen)
   const preview = useQuery({
-    queryKey: ["feature-label-preview", batteryId, experimentId, targetId, features],
-    queryFn: () => client.postFeatureLabelPreview(batteryId, experimentId, { target_id: targetId!, features, limit: 20 }),
+    queryKey: ["feature-label-preview", batteryId, experimentId, targetId, features, mode],
+    queryFn: () => client.postFeatureLabelPreview(batteryId, experimentId, {
+      target_id: targetId!, features, limit: 20,
+      split_id: mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined,
+      fold_index: mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined,
+    }),
     enabled: !!targetId && features.length > 0 && step === "dataset",
   });
   const summary: FeatureLabelPreviewResponse["summary"] | null = preview.data?.data.summary ?? null;
 
   const readyAnalysis = mode === "TRAIN_ONLY_ML_SAFE"
-    ? (materialized.data?.data.analyses ?? []).find(a => a.status === "AVAILABLE" && a.split_id && a.selected_features.some(f => features.includes(f)))
+    ? (materialized.data?.data.analyses ?? []).find(a => a.status === "AVAILABLE" && a.split_id && (a.selected_features ?? []).some(f => features.includes(String(f).split("@")[0]!)))
     : null;
 
   function selectTarget(next: string) {
@@ -140,10 +144,16 @@ export function AnalysisWorkbench() {
         <p className="text-xs muted mt-1">3999 → {summary.eligible_rows} 的行数漏斗由歧义同步与目标缺失解释，见 Alignment 步骤。</p>
       </div>}
       <div className="mt-4">
-        <FeatureLabelTablePreview batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} />
+        <FeatureLabelTablePreview batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features}
+          splitId={mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined}
+          foldIndex={mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined} />
       </div>
       <div className="mt-4">
-        <DatasetBuildButtons batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode} target={target} summary={summary} onBuilt={kind => { setBuilt(kind); }} />
+        <DatasetBuildButtons batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode} target={target} summary={summary} onBuilt={kind => { setBuilt(kind); }}
+          specHash={preview.data?.data.spec_hash}
+          excludedByReason={preview.data?.data.summary.excluded_by_reason}
+          materialized={preview.data?.data.materialized_dataset ?? null}
+          redactionSummary={preview.data?.data.redaction_summary ?? null} />
       </div>
       {built && <div className="notice mt-4" role="status" data-testid="dataset-handoff">
         <h3>{built === "mlsafe" ? "ML-safe Dataset 请求完成 / ML-safe dataset requested" : "Exploratory Feature Table 请求完成 / Exploratory table requested"}</h3>

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -990,6 +991,7 @@ _PREDEFINED_PHYSICAL_CODES = (
 )
 
 _ALIAS_TO_RAW: dict[str, str] = {
+    "amplitude_a_u": "waveform_abs_peak_a_u",  # user-visible core alias (gates engine)
     "waveform_mean_a_u": "waveform_mean_a_u",
     "waveform_std_a_u": "waveform_std_a_u",
     "waveform_max_a_u": "waveform_max_a_u",
@@ -1046,18 +1048,22 @@ def _catalogue_feature_series(
         for c, vals in fd_rows.items():
             out[c] = np.asarray(vals, dtype=np.float64)
 
-    raw_needed = sorted(
-        requested & {_ALIAS_TO_RAW[a] for a in _ALIAS_TO_RAW}
-    )
-    if raw_needed:
-        rows: dict[str, list[float | None]] = {c: [] for c in raw_needed}
+    # raw-alias codes: key the output by the REQUESTED code name so callers
+    # index series_by_code with what they asked for (e.g. amplitude_a_u)
+    alias_requests: dict[str, str] = {
+        code: _ALIAS_TO_RAW[code] for code in requested if code in _ALIAS_TO_RAW
+    }
+    if alias_requests:
+        raw_needed = sorted(set(alias_requests.values()))
+        raw_rows: dict[str, list[float | None]] = {c: [] for c in raw_needed}
         for i in range(n):
             raw = compute_raw_amplitude_features(np.asarray(frames[i], dtype=np.float64))
             for c in raw_needed:
-                rows[c].append(raw.get(c))
-        for c, vals in rows.items():
-            out[c] = np.asarray(
-                [float(v) if v is not None else np.nan for v in vals], dtype=np.float64
+                raw_rows[c].append(raw.get(c))
+        for alias_code, raw_name in alias_requests.items():
+            out[alias_code] = np.asarray(
+                [float(v) if v is not None else np.nan for v in raw_rows[raw_name]],
+                dtype=np.float64,
             )
 
     env_needed = sorted(requested & {"envelope_peak_a_u"})
@@ -1072,19 +1078,43 @@ def _catalogue_feature_series(
     return out
 
 
+def _read_json_local(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 @router.post("/experiments/{battery_id}/{experiment_id}/feature-label-preview")
 def feature_label_preview(
     request: Request, battery_id: str, experiment_id: str, body: dict[str, Any]
 ) -> dict[str, Any]:
     """Event-grain preview: selected ultrasound features + exactly one target.
 
-    Read-only aggregation of canonical artifacts — no recomputation.
+    Read-only aggregation of canonical artifacts — no recomputation, no
+    artifact writes (hash-stable).
+
+    BRW-025R-FE-R2 additions (additive):
+    - grain declared explicitly (one row = one eligible MeasurementEvent)
+    - row provenance: electrical locator/row/timestamp + match status
+    - ambiguous rows returned separately (electrical identity null, target
+      unavailable — never auto-nearest)
+    - split_id → TRAIN/HELD_OUT role awareness with BACKEND y redaction for
+      HELD_OUT rows (target=null + y_redacted=true; not CSS hiding)
+    - tof_provenance: SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1 + current fs +
+      GateCalibrationRecord (BRW-017R2/018R2); TOF_XCORR column stays the
+      legacy diagnostic and is never canonical
+    - feature_meta: bilingual labels + units + definition status per column
+    - preview_state=PREVIEW_DRAFT + spec_hash + materialized dataset lookup
+      with stale-TOF / refresh-required markers
     """
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     target_id = str(body.get("target_id", "reference_soc_percent"))
     features = [str(f) for f in body.get("features", [])][:12]
     limit = min(int(body.get("limit", 50)), 500)
+    split_id = str(body.get("split_id", ""))  # ML-safe review: role awareness
+    fold_index = body.get("fold_index")  # fold-specific roles (LEAVE_ONE_GROUP_OUT has ≥2)
     if not features:
         raise APIError(ErrorCode.VALIDATION_ERROR, "features required")
     target_cols = {
@@ -1146,21 +1176,95 @@ def feature_label_preview(
             np.isfinite(series_by_code[f][:n]), index=joined.index
         )
 
+    # BRW-025R-FE-R2 — split role awareness (backend y redaction, not CSS)
+    role_by_event: dict[str, dict[str, Any]] = {}
+    redaction_summary: dict[str, Any] | None = None
+    if split_id:
+        validate_id(split_id, "split_id")
+        sa_path = (
+            get_service(request).processed_root / "splits" / battery_id / experiment_id
+        )
+        sa_file = next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None) \
+            if sa_path.is_dir() else None
+        if sa_file is None:
+            raise APIError(
+                ErrorCode.NOT_FOUND,
+                "split assignments not available for the requested split_id "
+                "(ML-safe review requires an existing Grouped Split first)",
+            )
+        sa = join_pd.read_parquet(sa_file, columns=["measurement_event_id", "role", "fold"])
+        # LEAVE_ONE_GROUP_OUT has ≥2 folds with opposite roles per event — the
+        # review is fold-specific: fold_index selects the fold (deterministic
+        # default = smallest fold id); roles from other folds never leak.
+        folds = sorted(sa["fold"].astype(str).unique())
+        selected_fold = str(fold_index) if fold_index is not None else folds[0]
+        sa_f = sa[sa["fold"].astype(str) == selected_fold]
+        role_by_event = {
+            str(row.measurement_event_id): {"role": str(row.role), "fold": selected_fold}
+            for row in sa_f.itertuples()
+        }
+        train_n = sum(1 for v in role_by_event.values() if v["role"] == "TRAIN")
+        held_n = sum(1 for v in role_by_event.values() if v["role"] == "HELD_OUT")
+
+    def _redact(event_id: str, target_value: float | None) -> tuple[float | None, bool]:
+        """Backend y redaction: HELD_OUT rows lose y before serialization."""
+        if not split_id:
+            return target_value, False
+        info = role_by_event.get(event_id)
+        if info is not None and info["role"] == "HELD_OUT":
+            return None, True
+        return target_value, False
+
     eligible_idx = joined.index[eligible_mask][:limit]
     rows = []
     for i in eligible_idx:
         r = joined.loc[i]
+        event_id = str(r["measurement_event_id"])
+        raw_target = None if join_pd.isna(r[tcol]) else float(r[tcol])
+        target_value, y_redacted = _redact(event_id, raw_target)
         row: dict[str, Any] = {
-            "measurement_event_id": str(r["measurement_event_id"]),
+            "measurement_event_id": event_id,
             "frame_index_raw": int(r["frame_index_raw"]) if join_pd.notna(r["frame_index_raw"]) else None,
             "cycle": int(r["cycle_index_raw"]) if join_pd.notna(r["cycle_index_raw"]) else None,
             "state": _STATE_MAP.get(str(r.get("step_type", "")), "rest"),
-            "target": None if join_pd.isna(r[tcol]) else float(r[tcol]),
+            "target": target_value,
             "values": {f: float(series_by_code[f][i]) for f in features},
             "sync_error_s": float(r["sync_error_s"]) if join_pd.notna(r["sync_error_s"]) else None,
             "electrical_asset_id": str(r["electrical_asset_id"]) if join_pd.notna(r["electrical_asset_id"]) else None,
+            # BRW-025R-FE-R2 row provenance (frame→event→electrical locator→sync)
+            "electrical_record_locator": (
+                str(r["electrical_record_locator"]) if join_pd.notna(r.get("electrical_record_locator")) else None
+            ),
+            "electrical_row_index": (
+                int(r["electrical_row_index"]) if join_pd.notna(r.get("electrical_row_index")) else None
+            ),
+            "electrical_timestamp": (
+                str(r["electrical_timestamp"]) if join_pd.notna(r.get("electrical_timestamp")) else None
+            ),
+            "match_status": str(r["match_status"]) if join_pd.notna(r.get("match_status")) else None,
+            "y_redacted": y_redacted,
         }
+        if split_id:
+            info = role_by_event.get(event_id)
+            row["split_role"] = info["role"] if info else "UNASSIGNED"
+            row["fold"] = info["fold"] if info else None
         rows.append(row)
+
+    # ambiguous rows are inspectable but electrical identity/target stay null
+    ambiguous_mask = joined["match_status"] == "MATCHED_AMBIGUOUS"
+    ambiguous_rows = []
+    for i in joined.index[ambiguous_mask][:10]:
+        r = joined.loc[i]
+        ambiguous_rows.append({
+            "measurement_event_id": str(r["measurement_event_id"]),
+            "frame_index_raw": int(r["frame_index_raw"]) if join_pd.notna(r["frame_index_raw"]) else None,
+            "state": _STATE_MAP.get(str(r.get("step_type", "")), "rest"),
+            "electrical_identity": None,
+            "target": None,
+            "candidate_count": int(r["candidate_record_count"]) if join_pd.notna(r.get("candidate_record_count")) else None,
+            "values": {f: float(series_by_code[f][i]) for f in features},
+            "note": "ambiguous sync — electrical identity null; target unavailable; never auto-nearest",
+        })
 
     excluded_by_reason: dict[str, int] = {
         "AMBIGUOUS_SYNC": int((joined["match_status"] == "MATCHED_AMBIGUOUS").sum()),
@@ -1173,13 +1277,141 @@ def feature_label_preview(
         (t for t in list_targets(request, battery_id, experiment_id)["data"]["targets"]
          if t["target_id"] == target_id), {}
     )
+
+    # ------------------------------------------------------------------
+    # BRW-025R-FE-R2 — preview hardening response block (additive)
+    # ------------------------------------------------------------------
+    from battery_workbench.features.definitions_v2 import default_registry as _dr
+    from battery_workbench.features.gate_calibration import (
+        resolve_tof_gate_calibration,
+    )
+    _catalogue = _dr()
+    PHYSICAL_META: dict[str, dict[str, str]] = {
+        "BOTTOM_AMP": {"label_en": "Bottom-wave Amplitude", "label_zh": "底波幅值", "units": "a.u."},
+        "SWA": {"label_en": "Surface Wave Amplitude", "label_zh": "表面波幅值", "units": "a.u."},
+        "TOF_XCORR": {"label_en": "XCorr TOF (legacy diagnostic)", "label_zh": "互相关 TOF（诊断）", "units": "sample"},
+        "ATTEN_MAX": {"label_en": "Attenuation max", "label_zh": "衰减最大", "units": "a.u."},
+        "ATTEN_MEAN": {"label_en": "Attenuation mean", "label_zh": "衰减平均", "units": "a.u."},
+        "ATTEN_ENERGY": {"label_en": "Attenuation energy", "label_zh": "衰减能量", "units": "a.u."},
+        "BPS": {"label_en": "Bottom-wave Phase Shift", "label_zh": "底波相移", "units": "rad"},
+    }
+    feature_meta: dict[str, Any] = {}
+    for f in features:
+        if f in _catalogue._defs:
+            d = _catalogue._defs[f]
+            alias = d.existing_alias
+            feature_meta[f] = {
+                "label_en": d.display_name_en, "label_zh": d.display_name_zh,
+                "units": d.units, "definition_status": str(d.definition_status),
+                "parity_status": str(d.parity_status),
+                "source": "catalogue",
+                "resolved_name": alias if (alias and alias in _ALIAS_TO_RAW) else f,
+            }
+        elif f in PHYSICAL_META:
+            feature_meta[f] = {**PHYSICAL_META[f],
+                               "definition_status": "DEFINED_AND_VALIDATED",
+                               "parity_status": "MATLAB_ALIGNED", "source": "physical"}
+        else:  # raw alias
+            feature_meta[f] = {
+                "label_en": f, "label_zh": {"waveform_mean_a_u": "波形均值", "waveform_std_a_u": "波形标准差",
+                                            "waveform_max_a_u": "波形最大", "waveform_min_a_u": "波形最小",
+                                            "waveform_p2p_a_u": "波形峰峰差"}.get(f, f),
+                "units": "a.u.", "definition_status": "DEFINED_AND_VALIDATED",
+                "parity_status": "MATLAB_ALIGNED", "source": "raw_alias",
+            }
+
+    # TOF provenance: canonical method + current fs + GateCalibrationRecord
+    service_ro = get_service(request)
+    cal = resolve_tof_gate_calibration(battery_id, experiment_id, service_ro.processed_root)
+    ps_dir = service_ro.processed_root / "parameters" / battery_id / experiment_id
+    fs_hz, fs_verified, fs_ps = None, False, None
+    from battery_workbench.features_physical.canonical_tof import effective_fs as _eff_fs
+    for m_path in sorted(ps_dir.glob("PS::*/effective_parameters.json")):
+        eff = _read_json_local(m_path)
+        if not eff:
+            continue
+        fs, verified = _eff_fs(eff.get("effective_parameters") or eff, require_verified=True)
+        if verified:
+            fs_hz, fs_verified, fs_ps = fs, True, m_path.parent.name
+            break
+        if fs is not None and fs_hz is None:
+            fs_hz, fs_ps = fs, m_path.parent.name
+    if "TOF_XCORR" in features:
+        feature_meta["TOF_XCORR"]["canonical_note"] = (
+            "TOF_XCORR 为诊断量；canonical TOF 是 "
+            "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1（见 tof_provenance）"
+        )
+    tof_provenance = {
+        "canonical_method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
+        "tof_definition_version": "0.3.0",
+        "fs_hz": fs_hz,
+        "fs_verified": fs_verified,
+        "fs_parameter_set_id": fs_ps,
+        "gate_calibration_id": cal["gate_calibration_id"],
+        "gate_calibration_source": cal["source"],
+        "gate_calibration_version": cal["version"],
+        "surface_gate_id": cal["surface_gate_id"],
+        "bottom_gate_id": cal["bottom_gate_id"],
+        "note": "TOF 是特征而非目标；XCorr 仅诊断，不进入规范 tof_us",
+    }
+
+    # preview spec hash + materialized dataset lookup + stale TOF marker
+    spec_payload = json.dumps(
+        {"battery_id": battery_id, "experiment_id": experiment_id,
+         "target": target_id, "features": sorted(features), "split_id": split_id,
+         "spec_version": "preview/1.0"},
+        sort_keys=True, separators=(",", ":"),
+    )
+    spec_hash = "PREVIEW::" + hashlib.sha256(spec_payload.encode()).hexdigest()[:24]
+    materialized: dict[str, Any] | None = None
+    family_dir = service_ro.processed_root / "datasets" / battery_id / experiment_id / "SOC"
+    if family_dir.is_dir():
+        for ds_dir in sorted(family_dir.glob("DS::*")):
+            dm = _read_json_local(ds_dir / "dataset_manifest.json") or {}
+            if sorted(dm.get("selected_features") or []) == sorted(features) and \
+                    dm.get("target_name") == tcol:
+                stale_tof = "tof_method_id" not in dm
+                materialized = {
+                    "dataset_id": ds_dir.name,
+                    "materialization_status": "MATERIALIZED_DATASET",
+                    "stale_tof": stale_tof,
+                    "refresh_required": stale_tof,
+                    "stale_note": (
+                        "dataset manifest 无 tof_method_id —— legacy TOF 数据集，"
+                        "未含 canonical 包络峰值 TOF；refresh required"
+                    ) if stale_tof else "TOF provenance present",
+                    "feature_definition_version": dm.get("target_method_version"),
+                }
+                break
+
+    if split_id and role_by_event:
+        redaction_summary = {
+            "split_id": split_id,
+            "fold": selected_fold,
+            "train_rows": train_n,
+            "held_out_rows": held_n,
+            "policy": "HELD_OUT y redacted server-side before serialization "
+                      "(target=null + y_redacted=true); evaluation materialization "
+                      "restores y via the modeling layer only",
+        }
+    else:
+        redaction_summary = None
+
     return {
         "data": {
             "target_id": target_id,
             "target_source": target_meta.get("source"),
             "target_readiness": target_meta.get("readiness"),
             "features": features,
+            "feature_meta": feature_meta,
             "rows": rows,
+            "ambiguous_rows": ambiguous_rows,
+            "tof_provenance": tof_provenance,
+            "preview_state": "PREVIEW_DRAFT",
+            "spec_hash": spec_hash,
+            "materialized_dataset": materialized,
+            "redaction_summary": redaction_summary,
+            "grain": "one row = one eligible MeasurementEvent (measurement_event_id exact join)",
             "summary": {
                 "total_frames": n_frames,
                 "aligned_events": n,
@@ -1191,7 +1423,8 @@ def feature_label_preview(
                 "alignment_status": "PROVISIONAL_TIMEBASE_MATCHED",
             },
         },
-        "meta": {"note": "read-only preview; one row = one eligible MeasurementEvent"},
+        "meta": {"note": "read-only preview; one row = one eligible MeasurementEvent; "
+                          "PREVIEW_DRAFT ≠ MATERIALIZED_DATASET"},
     }
 
 

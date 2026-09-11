@@ -207,7 +207,7 @@ describe("Feature–Label table guards", () => {
     expect(drawer.textContent).toContain("Ultrasound frame");
     expect(drawer.textContent).toContain("Target / 目标值");
     // chain subtitle lives in the dialog description
-    expect(screen.getByText(/waveform → gate → feature → MeasurementEvent → electrical record → target/i)).toBeInTheDocument();
+    expect(screen.getByText(/frame → MeasurementEvent → electrical locator → sync → Target → feature producer/i)).toBeInTheDocument();
   });
 });
 

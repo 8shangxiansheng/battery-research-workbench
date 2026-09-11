@@ -1,0 +1,66 @@
+[
+  {
+    "id": "01_preview_before",
+    "ok": true
+  },
+  {
+    "id": "02_preview_summary_cards",
+    "ok": true
+  },
+  {
+    "id": "03_summary_x_y_rows_grain",
+    "ok": true
+  },
+  {
+    "id": "04_eligibility_funnel_breakdown",
+    "ok": true
+  },
+  {
+    "id": "05_table_bilingual_units",
+    "ok": true
+  },
+  {
+    "id": "06_column_details_swa",
+    "ok": true
+  },
+  {
+    "id": "07_column_details_tof_provenance",
+    "ok": true
+  },
+  {
+    "id": "08_pagination_page2",
+    "ok": true
+  },
+  {
+    "id": "09_filter_state_charge",
+    "ok": true
+  },
+  {
+    "id": "10_search_event_id",
+    "ok": true
+  },
+  {
+    "id": "11_row_provenance_drawer",
+    "ok": true
+  },
+  {
+    "id": "12_ambiguous_rows_inspect",
+    "ok": true
+  },
+  {
+    "id": "13_mlsafe_redaction_summary",
+    "ok": true
+  },
+  {
+    "id": "14_held_out_redacted_rows",
+    "ok": true
+  },
+  {
+    "id": "15_stale_tof_banner",
+    "ok": true
+  },
+  {
+    "id": "16_build_confirm_spec",
+    "ok": true
+  }
+]
