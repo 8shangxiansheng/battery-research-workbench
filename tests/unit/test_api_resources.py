@@ -377,3 +377,33 @@ def test_brw018r2_status_tof_reflects_registry(client: TestClient) -> None:
     if tof["status"] == "READY":
         assert tof["sampling_rate_verified"] is True
         assert "gate_calibration_id" in tof
+
+
+# ---------- BRW-025R-WF-R2 workflow-context (route contract) ----------
+
+def test_brw025wf_workflow_context_route(client: TestClient) -> None:
+    """Route returns the canonical read model envelope with zero recompute."""
+    if not has_real:
+        pytest.skip("real artifacts not available")
+    r = client.get("/api/v1/experiments/CELL_001/EXP_001/workflow-context")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["schema_version"] == "workflow-context/1.0"
+    assert d["meta"]["read_only"] is True
+    assert d["meta"]["no_recomputation"] is True
+    assert tuple(d["step_statuses"]) == (
+        "TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET", "SPLIT", "MODELS", "REPORT",
+    )
+    # fixture chain: all steps materialized, legacy TOF definitions
+    assert d["current_step"] == "REPORT"
+    rec = d["recommended_next_action"]
+    assert rec["action_id"] in ("RESOLVE_PENDING_ACTION", "PROVIDE_SAMPLING_RATE", "BUILD_DATASET")
+    assert rec["route"].startswith("/experiments/CELL_001/EXP_001/")
+    assert d["scientific_context"]["dataset_id"] == "DS::6a3142e5186fc684964ff09e"
+    assert d["artifact_freshness"]["dataset"] == "LEGACY"
+
+
+def test_brw025wf_workflow_context_unknown_experiment_404(client: TestClient) -> None:
+    r = client.get("/api/v1/experiments/CELL_999/EXP_999/workflow-context")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "NOT_FOUND"

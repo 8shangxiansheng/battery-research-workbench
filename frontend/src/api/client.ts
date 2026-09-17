@@ -1114,6 +1114,11 @@ export const client = {
     request<ResearchOverviewPayload>(
       `/experiments/${batteryId}/${experimentId}/research-overview`,
     ),
+  // ---------- BRW-025R-WF workflow context (zero-recompute read model) ----------
+  getWorkflowContext: (batteryId: string, experimentId: string) =>
+    request<WorkflowContextPayload>(
+      `/experiments/${batteryId}/${experimentId}/workflow-context`,
+    ),
   // ---------- BRW-017R2 canonical envelope-peak TOF ----------
   getCanonicalTof: (batteryId: string, experimentId: string, limit = 200) =>
     request<CanonicalTofPayload>(
@@ -1304,6 +1309,57 @@ export interface ResearchFeatureDefinitionState {
   note: string;
 }
 
+// ---------- BRW-025R-WF workflow-context DTOs ----------
+
+/** Canonical workflow steps — order matters (stepper display order). */
+export const WF_STEP_KEYS = [
+  "TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET", "SPLIT", "MODELS", "REPORT",
+] as const;
+export type WfStepKey = (typeof WF_STEP_KEYS)[number];
+
+/** Stepper visual status — seven states. */
+export type WfStepVisualStatus =
+  | "COMPLETE" | "CURRENT" | "READY" | "BLOCKED" | "STALE" | "NOT_STARTED" | "LIMITED";
+
+/** Workflow-context payload (GET /workflow-context). */
+export interface WorkflowContextPayload {
+  schema_version: string;
+  battery_id: string;
+  experiment_id: string;
+  current_step: string;
+  step_statuses: Record<string, string>;
+  steps: Record<string, {
+    status: string;
+    committed?: Record<string, unknown>;
+    blocking?: {
+      blocking_code: string;
+      blocking_message: string;
+      required_action: string;
+      scientific_reason: string;
+    };
+    [key: string]: unknown;
+  }>;
+  recommended_next_action: {
+    action_id: string;
+    step: string;
+    label: string;
+    route: string;
+  } | null;
+  pending_action: {
+    action_id: string;
+    status: string;
+    label: string;
+    route: string;
+    scientific_reason: string;
+    submissions?: { submission_id: string; parameter_set_id: string; fs_value: number; fs_unit: string; resume_status: string }[];
+  } | null;
+  artifact_freshness: Record<string, string>;
+  scientific_context: Record<string, unknown>;
+  assistant_context: Record<string, unknown>;
+  typed_actions: { action_id: string; label: string; route: string }[];
+  meta: { read_only: boolean; no_recomputation: boolean };
+}
+
 /** client 覆盖的 API 路径清单 — drift 测试与 openapi-v1.json 对齐用。 */
 export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/health" },
@@ -1386,6 +1442,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/research-overview" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/workflow-context" },
 ];
 
 /** BRW-024R/025R v2 client 方法（插入到 client 对象内）。 */

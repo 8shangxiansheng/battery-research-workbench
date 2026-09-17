@@ -9,9 +9,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { PageHeader, LoadingState, ErrorState, EmptyState } from "../../components/workbench/shared";
 import { SelectedFeaturesPanel } from "../../components/workbench/SelectedFeaturesPanel";
 import { displayName, modelComparison } from "../../lib/presentation";
+import { StaleBanner } from "./WorkbenchShell";
+import { useWorkflowContext } from "../../hooks/useWorkflowContext";
 
 export function ReportWorkbench() {
   const {batteryId="",experimentId=""}=useParams();const qc=useQueryClient(); const [confirm,setConfirm]=useState(false); const [exportError,setExportError]=useState(false);
+  const wf = useWorkflowContext(batteryId, experimentId);
   const reports=useQuery({queryKey:["reports",batteryId,experimentId],queryFn:()=>client.listReports(batteryId,experimentId)});
   const limitations=useQuery({queryKey:["limitations",batteryId,experimentId],queryFn:()=>client.getLimitations(batteryId,experimentId)});
   const results=useQuery({queryKey:["results",batteryId,experimentId],queryFn:()=>client.getResults(batteryId,experimentId)});
@@ -23,6 +26,7 @@ export function ReportWorkbench() {
   async function exportReport(){try {const r=await client.getReport(String(report?.report_id));const url=URL.createObjectURL(new Blob([JSON.stringify(r.data,null,2)],{type:"application/json"}));const a=document.createElement("a");a.href=url;a.download="scientific-report.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch{setExportError(true);}}
   if(reports.isLoading)return <LoadingState/>;if(reports.error)return <ErrorState error={reports.error} retry={()=>void reports.refetch()}/>;
   return <><PageHeader eyebrow="可追溯的研究记录" title="科学报告" description="结论、限制，以及它们背后的证据。" actions={<Button variant="outline" onClick={()=>{setConfirm(true);create.reset();}}><FileText/>生成报告</Button>}/>
+    {wf.data && <StaleBanner freshness={wf.data.artifact_freshness} stepKey="REPORT" />}
     {!report ? <EmptyState title="还没有报告" to={`/experiments/${batteryId}/${experimentId}/models`} action="查看模型结果">先查看可用结果，再从既有科学产物生成报告。</EmptyState> : <article className="panel !p-8"><div className="flex justify-between gap-4 items-start"><div><p className="eyebrow">{dated.length?"最新报告":"可用报告"}</p><h2 className="text-2xl">实验研究摘要</h2><p className="muted text-sm mt-2">{batteryId} / {experimentId} · {report.generated_at ? String(report.generated_at) : "未提供生成时间"}</p></div><Button variant="outline" onClick={()=>void exportReport()}><Download/>导出 JSON</Button></div>
       <div className="mt-7 flex gap-2"><Badge variant="secondary">Reference SOC</Badge><Badge variant="outline">Limited evaluation</Badge></div>
       <div className="finding"><h2>{comparison.beats===false?"Predictive advantage has not been demonstrated.":comparison.beats===true?"A model surpassed the baseline within this study.":"Review the available evidence before drawing a conclusion."}</h2><p className="muted mt-3">Current experiment results, shown alongside the report. They are not asserted to be a frozen report snapshot.</p></div>

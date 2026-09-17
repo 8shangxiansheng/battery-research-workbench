@@ -10,6 +10,8 @@ import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from ".
 import { PageHeader, LoadingState, ErrorState, EmptyState, ScopeNote } from "../../components/workbench/shared";
 import { SelectedFeaturesPanel } from "../../components/workbench/SelectedFeaturesPanel";
 import { displayName, modelComparison, numberText } from "../../lib/presentation";
+import { StaleBanner } from "./WorkbenchShell";
+import { useWorkflowContext } from "../../hooks/useWorkflowContext";
 
 function ComparisonTable({rows}:{rows:ResultRecord[]}) {
   const [sorting,setSorting]=useState<SortingState>([]);
@@ -23,11 +25,13 @@ function ComparisonTable({rows}:{rows:ResultRecord[]}) {
 }
 export function ModelsWorkbench() {
   const {batteryId="",experimentId=""}=useParams();
+  const wf = useWorkflowContext(batteryId, experimentId);
   const results=useQuery({queryKey:["results",batteryId,experimentId],queryFn:()=>client.getResults(batteryId,experimentId)});
   if(results.isLoading)return <LoadingState/>;if(results.error)return <ErrorState error={results.error} retry={()=>void results.refetch()}/>;
   const rows=results.data?.data??[];const {macro,dummy,beats}=modelComparison(rows);
   const datasetIds=[...new Set(rows.map(r=>r.dataset_id).filter((d): d is string => !!d))];
   return <><PageHeader eyebrow="先看证据，再谈性能" title="SOC 建模" description="有没有模型跑赢简单基线？" actions={<Button variant="outline" asChild><Link to={`/experiments/${batteryId}/${experimentId}/report`}>Open report<ArrowRight/></Link></Button>}/>
+    {wf.data && <StaleBanner freshness={wf.data.artifact_freshness} stepKey="MODELS" />}
     {!macro.length ? <EmptyState title="还没有模型评估" to={`/experiments/${batteryId}/${experimentId}/analysis`}>请先构建数据集和分组划分。特征选择请保留在训练组内。</EmptyState> : <>
       <Badge variant="secondary">评估完成 · 有限范围</Badge><div className="finding"><h2>{beats===false?"当前没有任何模型跑赢 Dummy 基准。":beats===true?"有模型在本次评估中跑赢了 Dummy。":"暂无可比的 Dummy 基线。"}</h2><p className="muted mt-4 max-w-2xl">{beats===false?"当前特征尚未展现出预测优势。这是科学结论，不是处理故障。":"该对比不能证明跨电池泛化或生产可用性。"}</p></div>
       {dummy && <p className="mb-7 text-sm"><span className="muted">Dummy 均值 · 宏观 MAE</span><strong className="text-2xl ml-4 tabular-nums">{numberText(dummy.value)}<span className="text-sm muted ml-1">%</span></strong></p>}

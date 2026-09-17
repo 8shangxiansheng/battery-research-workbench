@@ -5,7 +5,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { createMemoryRouter, RouterProvider, Route, createRoutesFromElements } from "react-router-dom";
 
 
 // 组件测试不依赖网络：mock client 模块
@@ -85,14 +85,18 @@ const demoResults = [
 
 function renderPage(node: React.ReactNode, path = "/experiments/CELL_001/EXP_001") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter(
+    createRoutesFromElements(
+      <>
+        <Route path="/experiments/:batteryId/:experimentId/*" element={node} />
+        <Route path="*" element={node} />
+      </>,
+    ),
+    { initialEntries: [path] },
+  );
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/experiments/:batteryId/:experimentId/*" element={node} />
-          <Route path="*" element={node} />
-        </Routes>
-      </MemoryRouter>
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   );
 }

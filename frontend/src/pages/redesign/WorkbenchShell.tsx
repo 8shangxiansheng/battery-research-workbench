@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { NavLink, Link, Route, Routes, useParams, useNavigate, Navigate } from "react-router-dom";
+import { NavLink, Link, Route, Routes, useParams, useNavigate, Navigate, useLocation } from "react-router-dom";
 import { Activity, ArrowUpRight, ChartNoAxesCombined, Check, ChevronsUpDown, FileText, FlaskConical, LayoutDashboard, Library, Settings2, Waves } from "lucide-react";
 import { client } from "../../api/client";
 import { Button } from "../../components/ui/button";
@@ -8,7 +8,6 @@ import { Badge } from "../../components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "../../components/ui/command";
 import { SidebarProvider, Sidebar, SidebarHeader, SidebarContent, SidebarFooter, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarInset, SidebarTrigger, SidebarGroup } from "../../components/ui/sidebar";
-import { OverviewPage } from "./OverviewPage";
 import { ResearchOverview } from "./ResearchOverview";
 import { WaveformWorkbench } from "./WaveformWorkbench";
 import { AnalysisWorkbench } from "./AnalysisWorkbench";
@@ -19,11 +18,55 @@ import { ExperimentLibraryPage } from "../LibraryPage";
 import { NewExperimentWizardPage } from "../NewExperimentWizardPage";
 import { RunsPage } from "../RunsPage";
 import { AssistantProvider } from "../../components/workbench/AssistantContext";
+import { useWorkflowContext, deriveStepperStatuses } from "../../hooks/useWorkflowContext";
+import { WorkflowStepperV2 } from "../../components/workbench/WorkflowStepperV2";
+import { WaitingBanner } from "../../components/workbench/WaitingBanner";
+import { PrerequisitePanel } from "../../components/workbench/PrerequisitePanel";
 
 const navigation = [
   { path: "overview", label: "总览", icon: LayoutDashboard }, { path: "waveform", label: "波形与闸门", icon: Waves },
   { path: "analysis", label: "特征分析", icon: Activity }, { path: "models", label: "SOC 建模", icon: ChartNoAxesCombined }, { path: "report", label: "科学报告", icon: FileText },
 ];
+
+const ANALYSIS_CHAIN = ["TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET"] as const;
+
+function pageToStep(page: string): string | null {
+  if (page === "models") return "MODELS";
+  if (page === "report") return "REPORT";
+  if (page === "analysis") return "TARGET";
+  if (page === "dataset-split") return "SPLIT";
+  return null;
+}
+
+function StepGate({ wfData, activePage, children }: { wfData: ReturnType<typeof useWorkflowContext>["data"]; activePage: string; children: React.ReactNode }) {
+  if (!wfData) return <>{children}</>;
+  if (activePage === "analysis") {
+    const blocked = ANALYSIS_CHAIN.find(s => wfData.step_statuses[s] === "BLOCKED");
+    if (blocked) {
+      const step = wfData.steps[blocked];
+      if (!step) return <>{children}</>;
+      return <PrerequisitePanel stepKey={blocked} stepStatus="BLOCKED" stepDetail={step} recommended={wfData.recommended_next_action} batteryId={wfData.battery_id} experimentId={wfData.experiment_id} />;
+    }
+    return <>{children}</>;
+  }
+  const stepKey = pageToStep(activePage);
+  if (stepKey && wfData.step_statuses[stepKey] === "BLOCKED") {
+    const step = wfData.steps[stepKey];
+    if (!step) return <>{children}</>;
+    return <PrerequisitePanel stepKey={stepKey} stepStatus="BLOCKED" stepDetail={step} recommended={wfData.recommended_next_action} batteryId={wfData.battery_id} experimentId={wfData.experiment_id} />;
+  }
+  return <>{children}</>;
+}
+
+export function StaleBanner({ freshness, stepKey }: { freshness: Record<string, string>; stepKey: string }) {
+  const key = stepKey === "DATASET" ? "dataset" : stepKey === "MODELS" ? "models" : stepKey === "REPORT" ? "report" : null;
+  if (!key) return null;
+  const val = freshness[key];
+  if (val !== "STALE" && val !== "LEGACY" && val !== "SUPERSEDED") return null;
+  return <div className="notice !border-[#d4a853] !bg-[#fdf8ec] text-sm mb-4" data-testid={`stale-banner-${key}`} role="status">
+    <strong>{val === "LEGACY" ? "Legacy" : val === "SUPERSEDED" ? "Superseded" : "Stale"}</strong>: 此产物基于旧版定义，上游变更可能需要重新构建。
+  </div>;
+}
 export function ExperimentSwitcher() {
   const { batteryId, experimentId } = useParams(); const [open, setOpen] = useState(false); const navigate = useNavigate();
   const library = useQuery({ queryKey: ["library-switcher"], queryFn: () => client.listLibraryExperiments({limit: 200}) });
@@ -38,13 +81,21 @@ import { AssistantDrawer } from "../../components/workbench/AssistantDrawerV2";
 export { AssistantDrawer };
 function ExperimentLayout() {
   const { batteryId = "", experimentId = "" } = useParams(); const base = `/experiments/${batteryId}/${experimentId}`;
+  const wf = useWorkflowContext(batteryId, experimentId);
+  const wfData = wf.data;
+  const stepperStatuses = wfData ? deriveStepperStatuses(wfData.current_step, wfData.step_statuses, wfData.artifact_freshness) : null;
+  const location = useLocation();
+  const activePage = location.pathname.split("/").filter(Boolean).pop() ?? "overview";
   return <AssistantProvider key={`${batteryId}/${experimentId}`}><SidebarProvider><a href="#main-content" className="skip-link">跳转到正文</a><Sidebar>
     <SidebarHeader className="px-6 py-6"><Link to="/" className="flex gap-3 items-center font-semibold text-base"><span className="rounded-md bg-primary p-2 text-white"><Waves size={20}/></span>工作台</Link></SidebarHeader>
     <SidebarContent><SidebarGroup className="px-4 pt-8"><p className="eyebrow px-3 mb-4">实验</p><nav aria-label="主导航"><SidebarMenu>{navigation.map(n=><SidebarMenuItem key={n.path}><SidebarMenuButton asChild className="h-11 mb-1"><NavLink to={`${base}/${n.path}`} className={({isActive})=>isActive ? "!bg-sidebar-accent !text-sidebar-accent-foreground font-medium" : ""}><n.icon/><span>{n.label}</span></NavLink></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></nav></SidebarGroup></SidebarContent>
     <SidebarFooter className="px-4 pb-6"><SidebarMenu><SidebarMenuItem><SidebarMenuButton asChild className="h-11"><NavLink to={`${base}/advanced/parameters`}><Settings2/><span>高级</span></NavLink></SidebarMenuButton></SidebarMenuItem><SidebarMenuItem><SidebarMenuButton asChild className="h-11"><Link to="/"><Library/><span>实验库</span></Link></SidebarMenuButton></SidebarMenuItem></SidebarMenu><p className="text-xs muted px-3 pt-5">电池科研工作台</p></SidebarFooter>
   </Sidebar><SidebarInset className="bg-[#fafbfa] min-w-0"><div className="app-topbar"><SidebarTrigger/><div className="h-5 border-l"/><ExperimentSwitcher/><div className="ml-auto"><AssistantDrawer/></div></div>
-  <div id="main-content" className="app-content w-full" key={`main-${batteryId}/${experimentId}`}><Routes>
-    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<ResearchOverview/>}/><Route path="overview-classic" element={<OverviewPage/>}/><Route path="waveform" element={<WaveformWorkbench/>}/><Route path="analysis" element={<AnalysisWorkbench/>}/><Route path="models" element={<ModelsWorkbench/>}/><Route path="report" element={<ReportWorkbench/>}/><Route path="advanced/:section" element={<AdvancedPage/>}/>
+  <div id="main-content" className="app-content w-full" key={`main-${batteryId}/${experimentId}`}>
+    {wfData && <WaitingBanner pendingAction={wfData.pending_action} />}
+    {stepperStatuses && <WorkflowStepperV2 statuses={stepperStatuses} activePage={activePage} />}
+    <Routes>
+    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<ResearchOverview/>}/><Route path="overview-classic" element={<Navigate to="overview" replace/>}/><Route path="waveform" element={<WaveformWorkbench/>}/><Route path="analysis" element={<StepGate wfData={wfData} activePage={activePage}><AnalysisWorkbench/></StepGate>}/><Route path="models" element={<StepGate wfData={wfData} activePage={activePage}><ModelsWorkbench/></StepGate>}/><Route path="report" element={<StepGate wfData={wfData} activePage={activePage}><ReportWorkbench/></StepGate>}/><Route path="advanced/:section" element={<StepGate wfData={wfData} activePage={activePage}><AdvancedPage/></StepGate>}/>
     <Route path="modeling" element={<Navigate to={`${base}/models`} replace/>}/><Route path="reports" element={<Navigate to={`${base}/report`} replace/>}/><Route path="features" element={<Navigate to={`${base}/analysis`} replace/>}/>
     {['data','dataset-split','evidence','workspace','runs'].map(p=><Route key={p} path={p} element={<Navigate to={`${base}/advanced/${p}`} replace/>}/>)}<Route path="*" element={<Navigate to={`${base}/overview`} replace/>}/>
   </Routes></div></SidebarInset></SidebarProvider></AssistantProvider>;

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useLocation, useParams } from "react-router-dom";
+import { useLocation, useParams, useNavigate } from "react-router-dom";
 import { useAssistant } from "./AssistantContext";
 import { ArrowUpRight, CircleAlert, Lock, MessageSquare, SendHorizonal } from "lucide-react";
 import { client, type AssistantSession } from "../../api/client";
+import { WF_STEP_ROUTES } from "../../hooks/useWorkflowContext";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -33,8 +34,24 @@ const PHASE_LABELS: Record<string, string> = {
   WAITING_FOR_USER: "等待输入 / Waiting for you",
 };
 
+/** WF-R3 §10/§33 — typed action → step mapping (no free-form URLs). */
+const TYPED_NAV_MAP: Record<string, string> = {
+  OPEN_PREVIEW: "PREVIEW",
+  OPEN_ALIGNMENT: "ALIGNMENT",
+  OPEN_DATASET: "DATASET",
+  OPEN_MODELS: "MODELS",
+  OPEN_REPORT: "REPORT",
+  REVIEW_TARGET: "TARGET",
+  REVIEW_ALIGNMENT: "ALIGNMENT",
+  CONFIGURE_FEATURES: "FEATURES",
+  BUILD_DATASET: "DATASET",
+  CREATE_SPLIT: "SPLIT",
+  TRAIN_MODELS: "MODELS",
+};
+
 export function AssistantDrawer() {
   const { batteryId = "", experimentId = "" } = useParams();
+  const navigate = useNavigate();
   const { setOpen, open: drawerOpen } = useAssistant();
   const location = useLocation();
   const page = PAGE_LABELS[location.pathname.split("/").filter(Boolean).pop() ?? "overview"] ?? "高级 / Advanced";
@@ -118,7 +135,18 @@ export function AssistantDrawer() {
           <div className="space-y-1.5">
             {current.next_actions.slice(0, 3).map(a => <Button key={a.action_id} variant="outline" size="sm"
               className="w-full justify-start h-auto whitespace-normal"
-              onClick={() => submit(a.label_zh)}>{a.label_zh}<ArrowUpRight className="ml-auto" size={14} /></Button>)}
+              onClick={() => {
+                // WF-R3 §10/§33: typed navigation actions navigate directly
+                const navStep = TYPED_NAV_MAP[a.intent ?? a.action_id];
+                if (navStep) {
+                  const page = WF_STEP_ROUTES[navStep];
+                  if (page) navigate(`/experiments/${batteryId}/${experimentId}/${page}`);
+                  return;
+                }
+                submit(a.label_zh);
+              }}
+              data-testid={`next-action-${a.action_id}`}
+            >{a.label_zh}<ArrowUpRight className="ml-auto" size={14} /></Button>)}
           </div>
         </div> : null}
       </div>

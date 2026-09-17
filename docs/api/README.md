@@ -11,7 +11,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | Group | Endpoints |
 |---|---|
 | system | `GET /health`, `GET /capabilities`, `GET /version` |
-| experiments | `GET /experiments`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence` |
+| experiments | `GET /experiments`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence`, `/research-overview`, `/workflow-context` |
 | runs | `POST /runs/plan`, `POST /runs/dry-run`, `POST /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`, `POST /runs/{run_id}/resume`, `POST /runs/{run_id}/retry/{node_id}` |
 | user-actions | `GET /runs/{run_id}/user-actions`, `POST /runs/{run_id}/user-actions/{action_id}` (typed values required; API never fills scientific values) |
 | parameters | `POST /experiments/{battery_id}/{experiment_id}/parameters` (BRW-015 registry, deterministic PS::id, preserves source/verification/provenance) |
@@ -76,6 +76,25 @@ Pending actions are exposed via `GET /runs/{run_id}/user-actions` with typed kin
 (`MISSING_SAMPLING_RATE`, `SELECT_GATE`, `CONFIRM_FEATURE_SELECTION`, `SELECT_SPLIT_SCHEME`).
 The API never fills scientific values on the user's behalf; resolution requires an explicit
 `POST` with `values`. After submit, `POST /runs/{run_id}/resume` continues the run.
+
+## Workflow Context (BRW-025R-WF)
+
+`GET /experiments/{battery_id}/{experiment_id}/workflow-context` is the canonical read model every page
+(Overview / Target / Alignment / Features / Preview / Dataset / Split / Models / Report / Assistant)
+must consume — no page re-derives step status or next action on its own.
+
+It returns `current_step`, per-step `step_statuses`
+(`COMPLETE/CURRENT/READY/BLOCKED/STALE/NOT_STARTED/LIMITED`) over the fixed order
+`TARGET → ALIGNMENT → FEATURES → PREVIEW → DATASET → SPLIT → MODELS → REPORT`, committed
+scientific identity per step (draft/SPEC_PENDING_RUN manifests are reported as drafts, never
+committed), structured `blocking` (`blocking_code/blocking_message/required_action/scientific_reason`),
+`artifact_freshness` (`CURRENT/STALE/LEGACY/SUPERSEDED/MISSING` — e.g. a dataset without
+`tof_method_id` is LEGACY and marks downstream models/report STALE), `pending_action`
+(BRW-018R2 WAITING_FOR_USER submissions, same-run resume), `assistant_context` (session phase /
+pending / next actions) and the single `recommended_next_action` with typed `action_id` + route.
+
+Read-only and zero-recomputation by contract: it only aggregates existing artifacts and manifests;
+it never computes TOF/CE/correlation/model metrics/split and never writes scientific artifacts.
 
 ## Evidence Semantics
 

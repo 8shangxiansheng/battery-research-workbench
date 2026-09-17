@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { client, type FeatureLabelPreviewResponse, type TargetDefinition } from "../../api/client";
@@ -13,17 +13,34 @@ import {
 import { FeatureLabelTablePreview, TARGET_LABELS } from "../../components/workbench/FeatureLabelTable";
 import { FeatureRankingTable } from "../../components/workbench/FeatureTargetWorkbench";
 import { DatasetBuildButtons } from "../../components/workbench/DatasetXYPreview";
+import { useDraftGuard } from "../../hooks/useDraftGuard";
+import { useInvalidateWorkflow } from "../../hooks/useWorkflowContext";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/dialog";
+import { Button } from "../../components/ui/button";
 
 const PHYSICAL_FEATURES = ["BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
 
 export function AnalysisWorkbench() {
   const { batteryId = "", experimentId = "" } = useParams();
+  const invalidateWorkflow = useInvalidateWorkflow();
   // workflow state — target switch invalidates target-dependent artifacts only
   const [step, setStep] = useState<WorkflowStepKey>("target");
   const [targetId, setTargetId] = useState<string | null>(null);
   const [features, setFeatures] = useState<string[]>([]);
   const [mode, setMode] = useState<"EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE">("EXPLORATORY_FULL_DATA");
   const [built, setBuilt] = useState<"exploratory" | "mlsafe" | null>(null);
+
+  // Draft guard: track committed snapshot; mark dirty when draft diverges
+  const committedRef = useRef({ targetId: null as string | null, features: [] as string[], mode: "EXPLORATORY_FULL_DATA" as "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE" });
+  const draftGuard = useDraftGuard(
+    useCallback(() => { committedRef.current = { targetId, features: [...features], mode }; }, [targetId, features, mode]),
+    useCallback(() => { setTargetId(committedRef.current.targetId); setFeatures([...committedRef.current.features]); setMode(committedRef.current.mode); setBuilt(null); }, []),
+  );
+  useEffect(() => {
+    const c = committedRef.current;
+    const dirty = targetId !== c.targetId || mode !== c.mode || features.length !== c.features.length || features.some((f, i) => f !== c.features[i]);
+    draftGuard.setDirty(dirty);
+  }, [targetId, features, mode]);
 
   const targets = useQuery({ queryKey: ["targets", batteryId, experimentId], queryFn: () => client.listTargets(batteryId, experimentId) });
   const target: TargetDefinition | undefined = (targets.data?.data.targets ?? []).find(t => t.target_id === targetId);
@@ -126,7 +143,7 @@ export function AnalysisWorkbench() {
         </div>
       </fieldset>
       {mode === "TRAIN_ONLY_ML_SAFE" && readyAnalysis && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-analysis-found">已找到匹配的 ML-safe 分析（split 就绪；held-out target 不可访问）。</p>}
-      {mode === "TRAIN_ONLY_ML_SAFE" && !readyAnalysis && <p className="notice text-sm mt-3" role="status">ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/splits`}>Advanced → Splits</Link>。</p>}
+      {mode === "TRAIN_ONLY_ML_SAFE" && !readyAnalysis && <p className="notice text-sm mt-3" role="status">ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</p>}
       <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode === "TRAIN_ONLY_ML_SAFE" ? "TRAIN_ONLY_ML_SAFE" : "EXPLORATORY"} /></div>
       <div className="mt-5 flex gap-3">
         <button className="button" onClick={() => setStep("relationships")}>← 上一步</button>
@@ -149,7 +166,7 @@ export function AnalysisWorkbench() {
           foldIndex={mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined} />
       </div>
       <div className="mt-4">
-        <DatasetBuildButtons batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode} target={target} summary={summary} onBuilt={kind => { setBuilt(kind); }}
+        <DatasetBuildButtons batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode} target={target} summary={summary} onBuilt={kind => { setBuilt(kind); invalidateWorkflow(batteryId, experimentId); }}
           specHash={preview.data?.data.spec_hash}
           excludedByReason={preview.data?.data.summary.excluded_by_reason}
           materialized={preview.data?.data.materialized_dataset ?? null}
@@ -157,7 +174,7 @@ export function AnalysisWorkbench() {
       </div>
       {built && <div className="notice mt-4" role="status" data-testid="dataset-handoff">
         <h3>{built === "mlsafe" ? "ML-safe Dataset 请求完成 / ML-safe dataset requested" : "Exploratory Feature Table 请求完成 / Exploratory table requested"}</h3>
-        <p className="text-sm mt-1">下一步：在 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/splits`}>Advanced → Splits</Link> 建 grouped split（按 cycle 分组），然后到 SOC 建模页训练。</p>
+        <p className="text-sm mt-1">下一步：在 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link> 建 grouped split（按 cycle 分组），然后到 SOC 建模页训练。</p>
       </div>}
       <div className="mt-5">
         <button className="button" onClick={() => setStep("selection")}>← 上一步</button>
@@ -165,5 +182,19 @@ export function AnalysisWorkbench() {
     </section>}
 
     <ScopeNote />
+
+    <Dialog open={draftGuard.blocked} onOpenChange={open => { if (!open) draftGuard.stay(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>未保存的更改 / Unsaved changes</DialogTitle>
+          <DialogDescription>你有未保存的目标/特征更改。离开前是否保存？</DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-2 justify-end mt-4">
+          <Button variant="outline" onClick={draftGuard.stay} data-testid="draft-stay">留在此页 / Stay</Button>
+          <Button variant="destructive" onClick={draftGuard.discard} data-testid="draft-discard">放弃 / Discard</Button>
+          <Button onClick={draftGuard.save} data-testid="draft-save">保存并继续 / Save</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </>;
 }

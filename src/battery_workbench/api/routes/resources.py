@@ -59,6 +59,27 @@ def research_overview(request: Request, battery_id: str, experiment_id: str) -> 
     return {"data": data, "meta": {}}
 
 
+# ---------- BRW-025R-WF-R2 scientific workflow context (aggregate read-only) ----------
+@router.get("/experiments/{battery_id}/{experiment_id}/workflow-context")
+def workflow_context(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
+    """Canonical ScientificWorkflowContext read model for every page.
+
+    Current step, per-step statuses (COMPLETE/CURRENT/READY/BLOCKED/STALE/
+    NOT_STARTED/LIMITED), committed scientific identity, artifact freshness,
+    pending user action, structured blocking and the single recommended next
+    action — all aggregated from existing artifacts. Read-only: never
+    recomputes science (no TOF/CE/correlation/model metrics/split) and never
+    writes scientific artifacts (BRW-025R-WF master prompt §42/§43).
+    """
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    from battery_workbench.api.workflow_context import build_workflow_context
+
+    data = build_workflow_context(service.processed_root, battery_id, experiment_id)
+    return {"data": data, "meta": {}}
+
+
 # ---------- BRW-018R2 sampling-parameter submission (shared service) ----------
 @router.post("/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission")
 def submit_sampling_parameter(

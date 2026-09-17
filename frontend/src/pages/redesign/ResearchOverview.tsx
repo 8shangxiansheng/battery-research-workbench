@@ -7,9 +7,10 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { ArrowRight, Battery, MessageSquare, RefreshCw, Waves } from "lucide-react";
 import { client } from "../../api/client";
+import { useWorkflowContext, stepRoute } from "../../hooks/useWorkflowContext";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
@@ -262,6 +263,8 @@ export function ResearchOverview() {
           {d.next_actions.map(a => <Button key={a.action_id} variant="outline" size="sm" asChild className="w-full justify-between" data-testid={`quick-action-${a.action_id}`}>
             <Link to={a.route.replace(`/experiments/${batteryId}/${experimentId}`, base)}>{a.label}<ArrowRight size={14}/></Link>
           </Button>)}
+          {/* WF-R3 Resume Research: navigate to recommended_next_action from workflow-context */}
+          <ResumeResearchButton batteryId={batteryId} experimentId={experimentId} base={base} />
         </div>
         <h2 className="mt-4">当前限制（首屏可见）</h2>
         <ul className="mt-2 space-y-1 text-xs muted" data-testid="limitations-first-screen">
@@ -326,5 +329,19 @@ export function ResearchOverview() {
       </p>
     </section>
   </div>;
+}
+
+/** WF-R3 §8 — Resume Research button (consumes workflow-context). */
+function ResumeResearchButton({ batteryId, experimentId, base }: { batteryId: string; experimentId: string; base: string }) {
+  const navigate = useNavigate();
+  const wf = useWorkflowContext(batteryId, experimentId);
+  const rec = wf.data?.recommended_next_action;
+  if (!rec) return null;
+  const target = rec.route.replace(`/experiments/${batteryId}/${experimentId}`, base);
+  return (
+    <Button variant="default" size="sm" asChild className="w-full justify-between" data-testid="resume-research">
+      <Link to={target}>继续研究 / Resume Research<ArrowRight size={14}/></Link>
+    </Button>
+  );
 }
 
