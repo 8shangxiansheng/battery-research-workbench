@@ -198,7 +198,7 @@ def test_physical_features_endpoint(client: TestClient) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     codes = {f["feature_code"] for f in data["features"]}
-    assert codes == {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTENUATION", "BPS"}
+    assert codes == {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTENUATION", "BPS", "tof_us"}
     swa = next(f for f in data["features"] if f["feature_code"] == "SWA")
     assert len(swa["values"]) == 40
     assert swa["display_name_zh"] == "表面波幅值"
@@ -394,13 +394,15 @@ def test_brw025wf_workflow_context_route(client: TestClient) -> None:
     assert tuple(d["step_statuses"]) == (
         "TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET", "SPLIT", "MODELS", "REPORT",
     )
-    # fixture chain: all steps materialized, legacy TOF definitions
+    # RC1 chain: canonical-TOF dataset/split/models/report are CURRENT
     assert d["current_step"] == "REPORT"
     rec = d["recommended_next_action"]
-    assert rec["action_id"] in ("RESOLVE_PENDING_ACTION", "PROVIDE_SAMPLING_RATE", "BUILD_DATASET")
+    assert rec["action_id"] in (
+        "RESOLVE_PENDING_ACTION", "PROVIDE_SAMPLING_RATE", "BUILD_DATASET", "OPEN_REPORT",
+    )
     assert rec["route"].startswith("/experiments/CELL_001/EXP_001/")
-    assert d["scientific_context"]["dataset_id"] == "DS::6a3142e5186fc684964ff09e"
-    assert d["artifact_freshness"]["dataset"] == "LEGACY"
+    assert d["scientific_context"]["dataset_id"] == "DS::83013a61b316f3489093b358"
+    assert d["artifact_freshness"]["dataset"] == "CURRENT"
 
 
 def test_brw025wf_workflow_context_unknown_experiment_404(client: TestClient) -> None:

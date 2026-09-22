@@ -59,6 +59,54 @@ def _sandbox(tmp_path: Path) -> Path:
 
 
 @pytest.mark.skipif(not has_real, reason="real CELL_001/EXP_001 artifacts not available")
+def _legacy_chain_sandbox(tmp_path: Path, exclude: tuple[str, ...]) -> Path:
+    """Sandbox whose chain artifacts exclude the RC1 CURRENT ids.
+
+    datasets/models/splits/artifacts are copied (manifests only) minus the
+    excluded id substrings, so the aggregate sees a legacy-TOF-only root —
+    the documented STALE/LEGACY chain scenario.
+    """
+    import shutil
+
+    sandbox = _sandbox(tmp_path)
+    for rel in ("datasets", "models", "splits"):
+        link = sandbox / rel
+        real = link.resolve()
+        link.unlink()
+        dst = sandbox / rel
+        def _ign(root: str, names: list[str]) -> set[str]:
+            drop = {n for n in names if any(x in str(Path(root) / n) for x in exclude)}
+            return drop
+        shutil.copytree(real, dst, ignore=_ign)
+    art = sandbox / "artifacts"
+    art_real = art.resolve()
+    art.unlink()
+    shutil.copytree(art_real, art, ignore=shutil.ignore_patterns(*[
+        f"{x}*" for x in exclude if x.startswith("REPORT::")
+    ] or ["__none__"]))
+    return sandbox
+
+
+def _sandbox_with_resumable_submission(tmp_path: Path) -> Path:
+    """Sandbox whose submissions.json has one SAVED submission with a run attached."""
+    import json
+    import shutil
+
+    sandbox = _sandbox(tmp_path)
+    link = sandbox / "parameter_submissions"
+    real = link.resolve()
+    link.unlink()
+    shutil.copytree(real, sandbox / "parameter_submissions")
+    sub_path = sandbox / "parameter_submissions" / B / E / "submissions.json"
+    data = json.loads(sub_path.read_text(encoding="utf-8"))
+    first = next(iter(data))
+    data[first]["run_id"] = "RUN::TEST-RC1-RESUMABLE"
+    data[first]["resume_status"] = "PENDING"
+    data[first]["pending_action_resolved"] = False
+    sub_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return sandbox
+
+
 class TestWorkflowContextContract:
     def test_w02_dto_schema(self, tmp_path: Path) -> None:
         d = build_workflow_context(_sandbox(tmp_path), B, E)
@@ -115,7 +163,8 @@ class TestWorkflowContextContract:
         assert committed is not None
         assert committed["dataset_status"] not in ("SPEC_PENDING_RUN",)
         # spec-pending manifests exist in the fixture but are drafts, never committed
-        assert committed["dataset_id"] == "DS::6a3142e5186fc684964ff09e"
+        # RC1: CURRENT chain dataset (canonical envelope-peak TOF predictors)
+        assert committed["dataset_id"] == "DS::83013a61b316f3489093b358"
         assert d["scientific_context"]["dataset_id"] == committed["dataset_id"]
 
     def test_w11_split_bound_to_committed_dataset(self, tmp_path: Path) -> None:
@@ -130,8 +179,9 @@ class TestWorkflowContextContract:
         d = build_workflow_context(_sandbox(tmp_path), B, E)
         committed = d["steps"]["MODELS"]["committed"]
         assert committed is not None
-        assert committed["model_count"] == 10
-        assert len(committed["model_ids"]) == 10
+        # RC1 fixed baseline suite on the canonical-TOF dataset
+        assert committed["model_count"] == 5
+        assert len(committed["model_ids"]) == 5
         assert committed["dataset_id"] == d["scientific_context"]["dataset_id"]
 
     def test_w13_report_latest(self, tmp_path: Path) -> None:
@@ -142,7 +192,14 @@ class TestWorkflowContextContract:
         assert d["scientific_context"]["report_id"] == committed["report_id"]
 
     def test_w21_stale_chain(self, tmp_path: Path) -> None:
-        d = build_workflow_context(_sandbox(tmp_path), B, E)
+        # sandbox chain excluding the RC1 CURRENT ids → legacy-only root
+        d = build_workflow_context(
+            _legacy_chain_sandbox(
+                tmp_path,
+                exclude=("DS::83013a61", "SPLIT::23ebb24f", "REPORT::5b6cf84d"),
+            ),
+            B, E,
+        )
         # fixture dataset predates BRW-017R2 canonical TOF provenance
         f = d["artifact_freshness"]
         assert f["dataset"] == "LEGACY"
@@ -152,7 +209,7 @@ class TestWorkflowContextContract:
             assert value in _FRESHNESS_VOCAB
 
     def test_w22_waiting_global_state(self, tmp_path: Path) -> None:
-        d = build_workflow_context(_sandbox(tmp_path), B, E)
+        d = build_workflow_context(_sandbox_with_resumable_submission(tmp_path), B, E)
         pending = d["pending_action"]
         # fixture: fs verified + one unresolved submission → WAITING_FOR_USER
         assert pending is not None

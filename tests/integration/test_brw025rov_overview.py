@@ -112,14 +112,17 @@ class TestResearchOverviewE2E:
         assert {"DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
                 "GRADIENT_BOOSTING", "RANDOM_FOREST"} <= strategies
         dummy = d["dummy"]
-        assert dummy and dummy["macro_mae"] == pytest.approx(29.61, abs=0.01)
-        # current artifact was built before BRW-013X V2 definitions and never
-        # used the BRW-017R2 canonical envelope-peak TOF
+        assert dummy and dummy["macro_mae"] == pytest.approx(30.72, abs=0.01)
+        # RC1: the evaluated dataset carries BRW-017R2 canonical envelope-peak
+        # TOF provenance → no refresh-required marker on the current chain
         fd = d["feature_definition"]
-        assert fd["uses_previous_feature_definition"] is True
-        assert fd["refresh_required"] is True
-        # BRW-025R-OV-R1: 中文 UI 文案（BRW-025R-OV 实验台中文化）
-        assert "从未使用" in fd["note"] and "包络峰值 TOF" in fd["note"]
+        assert fd["uses_previous_feature_definition"] is False
+        assert fd["refresh_required"] is False
+        assert fd["canonical_tof_provenance"] == (
+            "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1"
+        )
+        # BRW-025R-OV-R1: 中文 UI 文案（实验台中文化）
+        assert "canonical 包络峰值 TOF" in fd["note"]
 
     def test_read_only_no_artifact_writes(self, tmp_path: Path) -> None:
         sandbox = _sandbox(tmp_path)
