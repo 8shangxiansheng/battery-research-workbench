@@ -285,12 +285,24 @@ def _readiness_matrix(processed_root: Path, b: str, e: str) -> dict[str, Any]:
     }
 
 
+def _current_chain_dataset(processed_root: Path, b: str, e: str) -> dict[str, Any]:
+    """Manifest of the dataset the most recent model run actually consumed."""
+    from battery_workbench.reporting.collector import latest_evaluated_chain
+
+    ds_id, _ = latest_evaluated_chain(processed_root, b, e)
+    if not ds_id:
+        return {}
+    hit = next(
+        (processed_root / "datasets").rglob(f"{ds_id}/dataset_manifest.json"), None
+    )
+    return _read_json(hit) if hit else {}
+
+
 def _feature_definition_state(processed_root: Path, b: str, e: str) -> dict[str, Any]:
-    """Compare the dataset's FS definition version against the current policy."""
-    dataset_manifest = _read_json(
-        processed_root
-        / "datasets" / b / e / "SOC" / "DS::6a3142e5186fc684964ff09e" / "dataset_manifest.json"
-    ) or {}
+    """Freshness against BRW-017R2 provenance: does the evaluated dataset
+    carry the canonical envelope-peak TOF (tof_method_id) — the RC1 criterion
+    replacing the retired BRW-013X '2.0.0' pin."""
+    dataset_manifest = _current_chain_dataset(processed_root, b, e)
     fs_id = dataset_manifest.get("feature_set_id", "")
     fs_version = None
     if fs_id:
@@ -301,11 +313,13 @@ def _feature_definition_state(processed_root: Path, b: str, e: str) -> dict[str,
             fs = _read_json(fs_manifest) or {}
             fs_version = fs.get("feature_definition_version")
             break
-    stale = fs_version is not None and fs_version != "2.0.0"
+    has_canonical_tof = bool(dataset_manifest.get("tof_method_id"))
+    stale = not has_canonical_tof
     return {
         "feature_set_id": fs_id,
         "dataset_definition_version": fs_version,
         "current_policy": "MATLAB_ALIGNED_FEATURE_FORMULAS_V1",
+        "canonical_tof_provenance": dataset_manifest.get("tof_method_id"),
         "uses_previous_feature_definition": bool(stale),
         "refresh_required": bool(stale),
         "note": (
@@ -313,15 +327,20 @@ def _feature_definition_state(processed_root: Path, b: str, e: str) -> dict[str,
             "BRW-017R2 canonical 包络峰值 TOF"
         )
         if stale
-        else "特征定义与当前策略一致",
+        else (
+            "当前模型数据集使用 BRW-017R2 canonical 包络峰值 TOF"
+            f"（{dataset_manifest.get('tof_method_id')} · "
+            f"gate {dataset_manifest.get('tof_gate_calibration_id')}）"
+        ),
     }
 
 
 def _leading_exploratory(processed_root: Path, b: str, e: str) -> dict[str, Any] | None:
     """Newest EXPLORATORY_FULL_DATA correlation row for the SOC target."""
-    an_root = processed_root / "feature_analysis" / b / e / (
-        "DS::6a3142e5186fc684964ff09e"
-    )
+    from battery_workbench.reporting.collector import latest_evaluated_chain
+
+    ds_id, _ = latest_evaluated_chain(processed_root, b, e)
+    an_root = processed_root / "feature_analysis" / b / e / ds_id
     if not an_root.is_dir():
         return None
     newest: tuple[str, pd.DataFrame] | None = None
@@ -360,10 +379,7 @@ def _scientific_snapshot(processed_root: Path, b: str, e: str) -> dict[str, Any]
     The leading candidate reuses the feature-target-ranking computation
     (deterministic, read-only); no new science is defined here.
     """
-    dataset_manifest = _read_json(
-        processed_root
-        / "datasets" / b / e / "SOC" / "DS::6a3142e5186fc684964ff09e" / "dataset_manifest.json"
-    )
+    dataset_manifest = _current_chain_dataset(processed_root, b, e)
     selected_features = (dataset_manifest or {}).get("selected_features") or []
     feature_state = _feature_definition_state(processed_root, b, e)
 

@@ -7,10 +7,10 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams, useNavigate } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { ArrowRight, Battery, MessageSquare, RefreshCw, Waves } from "lucide-react";
 import { client } from "../../api/client";
-import { useWorkflowContext, stepRoute } from "../../hooks/useWorkflowContext";
+import { useWorkflowContext } from "../../hooks/useWorkflowContext";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
@@ -333,7 +333,6 @@ export function ResearchOverview() {
 
 /** WF-R3 §8 — Resume Research button (consumes workflow-context). */
 function ResumeResearchButton({ batteryId, experimentId, base }: { batteryId: string; experimentId: string; base: string }) {
-  const navigate = useNavigate();
   const wf = useWorkflowContext(batteryId, experimentId);
   const rec = wf.data?.recommended_next_action;
   if (!rec) return null;

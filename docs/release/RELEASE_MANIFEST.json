@@ -1,0 +1,109 @@
+{
+  "release_candidate_id": "BRW-RC1",
+  "title": "Scientific Workbench Release Candidate Freeze",
+  "git_commit_base": "3a8a1af7813965d9b9912e70947794e645ab1bf3",
+  "git_branch": "main",
+  "rc1_release_commit_note": "RC1 release commit created at freeze; tag suggestion `brw-rc1` (publish only with maintainer approval)",
+  "raw_checksums": {
+    "batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx": "8536d3959db6efc73cdbc30903b33f8c6a429385663597832e4d918459dbc608",
+    "batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt": "8e196837bf13637d4c0d2244a403c018b3bbd81b5b1b81ac5c08df2007be5acb",
+    "recomputed_at": "2026-09-21",
+    "immutable": true
+  },
+  "battery_id": "CELL_001",
+  "experiment_id": "EXP_001",
+  "parameter_set_id": "PS::3b512b82b40c78c8d264892c",
+  "sampling_rate_hz": 50000000.0,
+  "sampling_rate_source": "USER_SUPPLIED/VERIFIED via parameter registry (never hardcoded)",
+  "gate_calibration_id": "GC-TOF::e401fecb29ae2c91d511900f",
+  "gate_calibration_status": "FROZEN",
+  "gate_calibration_version": 20,
+  "tof_definition_version": "0.3.0",
+  "tof_method_id": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
+  "target_id": "reference_soc_percent",
+  "target_semantics": "retrospective segment-normalized reference label — NOT true SOC",
+  "feature_definition_versions": {
+    "catalogue_policy": "MATLAB_ALIGNED_FEATURE_FORMULAS_V1",
+    "feature_set_id": "FS::60649fd12c540267fe585914",
+    "feature_definition_version": "0.1.0",
+    "canonical_tof": "0.3.0"
+  },
+  "demo_feature_set": [
+    "tof_us",
+    "amplitude_a_u",
+    "waveform_p2p_a_u",
+    "waveform_mean_a_u",
+    "waveform_rms_a_u",
+    "envelope_peak_a_u"
+  ],
+  "preview_spec_hash": "PREVIEW::a1eb181799e771c0661d3bbd",
+  "dataset_id": "DS::83013a61b316f3489093b358",
+  "dataset_rows": 3995,
+  "split_id": "SPLIT::23ebb24fe8e7732fac780dde",
+  "split_strategy": "LEAVE_ONE_GROUP_OUT",
+  "split_unit": "CYCLE",
+  "model_artifact_ids": [
+    "MODEL::451f14639257efdc76a23fee",
+    "MODEL::4860daa3cc80091303e42fd2",
+    "MODEL::7741d7dbf9f4f3a7279ec379",
+    "MODEL::d7c9700b12d83f20af7ce994",
+    "MODEL::f61db51c4bbe981f9922a017"
+  ],
+  "model_suite": "fixed Dummy/Linear/Ridge/RF/GB — no tuning",
+  "model_outcome": "no model beat Dummy (macro MAE 30.72%, fold1 limited evaluation) — honest scientific result, not a release failure",
+  "report_id": "REPORT::5b6cf84d27d20a880c914506",
+  "report_formats": [
+    "scientific_report.json",
+    "scientific_report.md",
+    "scientific_report.html"
+  ],
+  "schema_versions": {
+    "sync_schema": "0.2.0",
+    "modeling_policy": "0.1.0",
+    "reporting_policy": "0.1.0",
+    "leakage_policy": "0.1.0",
+    "workflow_context": "workflow-context/1.0"
+  },
+  "environment": {
+    "python": "3.13.12",
+    "packages": {
+      "pandas": "3.0.5",
+      "numpy": "2.5.2",
+      "fastapi": "0.141.1",
+      "pydantic": "2.13.5",
+      "zarr": "3.3.0"
+    },
+    "platform": "macOS-15.6-arm64-arm-64bit-Mach-O"
+  },
+  "frontend_build": {
+    "vite": "dev/5173 for acceptance; production build via npm run build",
+    "framework": "react+react-router v7 data router (RC1 fix)"
+  },
+  "backend_build": "uvicorn battery_workbench.api.serve:app",
+  "clean_room": {
+    "run_a": "fresh root /tmp/brw-rc1-clean raw→report, counts+ids match canonical, canonical TOF 3995 VALID",
+    "run_b": "same spec → DATASET/SPLIT/SOC_MODELING REUSED (no re-fit)"
+  },
+  "read_only_invariance": "200 artifact files hashed before/after read-only UI/API/Assistant pass: 0 changes",
+  "visual_acceptance": "docs/ui/screenshots/brwrc1/ 01–20 + walkthrough (deep-link/back/forward/refresh) all pass",
+  "known_limitations": [
+    "ONE_BATTERY_ONLY",
+    "TWO_CYCLES_ONLY",
+    "NO_CROSS_BATTERY_EVALUATION",
+    "NO_INDEPENDENT_VALIDATION_GROUP",
+    "NO_HYPERPARAMETER_TUNING",
+    "SOH_INDEPENDENT_STATES_TOO_FEW",
+    "FEATURE_SELECTION_STABILITY_LIMITED",
+    "LIMITED_CROSS_CYCLE_GENERALIZATION",
+    "PROVISIONAL_TIMEBASE",
+    "RETROSPECTIVE_SOC_REFERENCE"
+  ],
+  "unsupported_claims_forbidden": [
+    "production-ready",
+    "cross-battery validated",
+    "robust general SOC model",
+    "true SOC / ground-truth SOC",
+    "absolute physical truth"
+  ],
+  "freeze_policy": "post-RC1: critical bug fixes, docs, thesis/demo assets only; scientific-definition changes open a new release line"
+}

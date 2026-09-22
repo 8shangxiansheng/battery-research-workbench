@@ -352,8 +352,8 @@ describe("W03 — Stepper navigation-only (no mutations)", () => {
 describe("W06 — Target selection inheritance", () => {
   it("workflow context carries committed target_id", () => {
     const ctx = makeWorkflowCtx();
-    expect(ctx.steps.TARGET.committed).toBeDefined();
-    expect(ctx.steps.TARGET.committed!.target_id).toBe("soc_reference_percent");
+    expect(ctx.steps.TARGET!.committed).toBeDefined();
+    expect(ctx.steps.TARGET!.committed!.target_id).toBe("soc_reference_percent");
   });
 
   it("target status is propagated in step_statuses", () => {
@@ -369,19 +369,19 @@ describe("W06 — Target selection inheritance", () => {
 describe("W07 — Features→Preview→Dataset handoff", () => {
   it("committed features carry feature_locators", () => {
     const ctx = makeWorkflowCtx();
-    expect(ctx.steps.FEATURES.committed).toBeDefined();
-    expect(ctx.steps.FEATURES.committed!.feature_locators).toEqual(["f1", "f2"]);
+    expect(ctx.steps.FEATURES!.committed).toBeDefined();
+    expect(ctx.steps.FEATURES!.committed!.feature_locators).toEqual(["f1", "f2"]);
   });
 
   it("dataset step carries dataset_id in committed", () => {
     const ctx = makeWorkflowCtx();
-    expect(ctx.steps.DATASET.committed).toBeDefined();
-    expect(ctx.steps.DATASET.committed!.dataset_id).toBe("DS::6a3142");
+    expect(ctx.steps.DATASET!.committed).toBeDefined();
+    expect(ctx.steps.DATASET!.committed!.dataset_id).toBe("DS::6a3142");
   });
 
   it("preview step status is COMPLETE when spec confirmed", () => {
     const ctx = makeWorkflowCtx();
-    expect(ctx.steps.PREVIEW.status).toBe("COMPLETE");
+    expect(ctx.steps.PREVIEW!.status).toBe("COMPLETE");
   });
 });
 
@@ -738,8 +738,8 @@ describe("W29 — Draft guard state machine", () => {
   it("draft guard payload supports recommended_next_action", () => {
     const ctx = makeWorkflowCtx();
     expect(ctx.recommended_next_action).toBeDefined();
-    expect(ctx.recommended_next_action.action_id).toBe("RESOLVE_PENDING_ACTION");
-    expect(ctx.recommended_next_action.route).toMatch(/^\/experiments\//);
+    expect(ctx.recommended_next_action!.action_id).toBe("RESOLVE_PENDING_ACTION");
+    expect(ctx.recommended_next_action!.route).toMatch(/^\/experiments\//);
   });
 });
 
@@ -764,7 +764,7 @@ describe("W30 — pageToStep mapping correctness", () => {
     const { WF_STEP_ROUTES } = await import("../src/hooks/useWorkflowContext");
     const analysisSteps = Object.entries(WF_STEP_ROUTES).filter(([, route]) => route === "analysis");
     expect(analysisSteps.length).toBe(5);
-    expect(analysisSteps[0][0]).toBe("TARGET");
+    expect(analysisSteps[0]![0]).toBe("TARGET");
   });
 
   it("dataset-split maps to SPLIT step", async () => {

@@ -1,0 +1,102 @@
+{
+  "screenshots": [
+    {
+      "id": "01_rc1_overview",
+      "ok": true
+    },
+    {
+      "id": "02_rc1_metadata_readiness",
+      "ok": true
+    },
+    {
+      "id": "03_rc1_waveform_tof",
+      "ok": true
+    },
+    {
+      "id": "04_rc1_gate_calibration",
+      "ok": true
+    },
+    {
+      "id": "05_rc1_target_soc",
+      "ok": true
+    },
+    {
+      "id": "06_rc1_feature_catalogue",
+      "ok": true
+    },
+    {
+      "id": "07_rc1_feature_label_preview",
+      "ok": true
+    },
+    {
+      "id": "08_rc1_row_provenance",
+      "ok": true
+    },
+    {
+      "id": "09_rc1_ml_safe_heldout",
+      "ok": true
+    },
+    {
+      "id": "10_rc1_dataset",
+      "ok": true
+    },
+    {
+      "id": "11_rc1_grouped_split",
+      "ok": true
+    },
+    {
+      "id": "12_rc1_model_comparison",
+      "ok": true
+    },
+    {
+      "id": "13_rc1_scientific_report",
+      "ok": true
+    },
+    {
+      "id": "14_rc1_report_evidence",
+      "ok": true
+    },
+    {
+      "id": "15_rc1_assistant_next_action",
+      "ok": true
+    },
+    {
+      "id": "16_rc1_workflow_stepper",
+      "ok": true
+    },
+    {
+      "id": "17_rc1_stale_state",
+      "ok": true
+    },
+    {
+      "id": "18_rc1_reproducibility",
+      "ok": true
+    },
+    {
+      "id": "19_rc1_experiment_library",
+      "ok": true
+    },
+    {
+      "id": "20_rc1_full_desktop",
+      "ok": true
+    }
+  ],
+  "walkthrough": [
+    {
+      "step": "deep-link /models",
+      "ok": true
+    },
+    {
+      "step": "back",
+      "ok": true
+    },
+    {
+      "step": "forward",
+      "ok": true
+    },
+    {
+      "step": "refresh keeps models + model table",
+      "ok": true
+    }
+  ]
+}

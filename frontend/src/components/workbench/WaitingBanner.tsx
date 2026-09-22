@@ -4,7 +4,7 @@
  * Shows pending action (e.g. sampling rate submission) across all pages.
  * Same-run resume: user completes action → workflow-context refetch → banner disappears.
  */
-import { Link, useParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import type { WorkflowContextPayload } from "../../api/client";
 import { Button } from "../ui/button";
@@ -14,8 +14,6 @@ export interface WaitingBannerProps {
 }
 
 export function WaitingBanner({ pendingAction }: WaitingBannerProps) {
-  const { batteryId = "", experimentId = "" } = useParams();
-
   if (!pendingAction || pendingAction.status !== "WAITING_FOR_USER") return null;
 
   return (

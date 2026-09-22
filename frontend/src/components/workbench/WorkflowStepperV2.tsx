@@ -7,7 +7,7 @@
  */
 import { useNavigate, useParams } from "react-router-dom";
 import { CircleCheck, CircleDashed, CircleDot, CircleX, Clock, AlertTriangle, MinusCircle } from "lucide-react";
-import type { WfStepKey, WfStepVisualStatus } from "../../api/client";
+import type { WfStepVisualStatus } from "../../api/client";
 import { WF_STEP_ROUTES } from "../../hooks/useWorkflowContext";
 
 /** Step display metadata (order = canonical workflow). */

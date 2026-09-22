@@ -124,8 +124,15 @@ def _pending_submissions(processed_root: Path, b: str, e: str) -> list[dict[str,
     for sub in data.values():
         if not isinstance(sub, dict):
             continue
-        if sub.get("save_status") == "SAVED" and not sub.get("pending_action_resolved"):
-            pending.append(
+        if sub.get("save_status") != "SAVED" or sub.get("pending_action_resolved"):
+            continue
+        # A SAVED submission only blocks the workflow when a run is actually
+        # attached to resume. Run-less inspection/acceptance probes (BRW-018R2
+        # visual-accept, inspect-probe) were completed at save time — surface
+        # them as informational no-ops, not WAITING_FOR_USER dead ends.
+        if not sub.get("run_id"):
+            continue
+        pending.append(
                 {
                     "submission_id": sub.get("submission_id"),
                     "parameter_set_id": sub.get("parameter_set_id"),

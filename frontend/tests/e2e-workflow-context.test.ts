@@ -101,7 +101,7 @@ describe("E2E1 — Happy path: workflow-context returns complete chain", () => {
     if (!available) ctx.skip();
     const wf = await getWorkflowContext();
     expect(wf.steps.TARGET).toBeDefined();
-    expect(wf.steps.TARGET.status).toBeDefined();
+    expect(wf.steps.TARGET!.status).toBeDefined();
   });
 
   it("returns current_step as one of the 8 canonical steps", async (ctx) => {
@@ -234,7 +234,7 @@ describe("E2E6 — Impossible split: SPLIT BLOCKED when no dataset", () => {
     if (!available) ctx.skip();
     const wf = await getWorkflowContext();
     if (wf.step_statuses.SPLIT === "BLOCKED") {
-      const splitStep = wf.steps.SPLIT;
+      const splitStep = wf.steps.SPLIT!;
       expect(splitStep.blocking).toBeDefined();
       expect(splitStep.blocking!.blocking_message).toBeDefined();
     }

@@ -437,6 +437,65 @@ class ResearchPlanner:
         result = self._execute("inspect_model_comparison", ctx, {})
         return self._interpret(ctx, result, classified)
 
+    def _on_what_next(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
+        """RC1 §52 — answer from workflow-context recommended_next_action, the
+        single source of truth shared with the UI stepper (typed nav only)."""
+        from battery_workbench.api.workflow_context import build_workflow_context
+
+        wf = build_workflow_context(
+            self.gateway.service.processed_root, ctx.battery_id, ctx.experiment_id
+        )
+        rec = wf.get("recommended_next_action") or {}
+        action_id = str(rec.get("action_id") or "OPEN_REPORT")
+        label = str(rec.get("label") or "查看研究报告")
+        msg = f"工作流当前步骤：{wf.get('current_step', '')}。推荐下一步：{label}。"
+        pending = wf.get("pending_action")
+        if pending:
+            msg += f"（存在待办输入：{pending.get('label', '')}）"
+        return PlannerResponse(
+            message=msg, intent=classified.intent.value,
+            phase=str(wf.get("current_step") or ctx.phase),
+            next_actions=[NextAction(action_id=action_id,
+                                     label_en=action_id.replace("_", " ").title(),
+                                     label_zh=label, intent=action_id)],
+        )
+
+    def _on_model_tof_freshness(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
+        """RC1 §X — explicit model↔canonical-TOF freshness from artifact evidence."""
+        import json as _json
+
+        from battery_workbench.reporting.collector import latest_evaluated_chain
+
+        root = self.gateway.service.processed_root
+        ds_id, _ = latest_evaluated_chain(root, ctx.battery_id, ctx.experiment_id)
+        hit = (
+            next((root / "datasets").rglob(f"{ds_id}/dataset_manifest.json"), None)
+            if ds_id else None
+        )
+        man = _json.loads(hit.read_text(encoding="utf-8")) if hit else {}
+        method = man.get("tof_method_id")
+        preds = man.get("predictor_columns") or man.get("selected_features") or []
+        if method and "tof_us" in preds:
+            msg = (
+                f"是——当前模型数据集 {ds_id} 的预测变量包含 canonical tof_us"
+                f"（{method} {man.get('tof_definition_version', '')}，"
+                f"gate {man.get('tof_gate_calibration_id')}，"
+                f"参数 {man.get('tof_parameter_set_id')}）。"
+            )
+        elif method:
+            msg = f"数据集 {ds_id} 带 canonical TOF 溯源，但预测变量未包含 tof_us。"
+        else:
+            msg = (
+                f"否——当前模型数据集 {ds_id or '(无)'} 的 manifest 无 tof_method_id，"
+                "模型基于旧特征定义；需通过正式 Dataset→Split→Model 工作流刷新。"
+            )
+        return PlannerResponse(
+            message=msg, intent=classified.intent.value, phase=ctx.phase,
+            evidence_refs=[f"dataset_manifest.json:{ds_id}"] if ds_id else [],
+            next_actions=[NextAction(action_id="OPEN_MODELS", label_en="Open models",
+                                     label_zh="查看模型评估", intent="OPEN_MODELS")],
+        )
+
     def _interpret(self, ctx: AgentResearchSession, result, classified) -> PlannerResponse:
         """Dummy-first honest interpretation (§O)."""
         data = result.data

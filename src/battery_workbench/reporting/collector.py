@@ -86,6 +86,38 @@ def _load_json(path: Path) -> Any | None:
         return None
 
 
+def latest_evaluated_chain(
+    processed_root: Path, battery_id: str, experiment_id: str
+) -> tuple[str, str]:
+    """Dataset/split identities actually consumed by the most recent model run."""
+    models_dir = processed_root / "models" / battery_id / experiment_id
+    best: tuple[float, str, str] | None = None
+    if models_dir.is_dir():
+        for comp in models_dir.glob("DS::*/*/model_comparison.json"):
+            ds, sp = comp.parent.parent.name, comp.parent.name
+            if not any(
+                (processed_root / "datasets" / battery_id / experiment_id).rglob(
+                    f"{ds}/dataset_manifest.json"
+                )
+            ):
+                continue
+            mtime = comp.stat().st_mtime
+            if best is None or mtime > best[0]:
+                best = (mtime, ds, sp)
+    return (best[1], best[2]) if best else ("", "")
+
+
+def _canonical_tof_active(processed_root: Path, battery_id: str, experiment_id: str) -> bool:
+    canon = (
+        _load_json(
+            processed_root
+            / "features_physical" / battery_id / experiment_id / "canonical_tof_manifest.json"
+        )
+        or {}
+    )
+    return bool(canon.get("sampling_rate_verified")) and bool(canon.get("canonical_tof_valid"))
+
+
 def collect_experiment_record(
     processed_root: Path, battery_id: str, experiment_id: str
 ) -> ExperimentRecord:
@@ -102,21 +134,25 @@ def collect_experiment_record(
         else []
     )
 
+    latest_ds, latest_split = latest_evaluated_chain(processed_root, b, e)
+    limitations = [l["code"] for l in DEFAULT_LIMITATIONS]
+    if _canonical_tof_active(processed_root, b, e):
+        limitations = [c for c in limitations if c != "TOF_UNAVAILABLE_OR_BLOCKED"]
     return ExperimentRecord(
         battery_id=b,
         experiment_id=e,
         raw_assets=["E001", "U001"],
         parameter_set_ids=ps_ids,
         latest_canonical_artifacts={
-            "dataset_id": "DS::6a3142e5186fc684964ff09e",
+            "dataset_id": latest_ds,
             "label_set_id": label_manifest.get("label_set_id", ""),
-            "split_id": "SPLIT::062cf007d21578a11ab2d728",
+            "split_id": latest_split,
             "gate_set_id": "GATESET::8633ce421ad5e26fe686",
             "feature_set_id": "FS::60649fd12c540267fe585914",
         },
         run_ids=run_ids,
         scientific_status="READY_FOR_LIMITED_EVALUATION",
-        limitations=[l["code"] for l in DEFAULT_LIMITATIONS],
+        limitations=limitations,
     )
 
 
@@ -126,8 +162,7 @@ def collect_results(
     """Aggregate results from existing artifacts (read-only, no recomputation)."""
     results: list[ScientificResultRecord] = []
     b, e = battery_id, experiment_id
-    dataset_id = "DS::6a3142e5186fc684964ff09e"
-    split_id = "SPLIT::062cf007d21578a11ab2d728"
+    dataset_id, split_id = latest_evaluated_chain(processed_root, b, e)
 
     runs_dir = processed_root.parent / "artifacts" / "runs"
     latest_run_id = (

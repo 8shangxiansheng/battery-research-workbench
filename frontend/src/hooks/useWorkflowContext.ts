@@ -6,7 +6,7 @@
  * so experiment switching automatically isolates cache (§12).
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { client, type WorkflowContextPayload, WF_STEP_KEYS, type WfStepKey, type WfStepVisualStatus } from "../api/client";
+import { client, WF_STEP_KEYS, type WfStepVisualStatus } from "../api/client";
 
 /** Query key — includes batteryId + experimentId for isolation. */
 export function workflowContextKey(batteryId: string, experimentId: string) {
@@ -56,7 +56,6 @@ export function deriveStepperStatuses(
 ): Record<string, WfStepVisualStatus> {
   const result: Record<string, WfStepVisualStatus> = {};
   const stepKeys = [...WF_STEP_KEYS];
-  const currentIdx = stepKeys.indexOf(currentStep as WfStepKey);
 
   for (let i = 0; i < stepKeys.length; i++) {
     const key = stepKeys[i]!;

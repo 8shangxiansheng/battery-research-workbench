@@ -169,6 +169,33 @@ def physical_features(
     atten = bottom_attenuation_explicit(frames)
     bps = bottom_wave_phase_shift(frames)
 
+    # canonical envelope-peak TOF block — read from the materialized artifact
+    canonical_tof_block: dict[str, Any] | None = None
+    ct_path = (
+        get_service(request).processed_root
+        / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
+    )
+    if ct_path.is_file():
+        import pandas as ct_pd
+
+        ct = ct_pd.read_parquet(
+            ct_path, columns=["frame_index_raw", "tof_us", "tof_status"]
+        )
+        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
+        canonical_tof_block = {
+            "feature_code": "tof_us",
+            "method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
+            "gate_template_id": "TOF_SURFACE_PEAK_GATE→TOF_BOTTOM_PEAK_GATE",
+            "display_name_en": "Canonical Envelope-Peak TOF",
+            "display_name_zh": "规范包络峰TOF（表面→底波）",
+            "unit": "µs",
+            "values": [
+                float(valid_map[i]) if i in valid_map.index else None
+                for i in range(len(frames))
+            ],
+            "artifact_read_only": True,
+        }
+
     def _series(values: Any) -> list[float | None]:
         return [
             float(v) if v is not None and np.isfinite(v) else None
@@ -227,6 +254,8 @@ def physical_features(
             "reference_frame_index": bps["reference_frame_index"],
         },
     ]
+    if canonical_tof_block is not None:
+        feature_blocks.insert(0, canonical_tof_block)
     return {
         "data": {
             "battery_id": battery_id,
@@ -997,6 +1026,8 @@ _ALIAS_TO_RAW: dict[str, str] = {
     "waveform_max_a_u": "waveform_max_a_u",
     "waveform_min_a_u": "waveform_min_a_u",
     "waveform_p2p_a_u": "waveform_p2p_a_u",
+    "waveform_rms_a_u": "waveform_rms_a_u",
+    "envelope_peak_a_u": "envelope_peak_a_u",
 }
 
 
@@ -1154,6 +1185,8 @@ def feature_label_preview(
         if f in _ALIAS_TO_RAW:
             resolved_alias[f] = _ALIAS_TO_RAW[f]
             continue
+        if f == "tof_us":  # BRW-017R2 canonical artifact (read-only join)
+            continue
         unknown_features.append(f)
     if unknown_features:
         raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {unknown_features}")
@@ -1167,6 +1200,26 @@ def feature_label_preview(
     joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
     n = min(len(joined), n_frames)
     joined = joined.iloc[:n]
+
+    # canonical envelope-peak TOF: served from the materialized artifact only
+    # (SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1) — never recomputed here.
+    if "tof_us" in features:
+        ct_path = (
+            get_service(request).processed_root
+            / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
+        )
+        if not ct_path.is_file():
+            raise APIError(
+                ErrorCode.NOT_FOUND,
+                "canonical TOF artifact not materialized — run CANONICAL_TOF_FEATURES first",
+            )
+        ct = join_pd.read_parquet(
+            ct_path, columns=["frame_index_raw", "tof_us", "tof_status"]
+        )
+        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
+        series_by_code["tof_us"] = (
+            joined["frame_index_raw"].map(valid_map).astype("float64").to_numpy()
+        )
 
     tcol = target_cols[target_id]
     target_vals = joined[tcol]
@@ -1311,6 +1364,16 @@ def feature_label_preview(
             feature_meta[f] = {**PHYSICAL_META[f],
                                "definition_status": "DEFINED_AND_VALIDATED",
                                "parity_status": "MATLAB_ALIGNED", "source": "physical"}
+        elif f == "tof_us":
+            feature_meta[f] = {
+                "label_en": "Canonical Envelope-Peak TOF",
+                "label_zh": "规范包络峰TOF（表面→底波）",
+                "units": "µs",
+                "definition_status": "DEFINED_AND_VALIDATED",
+                "parity_status": "SYNTHETIC_GOLDEN_PASS",
+                "source": "canonical_tof_artifact",
+                "method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
+            }
         else:  # raw alias
             feature_meta[f] = {
                 "label_en": f, "label_zh": {"waveform_mean_a_u": "波形均值", "waveform_std_a_u": "波形标准差",

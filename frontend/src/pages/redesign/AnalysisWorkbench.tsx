@@ -18,7 +18,7 @@ import { useInvalidateWorkflow } from "../../hooks/useWorkflowContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 
-const PHYSICAL_FEATURES = ["BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
+const PHYSICAL_FEATURES = ["tof_us", "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
 
 export function AnalysisWorkbench() {
   const { batteryId = "", experimentId = "" } = useParams();

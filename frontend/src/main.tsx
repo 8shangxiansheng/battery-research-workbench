@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { AppRoutes } from "./pages/AppShell";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -14,12 +14,14 @@ const queryClient = new QueryClient({
   },
 });
 
+// RC1: data router required by useBlocker (draft guard); the declarative
+// AppRoutes tree mounts under a splat route unchanged.
+const router = createBrowserRouter([{ path: "*", element: <AppRoutes /> }]);
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   </StrictMode>,
 );

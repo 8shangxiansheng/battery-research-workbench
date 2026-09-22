@@ -58,6 +58,8 @@ class ResearchIntent(str, Enum):
     CREATE_GROUPED_SPLIT = "CREATE_GROUPED_SPLIT"
     RUN_BASELINES = "RUN_BASELINES"
     INTERPRET_MODEL = "INTERPRET_MODEL"
+    MODEL_TOF_FRESHNESS = "MODEL_TOF_FRESHNESS"
+    WHAT_NEXT = "WHAT_NEXT"
     GENERATE_REPORT = "GENERATE_REPORT"
     EXPLAIN_LIMITATION = "EXPLAIN_LIMITATION"
     INSPECT_EVIDENCE = "INSPECT_EVIDENCE"
@@ -76,6 +78,9 @@ _INTENT_PATTERNS: list[tuple[ResearchIntent, tuple[str, ...]]] = [
     (ResearchIntent.SELECT_TARGET, ("研究soc", "研究温度", "研究soh", "研究电压", "研究电流",
      "换成温度", "换温度", "看看温度", "study soc", "switch to temperature")),
     (ResearchIntent.CHECK_ALIGNMENT, ("对齐", "同步", "匹配", "3999", "为什么只有", "alignment", "matched")),
+    (ResearchIntent.MODEL_TOF_FRESHNESS, ("用了新的tof", "用了新tof", "用的新的tof", "模型用的tof",
+     "用的tof是", "旧tof", "新的tof吗", "新tof吗", "tof吗")),
+    (ResearchIntent.WHAT_NEXT, ("下一步", "接下来做", "应该做什么", "what next", "next step")),
     (ResearchIntent.CALIBRATE_GATES, ("标定", "标定闸门", "calibrate", "gate calibration")),
     (ResearchIntent.INSPECT_CANONICAL_TOF, ("算tof", "计算tof", "tof怎么算", "tof 是多少",
      "tof是多少", "飞行时间", "compute tof", "envelope peak tof", "包络峰值")),

@@ -1346,6 +1346,34 @@ class DatasetNode(WorkflowNode):
         # BRW-017 core alias, when explicitly selected
         if "amplitude_a_u" in selected and "amplitude_a_u" not in feature_frame.columns:
             feature_frame["amplitude_a_u"] = feature_frame["waveform_abs_peak_a_u"]
+        # BRW-017R2 canonical envelope-peak TOF predictor: joined read-only from
+        # the materialized artifact (never recomputed here); VALID rows only.
+        tof_provenance: dict[str, Any] = {}
+        if "tof_us" in selected:
+            ct_path = (
+                Path(ctx.processed_root)
+                / "features_physical" / b / e / "canonical_tof.parquet"
+            )
+            if not ct_path.is_file():
+                raise FileNotFoundError(
+                    "canonical TOF artifact not materialized — "
+                    "run CANONICAL_TOF_FEATURES before selecting tof_us"
+                )
+            ct = pd.read_parquet(ct_path)
+            valid = ct[ct["tof_status"] == "VALID"]
+            feature_frame = feature_frame.merge(
+                valid[["measurement_event_id", "tof_us"]],
+                on="measurement_event_id",
+                how="left",
+            )
+            first = ct.iloc[0]
+            tof_provenance = {
+                "tof_method_id": str(first["tof_method_id"]),
+                "tof_definition_version": str(first["tof_definition_version"]),
+                "tof_gate_calibration_id": str(first["gate_calibration_id"]),
+                "tof_parameter_set_id": str(first["parameter_set_id"]),
+                "canonical_tof_valid_rows": len(valid),
+            }
         labels_dir = Path(ctx.processed_root) / "labels" / b / e
         event_labels = pd.read_parquet(labels_dir / "event_labels.parquet")
         cycle_labels = pd.read_parquet(labels_dir / "cycle_labels.parquet")
@@ -1391,6 +1419,13 @@ class DatasetNode(WorkflowNode):
             label_set_path=labels_dir / "event_labels.parquet",
             output_root=Path(ctx.processed_root),
         )
+        if tof_provenance:
+            man_path = Path(payload["dataset_manifest"])
+            manifest = json.loads(man_path.read_text(encoding="utf-8"))
+            manifest.update(tof_provenance)
+            man_path.write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
         return {
             "artifact_id": report.dataset_id,
             "path": str(Path(payload["dataset"]).parent),

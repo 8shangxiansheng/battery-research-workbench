@@ -33,6 +33,7 @@ NODE_DEPENDENCIES: dict[str, list[str]] = {
 # required (e.g. ML-safe FEATURE_ANALYSIS additionally consumes DATASET + SPLIT).
 NODE_OPTIONAL_DEPENDENCIES: dict[str, list[str]] = {
     "FEATURE_ANALYSIS": ["DATASET", "SPLIT"],
+    "DATASET": ["CANONICAL_TOF_FEATURES"],
 }
 
 
