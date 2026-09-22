@@ -343,10 +343,26 @@ class ResearchPlanner:
             )
         features = classified.features or ctx.selected_features or ["SWA", "BOTTOM_AMP"]
         ctx.selected_features = features
-        result = self._execute("analyze_target_relationships", ctx, {
+        tool_inputs: dict[str, Any] = {
             "target_id": ctx.selected_target, "features": features,
             "mode": "EXPLORATORY" if ctx.feature_selection_mode == "EXPLORATORY" else "TRAIN_ONLY_ML_SAFE",
-        })
+        }
+        defaulted_fold: str | None = None
+        if tool_inputs["mode"] == "TRAIN_ONLY_ML_SAFE":
+            if not ctx.split_id:
+                return PlannerResponse(
+                    message=("ML-safe 排序必须先有 grouped split（按 Battery/cycle 分组）与 TRAIN fold；"
+                             "探索性结果不可作为 ML-safe 证据。"),
+                    intent=classified.intent.value, phase="CHECK_GROUPED_SPLIT",
+                    status="SCIENTIFIC_BLOCK",
+                    next_actions=[NextAction(action_id="a1", label_en="Open grouped splits",
+                                             label_zh="打开分组划分", intent="CREATE_GROUPED_SPLIT")],
+                )
+            defaulted_fold = ctx.ranking_fold or "fold1"
+            ctx.ranking_fold = defaulted_fold
+            tool_inputs["split_id"] = ctx.split_id
+            tool_inputs["fold_index"] = defaulted_fold
+        result = self._execute("analyze_target_relationships", ctx, tool_inputs)
         if result.status != "SUCCEEDED":
             return PlannerResponse(
                 message=f"关系分析未完成: {result.error}", intent=classified.intent.value,
@@ -365,15 +381,20 @@ class ResearchPlanner:
         ranking = data.get("ranking") or []
         lines = []
         for r in ranking:
+            dep = r.get("direction_status") == "DIRECTION_DEPENDENT"
             lines.append(
                 f"{r.get('feature_code')}: Pearson {r.get('pearson_overall')}"
-                + (f"，充电 {r['pearson_charge']} / 放电 {r['pearson_discharge']}"
-                   if r.get("direction_dependent") else "")
+                + (f"，充电 {r.get('pearson_charge')} / 放电 {r.get('pearson_discharge')}（方向依赖）"
+                   if dep else "")
             )
         expl = "探索性排序（EXPLORATORY，非 ML-safe）" if ctx.feature_selection_mode == "EXPLORATORY" \
-            else "TRAIN-only ML-safe 排序（held-out 未访问）"
+            else (f"TRAIN-only ML-safe 排序（{ctx.split_id} / {ctx.ranking_fold} TRAIN 子集；"
+                  "held-out y 未进入 ranking）")
         msg = ("较高相关性不代表因果关系，也不保证预测能力。\n" + "\n".join(lines)
                + f"\n[{expl}]")
+        limitations = self._limitations(result)
+        if defaulted_fold and ctx.ranking_fold == "fold1":
+            limitations.append(f"未指定 fold，默认使用 {defaulted_fold} 的 TRAIN 子集")
         ctx.phase = "CHOOSE_PATH"
         ctx.next_actions = [
             NextAction(action_id="a1", label_en="Build exploratory table",
@@ -383,7 +404,7 @@ class ResearchPlanner:
         ]
         return PlannerResponse(message=msg, intent=classified.intent.value, phase=ctx.phase,
                                evidence_refs=self._evidence(result),
-                               limitations=self._limitations(result),
+                               limitations=limitations,
                                next_actions=ctx.next_actions)
 
     def _on_analyze_relationship(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
@@ -604,6 +625,8 @@ class ResearchPlanner:
                 intent=classified.intent.value, phase="BUILD_DATASET", status="BLOCKED")
         result = self._execute("prepare_grouped_evaluation_split", ctx, {"dataset_id": ctx.dataset_id})
         ctx.split_id = result.data.get("split_id")
+        # split ready → subsequent feature analysis runs TRAIN-only (ML-safe)
+        ctx.feature_selection_mode = "ML_SAFE"
         ctx.phase = "CHECK_GROUPED_SPLIT"
         return PlannerResponse(
             message=f"Grouped split 已就绪（{ctx.split_id}，按 cycle 分组）。下一步 TRAIN-only 特征选择。",

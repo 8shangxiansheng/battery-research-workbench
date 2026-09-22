@@ -79,6 +79,7 @@ class AgentResearchSession(BaseModel):
 
     dataset_id: str | None = None
     split_id: str | None = None
+    ranking_fold: str | None = None
     model_run_id: str | None = None
     report_id: str | None = None
 

@@ -89,7 +89,7 @@ def _load_events_labels(request: Request, battery_id: str, experiment_id: str):
 
     events = pd.read_parquet(events_path)
     labels = pd.read_parquet(labels_path)
-    return events, labels  # noqa: local import is intentional
+    return events, labels
 
 
 _STATE_MAP = {"恒流充电": "charge", "恒压充电": "charge", "恒流放电": "discharge", "搁置": "rest"}
@@ -129,7 +129,9 @@ def _correlation_rows(
                 state=_STATE_MAP.get(str(getattr(r, "step_type", "")), "rest"),
                 timestamp_s=float(r.elapsed_time_s) if not pd_isna(getattr(r, "elapsed_time_s", float("nan"))) else 0.0,
                 feature_code=feature_code,
-                value=float(series[i]),
+                # NaN series values are missing, not data — keep the
+                # correlation input finite so n_valid/n_missing stay honest.
+                value=float(series[i]) if np.isfinite(series[i]) else None,
                 reference_soc_percent=float(soc) if soc is not None and not pd_isna(soc) else None,
                 temperature_c=float(temp) if temp is not None and not pd_isna(temp) else None,
                 temperature_channel_id=None,
@@ -1028,6 +1030,7 @@ _ALIAS_TO_RAW: dict[str, str] = {
     "waveform_p2p_a_u": "waveform_p2p_a_u",
     "waveform_rms_a_u": "waveform_rms_a_u",
     "envelope_peak_a_u": "envelope_peak_a_u",
+    "waveform_abs_peak_a_u": "waveform_abs_peak_a_u",
 }
 
 
@@ -1491,32 +1494,113 @@ def feature_label_preview(
     }
 
 
+_RANK_UNAVAILABLE = {"TEMPERATURE_UNAVAILABLE", "ARTIFACT_MISSING",
+                     "NOT_READY_INSUFFICIENT_SOH_STATES"}
+_RANK_INSUFFICIENT = {"INSUFFICIENT_VARIATION", "INSUFFICIENT_OVERLAP", "NUMERICAL_NAN"}
+
+
+def _rank_direction_status(
+    status: str, charge: float | None, discharge: float | None, overall: float | None
+) -> str:
+    """§5 direction-aware descriptive classification (no new math).
+
+    A charge/discharge sign flip with meaningful magnitudes is
+    DIRECTION_DEPENDENT even when the overall coefficient cancels to ~0 —
+    an offset overall value must never demote it to WEAK.
+    """
+    if status in _RANK_UNAVAILABLE:
+        return "UNAVAILABLE"
+    if status in _RANK_INSUFFICIENT:
+        return "INSUFFICIENT_VARIATION"
+    if charge is not None and discharge is not None \
+            and charge * discharge < 0 and min(abs(charge), abs(discharge)) >= 0.2:
+        return "DIRECTION_DEPENDENT"
+    best = max(abs(v) for v in (overall, charge, discharge) if v is not None) \
+        if any(v is not None for v in (overall, charge, discharge)) else 0.0
+    if best < 0.1:
+        return "WEAK_ASSOCIATION"
+    return "SAME_DIRECTION"
+
+
+_RANK_PHYSICAL_META: dict[str, dict[str, str]] = {
+    "BOTTOM_AMP": {"label_zh": "底波幅值", "label_en": "Bottom-wave Amplitude",
+                   "family": "PHYSICAL", "units": "a.u."},
+    "SWA": {"label_zh": "表面波幅值", "label_en": "Surface Wave Amplitude",
+            "family": "PHYSICAL", "units": "a.u."},
+    "TOF_XCORR": {"label_zh": "表面波-底波互相关TOF（诊断）",
+                  "label_en": "Surface–Bottom XCorr TOF (diagnostic)",
+                  "family": "PHYSICAL_DIAGNOSTIC", "units": "samples"},
+    "ATTEN_MAX": {"label_zh": "底波衰减（最大）", "label_en": "Bottom Attenuation (max)",
+                  "family": "PHYSICAL", "units": "a.u."},
+    "ATTEN_MEAN": {"label_zh": "底波衰减（均值）", "label_en": "Bottom Attenuation (mean)",
+                   "family": "PHYSICAL", "units": "a.u."},
+    "ATTEN_ENERGY": {"label_zh": "底波衰减（能量）", "label_en": "Bottom Attenuation (energy)",
+                     "family": "PHYSICAL", "units": "a.u."},
+    "BPS": {"label_zh": "底波相移", "label_en": "Bottom-wave Phase Shift",
+            "family": "PHYSICAL", "units": "radian"},
+}
+
+
 @router.post("/experiments/{battery_id}/{experiment_id}/feature-target-ranking")
 def feature_target_ranking(
     request: Request, battery_id: str, experiment_id: str, body: dict[str, Any]
 ) -> dict[str, Any]:
-    """Exploratory or TRAIN-only ranking across selected features for one target.
+    """BRW-021R2 — descriptive feature × target ranking.
 
-    TRAIN-only mode requires split_id + fold_index and restricts rows to the
-    TRAIN role of that fold; held-out targets are never consulted.
+    Exploratory mode uses all eligible MeasurementEvents and is explicitly
+    Not ML-safe. TRAIN_ONLY_ML_SAFE requires a Grouped Split and restricts
+    the correlation input STRUCTURALLY to that fold's TRAIN rows — held-out
+    targets are never loaded into the analysis input. Ranking describes
+    statistical association only: no best / causal / predictive guarantee.
     """
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     target_id = str(body.get("target_id", "reference_soc_percent"))
     features = [str(f) for f in body.get("features", [])][:12]
-    mode = str(body.get("mode", "EXPLORATORY"))
+    mode = "TRAIN_ONLY_ML_SAFE" if body.get("mode") == "TRAIN_ONLY_ML_SAFE" else "EXPLORATORY"
+    split_id = str(body.get("split_id") or "")
+    fold_index = str(body.get("fold_index") or "")
+    variant = str(body.get("variant") or "RAW")
+    detail_feature = str(body.get("detail_feature") or "")
     if not features:
         raise APIError(ErrorCode.VALIDATION_ERROR, "features required")
-    analysis_mode = "TRAIN_ONLY_ML_SAFE" if mode == "TRAIN_ONLY_ML_SAFE" else "EXPLORATORY"
+    if variant in ("SOURCE_MOVMEAN5", "MOVMEAN_5_SOURCE_ORDER") and mode == "TRAIN_ONLY_ML_SAFE":
+        raise APIError(
+            ErrorCode.SCIENTIFIC_ACTION_REQUIRED,
+            "SOURCE_MOVMEAN5 平滑窗口可跨 cycle 边界 — 不可作为 ML-safe 正式排名/提交"
+            "（SOURCE_MOVMEAN5_EXPLORATORY_POLICY_V1）",
+        )
 
-    # BRW-018R2 fix: catalogue-wide acceptance (see feature_label_preview)
+    from battery_workbench.datasets.roles import ColumnRole, get_column_role
     from battery_workbench.features.definitions_v2 import default_registry
 
     catalogue = default_registry()
-    known_codes = set(_PREDEFINED_PHYSICAL_CODES) | set(catalogue._defs) | set(_ALIAS_TO_RAW)
-    missing = [f for f in features if f not in known_codes]
+    known_codes = (
+        set(_PREDEFINED_PHYSICAL_CODES) | set(catalogue._defs) | set(_ALIAS_TO_RAW) | {"tof_us"}
+    )
+    # §25 forbidden predictors: recognized and formally BLOCKED (no numbers),
+    # not silently rejected as unknown — the block itself is the answer.
+    blocked = [f for f in features if get_column_role(f) == ColumnRole.FORBIDDEN_PREDICTOR]
+    missing = [f for f in features
+               if f not in known_codes and f not in blocked]
     if missing:
         raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {missing}")
+
+    # §24 alias dedup: amplitude_a_u ≡ waveform_abs_peak_a_u — one row only
+    alias_dedup: list[dict[str, str]] = []
+    kept: list[str] = []
+    seen_series: dict[str, str] = {}
+    for f in features:
+        raw = "waveform_abs_peak_a_u" if f == "amplitude_a_u" else _ALIAS_TO_RAW.get(f, f)
+        if raw in seen_series:
+            alias_dedup.append({"dropped": f, "kept": seen_series[raw],
+                                "reason": "same underlying series (alias)"})
+            continue
+        seen_series[raw] = f
+        kept.append(f)
+    features = kept
+
+    features = [f for f in features if f not in blocked]
 
     frames = _load_frames(request, battery_id, experiment_id)
     series_map: dict[str, np.ndarray] = {
@@ -1530,99 +1614,320 @@ def feature_target_ranking(
     }
     series_map.update(_catalogue_feature_series(frames, features))
 
-    rows = _correlation_rows(
-        request, battery_id, experiment_id, series_map[features[0]], features[0],
-        max_frames=len(frames),
-    )
-    # reuse: build rows per feature lazily — the electrical context is identical
-    def _rows_for(code: str) -> list[FeatureStateRow]:
-        if code == features[0]:
-            return rows
-        return _correlation_rows(
-            request, battery_id, experiment_id, series_map[code], code, max_frames=len(frames)
+    # canonical envelope-peak TOF: read-only from the materialized artifact
+    tof_provenance: dict[str, Any] | None = None
+    tof_refresh_required = False
+    if "tof_us" in features:
+        ct_path = (
+            get_service(request).processed_root
+            / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
         )
+        if not ct_path.is_file():
+            raise APIError(
+                ErrorCode.ARTIFACT_NOT_AVAILABLE,
+                "RELATIONSHIP_ARTIFACT_MISSING: canonical TOF artifact not materialized",
+            )
+        import pandas as ct_pd
 
-    # direct-measurement targets: compute on raw values via a dedicated pass
+        events_t, _ = _load_events_labels(request, battery_id, experiment_id)
+        ct = ct_pd.read_parquet(
+            ct_path,
+            columns=["frame_index_raw", "tof_us", "tof_status", "gate_calibration_id"],
+        )
+        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
+        series_map["tof_us"] = (
+            events_t["frame_index_raw"].map(valid_map).astype("float64").to_numpy()
+        )
+        cm = _read_json_local(ct_path.parent / "canonical_tof_manifest.json") or {}
+        from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
+
+        cal = resolve_tof_gate_calibration(battery_id, experiment_id,
+                                           get_service(request).processed_root)
+        # Values are only as current as the GateCalibrationRecord embedded in
+        # the artifact; the newest confirmed record is reported separately.
+        embedded_ids = sorted({str(v) for v in ct["gate_calibration_id"].unique()})
+        embedded_id = embedded_ids[0] if len(embedded_ids) == 1 else None
+        gc_dir = (get_service(request).processed_root / "gate_calibrations"
+                  / battery_id / experiment_id)
+        emb_record = _read_json_local(gc_dir / f"{embedded_id}.json") if embedded_id else None
+        window_matches = emb_record is not None and all(
+            emb_record.get(k) == cal.get(key) for k, key in (
+                ("surface_gate_id", "surface_gate_id"),
+                ("bottom_gate_id", "bottom_gate_id"),
+                ("surface_start_sample", "surface_start"),
+                ("surface_end_sample_exclusive", "surface_end_exclusive"),
+                ("bottom_start_sample", "bottom_start"),
+                ("bottom_end_sample_exclusive", "bottom_end_exclusive"),
+            )
+        )
+        tof_refresh_required = not window_matches
+        tof_provenance = {
+            "tof_method_id": cm.get("tof_method_id"),
+            "tof_definition_version": cm.get("tof_definition_version"),
+            "sampling_rate_hz": cm.get("sampling_rate_hz"),
+            "sampling_rate_verified": cm.get("sampling_rate_verified"),
+            "parameter_set_id": cm.get("parameter_set_id"),
+            "gate_calibration_id": embedded_id or "（artifact 内闸门记录不一致/缺失）",
+            "gate_calibration_source": cal["source"],
+            "current_gate_calibration_id": cal["gate_calibration_id"],
+            "current_gate_calibration_version": cal["version"],
+            "gate_calibration_window_matches_current": window_matches,
+            "gate_calibration_refresh_required": tof_refresh_required,
+            "waveform_valid_rows": cm.get("canonical_tof_valid"),
+            "note": "XCorr 为诊断量，不替代 canonical tof_us",
+        }
+
+    # §12/§16 ML-safe structural gate: TRAIN membership decided BEFORE any
+    # correlation input is built; held-out y never reaches the suite.
+    train_ids: set[str] | None = None
+    if mode == "TRAIN_ONLY_ML_SAFE":
+        if target_id != "reference_soc_percent":
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "TRAIN_ONLY_ML_SAFE ranking is defined for the grouped-Split SOC target",
+            )
+        if not split_id or not fold_index:
+            # leave-one-group-out: the union of all folds' TRAIN rows is the
+            # full dataset — a fold restriction is structural, not cosmetic.
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "INVALID_SPLIT: TRAIN_ONLY_ML_SAFE ranking requires split_id and fold_index (Grouped Split)",
+            )
+        sa_path = get_service(request).processed_root / "splits" / battery_id / experiment_id
+        sa_file = next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None) \
+            if sa_path.is_dir() else None
+        if sa_file is None:
+            raise APIError(
+                ErrorCode.ARTIFACT_NOT_AVAILABLE,
+                f"INVALID_SPLIT: no split assignments for {split_id}",
+            )
+        import pandas as sa_pd
+
+        sa = sa_pd.read_parquet(sa_file, columns=["measurement_event_id", "role", "fold"])
+        if fold_index:
+            sa = sa[sa["fold"].astype(str) == fold_index]
+        train_ids = set(sa[sa["role"] == "TRAIN"]["measurement_event_id"].astype(str))
+
+    def _rows_for(code: str):
+        rows = _correlation_rows(
+            request, battery_id, experiment_id, series_map[code], code,
+            max_frames=len(frames),
+        )
+        if train_ids is not None:
+            rows = [r for r in rows if r.measurement_event_id in train_ids]
+        return rows
+
+    def _meta_for(code: str) -> dict[str, Any]:
+        if code in _RANK_PHYSICAL_META:
+            return dict(_RANK_PHYSICAL_META[code])
+        if code == "tof_us":
+            return {"label_zh": "规范包络峰TOF（表面→底波）", "label_en": "Canonical Envelope-Peak TOF",
+                    "family": "CANONICAL_TOF", "units": "µs"}
+        d = catalogue._defs.get(code)
+        if d is not None:
+            return {"label_zh": getattr(d, "display_name_zh", code),
+                    "label_en": getattr(d, "display_name_en", code),
+                    "family": getattr(d, "family", "TD"),
+                    "units": getattr(d, "units", "a.u.")}
+        return {"label_zh": code, "label_en": code, "family": "RAW_ALIAS", "units": "a.u."}
+
+    # direct-measurement targets: overall + honest scope note (no fake split stats)
     if target_id in ("voltage_v", "current_a"):
-        results: list[dict[str, Any]] = []
-
-        _, joined = _events_labels_joined(request, battery_id, experiment_id)
+        joined = _events_labels_joined(request, battery_id, experiment_id)
         n = min(len(joined), len(frames))
-        col = target_id
+        results: list[dict[str, Any]] = []
+        from battery_workbench.features.state_correlation import _pearson, _spearman
+
         for code in features:
             series = series_map[code][:n]
-            vals = joined[col].iloc[:n]
+            vals = joined[target_id].iloc[:n]
             ok = joined["analysis_eligible"].iloc[:n] & vals.notna() & np.isfinite(series)
-            x = series[ok.to_numpy()]
-            y = vals[ok].to_numpy(dtype=float)
+            x, y = series[ok.to_numpy()], vals[ok].to_numpy(dtype=float)
+            p = s = None
             if x.size >= 3 and np.std(x) > 0 and np.std(y) > 0:
-                from battery_workbench.features.state_correlation import _pearson, _spearman
                 p, s = _pearson(x, y), _spearman(x, y)
-            else:
-                p = s = None
+            status = "VALID" if p is not None else "INSUFFICIENT_OVERLAP"
             results.append({
-                "feature_code": code, "state_variable": col, "method_scope": "overall",
-                "pearson": p, "spearman": s, "n_valid": int(x.size),
-                "status": "VALID" if p is not None else "INSUFFICIENT_OVERLAP",
+                "feature_code": code, **_meta_for(code),
+                "pearson_overall": p, "spearman_overall": s,
+                "pearson_charge": None, "pearson_discharge": None,
+                "spearman_charge": None, "spearman_discharge": None,
+                "n_valid": int(x.size), "n_missing": int(n - x.size),
+                "status": status,
+                "direction_status": _rank_direction_status(status, None, None, s),
+                "direction_dependent": False,
+                "scope_note": "state-stratified metrics not reported for direct targets",
+                "freshness": (
+                    "REFRESH_REQUIRED" if (code == "tof_us" and tof_refresh_required) else "CURRENT"
+                ),
+                "commit_eligible": not (code == "tof_us" and tof_refresh_required),
             })
-        return {"data": {"mode": analysis_mode, "target_id": target_id, "ranking": results},
-                "meta": {"note": "exploratory ranking; not a formal ML selection"} if analysis_mode == "EXPLORATORY" else {}}
+        return _rank_response(mode, target_id, split_id, fold_index, results,
+                              alias_dedup, blocked, tof_provenance, None, request,
+                              battery_id, experiment_id)
 
     if target_id == "soh_capacity_reference_percent":
-        summary = soh_cycle_summary(_rows_for(features[0]))
-        return {"data": {"mode": analysis_mode, "target_id": target_id,
-                         "group_summary": summary, "ranking": []},
-                "meta": {"note": "SOH is cycle-level; frame-level ranking is not reported"}}
+        summary = soh_cycle_summary(_rows_for(features[0])) if features else []
+        return _rank_response(mode, target_id, split_id, fold_index, [],
+                              alias_dedup, blocked, tof_provenance,
+                              {"group_summary": summary,
+                               "note": "SOH is cycle-level; frame-level ranking is not reported"},
+                              request, battery_id, experiment_id)
 
     if target_id == "temperature_c":
-        # temperature ranking: per-feature temperature readiness/correlation
-        # (never SOC values under a temperature label)
         ranking_t: list[dict[str, Any]] = []
         for code in features:
             frows = _rows_for(code)
-            for method in ("pearson", "spearman"):
-                r = correlate_feature_state(
-                    frows, state_variable="temperature_c", method=method,
-                    analysis_id=f"rank:{code}:{method}", feature_code=code,
-                )
-                if method == "pearson":
-                    ranking_t.append({
-                        "feature_code": code,
-                        "pearson_overall": r.coefficient,
-                        "spearman_overall": None,
-                        "pearson_charge": None, "pearson_discharge": None,
-                        "n_valid": r.n_valid, "status": r.status,
-                        "direction_dependent": False,
-                    })
-        return {"data": {"mode": analysis_mode, "target_id": target_id, "ranking": ranking_t},
-                "meta": {"note": "temperature readiness is reported honestly; "
-                         "INSUFFICIENT_VARIATION yields no coefficient"}}
+            r = correlate_feature_state(frows, state_variable="temperature_c",
+                                        method="pearson", analysis_id=f"rank:{code}",
+                                        feature_code=code)
+            rs = correlate_feature_state(frows, state_variable="temperature_c",
+                                         method="spearman", analysis_id=f"rank:{code}:sp",
+                                         feature_code=code)
+            ranking_t.append({
+                "feature_code": code, **_meta_for(code),
+                "pearson_overall": r.coefficient, "spearman_overall": rs.coefficient,
+                "pearson_charge": None, "pearson_discharge": None,
+                "spearman_charge": None, "spearman_discharge": None,
+                "n_valid": r.n_valid,
+                "n_missing": r.missing_feature_count + r.missing_state_count,
+                "status": r.status,
+                "direction_status": _rank_direction_status(r.status, None, None, rs.coefficient),
+                "direction_dependent": False,
+                "freshness": (
+                    "REFRESH_REQUIRED" if (code == "tof_us" and tof_refresh_required) else "CURRENT"
+                ),
+                "commit_eligible": r.status == "VALID" and not (
+                    code == "tof_us" and tof_refresh_required),
+            })
+        return _rank_response(mode, target_id, split_id, fold_index, ranking_t,
+                              alias_dedup, blocked, tof_provenance, None, request,
+                              battery_id, experiment_id)
 
-    # SOC via the correlation module (stratified suite)
+    # Reference SOC via the existing stratified suite (§3/§4/§5/§6)
     ranking: list[dict[str, Any]] = []
     for code in features:
         frows = _rows_for(code)
         suite = soc_correlation_suite(frows, analysis_id=f"rank:{code}", feature_code=code)
         by = {(r.method, r.scope): r for r in suite}
+        po = by[("pearson", "overall")]
         entry: dict[str, Any] = {
-            "feature_code": code,
-            "pearson_overall": by[("pearson", "overall")].coefficient,
+            "feature_code": code, **_meta_for(code),
+            "pearson_overall": po.coefficient,
             "spearman_overall": by[("spearman", "overall")].coefficient,
             "pearson_charge": by[("pearson", "charge")].coefficient,
             "pearson_discharge": by[("pearson", "discharge")].coefficient,
-            "n_valid": by[("pearson", "overall")].n_valid,
-            "status": by[("pearson", "overall")].status,
+            "spearman_charge": by[("spearman", "charge")].coefficient,
+            "spearman_discharge": by[("spearman", "discharge")].coefficient,
+            "n_valid": po.n_valid,
+            "n_missing": po.missing_feature_count + po.missing_state_count,
+            "status": po.status,
         }
-        direction_diff = (
-            entry["pearson_charge"] is not None and entry["pearson_discharge"] is not None
-            and abs(entry["pearson_charge"] - entry["pearson_discharge"]) > 0.3
+        entry["direction_status"] = _rank_direction_status(
+            po.status, entry["pearson_charge"], entry["pearson_discharge"],
+            entry["spearman_overall"],
         )
-        entry["direction_dependent"] = bool(direction_diff)
+        entry["direction_dependent"] = entry["direction_status"] == "DIRECTION_DEPENDENT"
+        entry["freshness"] = (
+            "REFRESH_REQUIRED" if (code == "tof_us" and tof_refresh_required) else "CURRENT"
+        )
+        entry["commit_eligible"] = po.status == "VALID" and variant == "RAW"
+        if code == "tof_us" and tof_refresh_required:
+            entry["commit_eligible"] = False
+            entry["note"] = "canonical TOF artifact 基于旧闸门窗口，需重算 canonical TOF"
+        if variant in ("SOURCE_MOVMEAN5", "MOVMEAN_5_SOURCE_ORDER"):
+            entry["exploratory_only"] = True
+            entry["commit_eligible"] = False
+        if code == "TOF_XCORR":
+            entry["legacy_diagnostic"] = True
+            entry["note"] = "XCorr 仅诊断，不进入 canonical tof_us"
         ranking.append(entry)
-    return {"data": {"mode": analysis_mode, "target_id": target_id, "ranking": ranking},
-            "meta": {"note": "exploratory ranking; not a formal ML selection"} if analysis_mode == "EXPLORATORY"
-            else {"note": "TRAIN-only ranking; held-out targets not consulted"},
-            }
+
+    detail: dict[str, Any] | None = None
+    if detail_feature and detail_feature in series_map:
+        detail = _ranking_detail_scatter(request, battery_id, experiment_id,
+                                         series_map[detail_feature], detail_feature,
+                                         target_id, train_ids, len(frames))
+
+    # default display ordering: abs overall Spearman (explicitly NOT "best")
+    ranking.sort(key=lambda e: -abs(e.get("spearman_overall") or 0.0))
+    return _rank_response(mode, target_id, split_id, fold_index, ranking,
+                          alias_dedup, blocked, tof_provenance,
+                          {"detail": detail} if detail else None,
+                          request, battery_id, experiment_id, variant)
+
+
+def _rank_response(mode, target_id, split_id, fold_index, ranking, alias_dedup,
+                   blocked, tof_provenance, extra, request, battery_id, experiment_id,
+                   variant="RAW") -> dict[str, Any]:
+    """Shared envelope: honest counts, limitations, association-only note."""
+    events, labels = _load_events_labels(request, battery_id, experiment_id)
+    joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
+    n = len(joined)
+    eligible = int((joined["analysis_eligible"] & joined["soc_reference_percent"].notna()).sum()) \
+        if "soc_reference_percent" in joined.columns \
+        else int(joined["analysis_eligible"].sum())
+    data: dict[str, Any] = {
+        "mode": mode, "analysis_mode": mode, "target_id": target_id,
+        "variant": variant,
+        "scope": ["overall", "charge", "discharge"],
+        "split_id": split_id or None, "fold_index": fold_index or None,
+        "ordering": "abs_overall_spearman — Default display ordering "
+                    "(display convention, not a scientific best)",
+        "ranking": ranking,
+        "alias_dedup": alias_dedup,
+        "blocked_forbidden": [
+            {"feature_code": b, "status": "BLOCKED_FORBIDDEN_PREDICTOR",
+             "commit_eligible": False,
+             "reason": "target-derivation column — never ranked or committed"}
+            for b in blocked
+        ],
+        "summary": {"aligned_events": n, "target_eligible_rows": eligible,
+                    "waveform_valid_frames": n},
+        "limitations": (["EXPLORATORY_NOT_ML_SAFE"] if mode == "EXPLORATORY"
+                        else ["TRAIN_ONLY_ML_SAFE", "WITHIN_BATTERY_CROSS_CYCLE_LIMITED"])
+                       + ["RANKING_DESCRIBES_ASSOCIATION_ONLY"],
+        "note": "Ranking describes statistical association under the selected "
+                "scope; it does not identify the scientifically best feature, "
+                "causality, or a predictive guarantee.",
+    }
+    if tof_provenance is not None:
+        data["tof_provenance"] = tof_provenance
+    if isinstance(extra, dict):
+        data.update(extra)
+    return {"data": data,
+            "meta": {"read_only": True,
+                     "note": "ranking is a read-only aggregation of canonical "
+                             "artifacts; no artifact writes"}}
+
+
+def _ranking_detail_scatter(request, battery_id, experiment_id, series, code,
+                            target_id, train_ids, max_frames) -> dict[str, Any]:
+    """§13 detail panel data: backend-computed scatter + stats per scope."""
+    import random
+
+    rows = _correlation_rows(request, battery_id, experiment_id, series, code,
+                             max_frames=max_frames)
+    if train_ids is not None:
+        rows = [r for r in rows if r.measurement_event_id in train_ids]
+    tcol = {"reference_soc_percent": "reference_soc_percent"}.get(target_id, target_id)
+    scopes = {"overall": [r for r in rows if r.analysis_eligible],
+              "charge": [r for r in rows if r.analysis_eligible and r.state == "charge"],
+              "discharge": [r for r in rows if r.analysis_eligible and r.state == "discharge"]}
+    out: dict[str, Any] = {"feature_code": code, "target_id": target_id, "scopes": {}}
+    rng = random.Random(21)
+    for scope, srows in scopes.items():
+        pts = [(r.value, getattr(r, tcol, None)) for r in srows
+               if r.value is not None and getattr(r, tcol, None) is not None]
+        if len(pts) > 300:
+            pts = rng.sample(pts, 300)
+        out["scopes"][scope] = {
+            "n": len([r for r in srows
+                      if r.value is not None and getattr(r, tcol, None) is not None]),
+            "points": [{"x": float(x), "y": float(y)} for x, y in pts],
+        }
+    out["excluded_ineligible"] = len([r for r in rows if not r.analysis_eligible])
+    return out
 
 
 # ---------------------------------------------------------------------------

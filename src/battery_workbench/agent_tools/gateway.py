@@ -1294,6 +1294,11 @@ def _tool_analyze_target_relationships(
         "features": list(inputs["features"]),
         "mode": inputs.get("mode", "EXPLORATORY"),
     }
+    if body["mode"] == "TRAIN_ONLY_ML_SAFE":
+        # TRAIN restriction is structural: split + fold decide which rows
+        # exist; held-out targets are never loaded, by caller or by agent.
+        body["split_id"] = inputs.get("split_id") or ""
+        body["fold_index"] = inputs.get("fold_index") or ""
     out = _rank(bridge, b, e, body)["data"]
     return self._wrap(out, ctx)
 

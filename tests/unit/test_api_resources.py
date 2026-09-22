@@ -346,7 +346,9 @@ def test_brw018r2_catalogue_features_accepted(client: TestClient) -> None:
         )
         assert r.status_code == 200, (features, r.text)
         codes = [e["feature_code"] for e in r.json()["data"]["ranking"]]
-        assert codes == features
+        # BRW-021R2: ranking rows arrive in display order (|Spearman overall|),
+        # not input order — the contract here is "every code ranked, none 404".
+        assert sorted(codes) == sorted(features)
     rp = client.post(
         "/api/v1/experiments/CELL_001/EXP_001/feature-label-preview",
         json={"target_id": "reference_soc_percent", "features": ["SWA", "TDM"], "limit": 5},

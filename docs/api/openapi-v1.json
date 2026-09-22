@@ -4222,7 +4222,7 @@
           "feature-workbench"
         ],
         "summary": "Feature Target Ranking",
-        "description": "Exploratory or TRAIN-only ranking across selected features for one target.\n\nTRAIN-only mode requires split_id + fold_index and restricts rows to the\nTRAIN role of that fold; held-out targets are never consulted.",
+        "description": "BRW-021R2 — descriptive feature × target ranking.\n\nExploratory mode uses all eligible MeasurementEvents and is explicitly\nNot ML-safe. TRAIN_ONLY_ML_SAFE requires a Grouped Split and restricts\nthe correlation input STRUCTURALLY to that fold's TRAIN rows — held-out\ntargets are never loaded into the analysis input. Ranking describes\nstatistical association only: no best / causal / predictive guarantee.",
         "operationId": "feature_target_ranking_api_v1_experiments__battery_id___experiment_id__feature_target_ranking_post",
         "parameters": [
           {

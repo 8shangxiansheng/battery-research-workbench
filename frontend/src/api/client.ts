@@ -728,22 +728,66 @@ export interface FeatureLabelPreviewResponse {
 
 export interface FeatureRankingEntry {
   feature_code: string;
+  label_zh?: string;
+  label_en?: string;
+  family?: string;
+  units?: string;
   pearson_overall?: number | null;
   spearman_overall?: number | null;
   pearson_charge?: number | null;
   pearson_discharge?: number | null;
+  spearman_charge?: number | null;
+  spearman_discharge?: number | null;
   n_valid?: number;
+  n_missing?: number;
   status?: string;
+  direction_status?: string;
   direction_dependent?: boolean;
+  freshness?: string;
+  commit_eligible?: boolean;
+  exploratory_only?: boolean;
+  legacy_diagnostic?: boolean;
+  note?: string;
+  scope_note?: string;
   pearson?: number | null;
   spearman?: number | null;
   state_variable?: string;
 }
 
+export interface RankingScatterScope {
+  n: number;
+  points: { x: number; y: number }[];
+}
+
+export interface RankingDetail {
+  feature_code: string;
+  target_id: string;
+  scopes: Record<string, RankingScatterScope>;
+  excluded_ineligible?: number;
+}
+
 export interface FeatureRankingResponse {
   mode: string;
   target_id: string;
+  variant?: string;
+  scope?: string[];
+  split_id?: string | null;
+  fold_index?: string | null;
+  ordering?: string;
   ranking: FeatureRankingEntry[];
+  alias_dedup?: { dropped: string; kept: string; reason: string }[];
+  blocked_forbidden?: { feature_code: string; status: string; commit_eligible: boolean; reason: string }[];
+  summary?: { aligned_events: number; target_eligible_rows: number; waveform_valid_frames: number };
+  tof_provenance?: TofProvenance & {
+    waveform_valid_rows?: number;
+    current_gate_calibration_id?: string;
+    current_gate_calibration_version?: number;
+    gate_calibration_window_matches_current?: boolean;
+    gate_calibration_refresh_required?: boolean;
+  };
+  limitations?: string[];
+  note?: string;
+  detail?: RankingDetail | null;
   group_summary?: {
     cycle: number; soh_percent: number | null; feature_median: number | null;
     feature_mean: number | null; feature_std: number | null; n_frames: number;
@@ -1160,7 +1204,10 @@ export const client = {
     request<FeatureLabelPreviewResponse>(`/experiments/${batteryId}/${experimentId}/feature-label-preview`, {
       method: "POST", body: JSON.stringify(body),
     }),
-  postFeatureTargetRanking: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; mode: string }) =>
+  postFeatureTargetRanking: (batteryId: string, experimentId: string, body: {
+    target_id: string; features: string[]; mode: string;
+    split_id?: string; fold_index?: string; variant?: string; detail_feature?: string;
+  }) =>
     request<FeatureRankingResponse>(`/experiments/${batteryId}/${experimentId}/feature-target-ranking`, {
       method: "POST", body: JSON.stringify(body),
     }),

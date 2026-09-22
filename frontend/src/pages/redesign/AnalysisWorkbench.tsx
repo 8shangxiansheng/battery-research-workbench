@@ -28,6 +28,7 @@ export function AnalysisWorkbench() {
   const [targetId, setTargetId] = useState<string | null>(null);
   const [features, setFeatures] = useState<string[]>([]);
   const [mode, setMode] = useState<"EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE">("EXPLORATORY_FULL_DATA");
+  const [selectionSource, setSelectionSource] = useState<string | null>(null);
   const [built, setBuilt] = useState<"exploratory" | "mlsafe" | null>(null);
 
   // Draft guard: track committed snapshot; mark dirty when draft diverges
@@ -74,6 +75,13 @@ export function AnalysisWorkbench() {
   }
   function toggleFeature(code: string) {
     setFeatures(prev => prev.includes(code) ? prev.filter(f => f !== code) : [...prev, code]);
+    setBuilt(null);
+  }
+  // BRW-021R2 §14: ranking selection feeds the SAME draft feature list —
+  // no re-ticking on another page; Select never builds/trains.
+  function applyRankingSelection(codes: string[], source: string) {
+    setFeatures(codes);
+    setSelectionSource(source);
     setBuilt(null);
   }
 
@@ -123,7 +131,8 @@ export function AnalysisWorkbench() {
     {step === "relationships" && <section data-testid="step-relationships">
       <h2 className="text-xl">Feature–Target Relationship / 特征-目标关系</h2>
       <p className="muted text-sm mt-1">Target (y): <strong>{targetId ? TARGET_LABELS[targetId] : "未选择"}</strong> · 相关性全部由后端计算。</p>
-      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode="EXPLORATORY" /></div>
+      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode="EXPLORATORY"
+        selected={features} onSelectedChange={applyRankingSelection} /></div>
       <div className="mt-5 flex gap-3">
         <button className="button" onClick={() => setStep("features")}>← 上一步</button>
         <button className="button" onClick={() => setStep("selection")} data-testid="to-selection">下一步: 筛选 →</button>
@@ -144,7 +153,13 @@ export function AnalysisWorkbench() {
       </fieldset>
       {mode === "TRAIN_ONLY_ML_SAFE" && readyAnalysis && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-analysis-found">已找到匹配的 ML-safe 分析（split 就绪；held-out target 不可访问）。</p>}
       {mode === "TRAIN_ONLY_ML_SAFE" && !readyAnalysis && <p className="notice text-sm mt-3" role="status">ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</p>}
-      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode === "TRAIN_ONLY_ML_SAFE" ? "TRAIN_ONLY_ML_SAFE" : "EXPLORATORY"} /></div>
+      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode === "TRAIN_ONLY_ML_SAFE" ? "TRAIN_ONLY_ML_SAFE" : "EXPLORATORY"}
+        splitId={mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined}
+        foldIndex={mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined}
+        selected={features} onSelectedChange={applyRankingSelection} /></div>
+      {selectionSource && <p className="text-xs muted mt-2" data-testid="selection-provenance">
+        selection_source = {selectionSource} · ml_safe_selection = {selectionSource.startsWith("TRAIN_ONLY") ? "true" : "false"}
+        {mode === "TRAIN_ONLY_ML_SAFE" && readyAnalysis?.split_id ? ` · split ${readyAnalysis.split_id}` : ""}</p>}
       <div className="mt-5 flex gap-3">
         <button className="button" onClick={() => setStep("relationships")}>← 上一步</button>
         <button className="button" disabled={!features.length || !targetId} onClick={() => setStep("dataset")} data-testid="to-dataset">下一步: 数据集 →</button>

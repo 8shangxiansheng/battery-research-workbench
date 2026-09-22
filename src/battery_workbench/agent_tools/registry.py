@@ -807,7 +807,7 @@ def build_default_registry() -> AgentToolRegistry:
             idempotent=True,
             properties={"battery_id": STR, "experiment_id": STR, "target_id": STR,
                         "features": {"type": "array", "items": {"type": "string"}},
-                        "mode": STR},
+                        "mode": STR, "split_id": STR, "fold_index": STR},
             required=["battery_id", "experiment_id", "target_id", "features"],
         )
     )

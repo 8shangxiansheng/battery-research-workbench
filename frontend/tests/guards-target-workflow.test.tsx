@@ -246,23 +246,27 @@ describe("ML-safety guards", () => {
     expect(container.textContent).not.toMatch(/random frame split/i);
   });
 
-  it("M05 held-out protection: ranking request carries mode only, no held-out target access API", async () => {
+  it("M05 held-out protection: TRAIN_ONLY ranking carries split+fold pointers only, no target values", async () => {
     clientMock.postFeatureTargetRanking.mockClear();
     clientMock.postFeatureTargetRanking.mockResolvedValue({ data: {
       mode: "TRAIN_ONLY_ML_SAFE", target_id: "reference_soc_percent",
       ranking: [{ feature_code: "SWA", pearson_overall: 0.5, n_valid: 2000, status: "VALID" }],
     }, meta: {} });
     const { FeatureRankingTable } = await import("../src/components/workbench/FeatureTargetWorkbench");
-    renderPage(<FeatureRankingTable batteryId="C" experimentId="E" targetId="reference_soc_percent" features={["SWA"]} mode="TRAIN_ONLY_ML_SAFE" />);
+    renderPage(<FeatureRankingTable batteryId="C" experimentId="E" targetId="reference_soc_percent" features={["SWA"]} mode="TRAIN_ONLY_ML_SAFE" splitId="SPLIT::1" foldIndex="fold1" />);
     const user = userEvent.setup();
     await user.click(await screen.findByTestId("run-ranking-btn"));
     await waitFor(() => {
       expect(clientMock.postFeatureTargetRanking).toHaveBeenCalledWith("C", "E", {
         target_id: "reference_soc_percent", features: ["SWA"], mode: "TRAIN_ONLY_ML_SAFE",
+        split_id: "SPLIT::1", fold_index: "fold1",
       });
     });
-    // contract: request shape has no held-out access fields
+    // contract: the request carries TRAIN membership POINTERS only (split+fold);
+    // held-out membership is resolved server-side and no y values cross the wire.
     const call = clientMock.postFeatureTargetRanking.mock.calls[0]![2] as Record<string, unknown>;
-    expect(Object.keys(call).sort()).toEqual(["features", "mode", "target_id"]);
+    expect(Object.keys(call).sort()).toEqual(["features", "fold_index", "mode", "split_id", "target_id"]);
+    expect(call.split_id).toBeTruthy();
+    expect(call.fold_index).toBeTruthy();
   });
 });
