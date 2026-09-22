@@ -945,6 +945,20 @@ class WorkbenchService:
         experiment_id = payload["experiment_id"]
         family = payload.get("dataset_family", "SOC")
         explicit_spec = any(k in payload for k in ("dataset_family", "target", "selected_features"))
+        # Only the Reference SOC dataset family is materialized in this
+        # workflow; a non-SOC explicit spec must never be written under the
+        # "SOC" family directory (mislabeled artifact risk).
+        target_name = payload.get("target")
+        if explicit_spec and target_name not in (None, "", "soc_reference_percent", "reference_soc_percent"):
+            reason = {
+                "soh_capacity_reference_percent":
+                    "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",
+                "temperature_c": "本实验无温度通道，无可用目标",
+            }.get(str(target_name), "当前流程仅物化 Reference SOC 数据集族")
+            raise APIError(
+                ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                f"dataset target not ready: {target_name} — {reason}",
+            )
         family_dir = self.processed_root / "datasets" / battery_id / experiment_id / family
         # reuse canonical artifact when the request is a minimal resolve request
         if family_dir.is_dir() and (

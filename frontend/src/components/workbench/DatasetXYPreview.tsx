@@ -104,10 +104,18 @@ function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, 
   materialized?: MaterializedDatasetInfo | null; redactionSummary?: RedactionSummary | null;
 }) {
   const [open, setOpen] = useState(false);
+  // Only the Reference SOC dataset family is materialized/blessed in this
+  // workflow (backend enforces the same rule).
+  const blockedReason = targetId === "reference_soc_percent" || targetId === "soc_reference_percent" ? null
+    : targetId === "soh_capacity_reference_percent"
+      ? "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不构建监督数据集；请查看 Step 4 的 cycle 级分组摘要。"
+      : targetId === "temperature_c"
+        ? "本实验无温度通道，无可用目标。"
+        : "当前流程仅物化 Reference SOC 数据集族；该目标不支持数据集构建。";
   const mutation = useMutation({
     mutationFn: () => client.createDataset({
       battery_id: batteryId, experiment_id: experimentId,
-      dataset_family: mode === "TRAIN_ONLY_ML_SAFE" ? "SOC" : "SOC",
+      dataset_family: "SOC",
       target: targetId === "reference_soc_percent" ? "soc_reference_percent" : targetId,
       selected_features: features,
     }),
@@ -115,11 +123,13 @@ function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, 
   });
   return <>
     <div className="flex flex-wrap gap-3" data-testid="dataset-build-buttons">
-      <Button variant="outline" disabled={!features.length} onClick={() => setOpen(true)} data-testid="build-exploratory-btn">
+      <Button variant="outline" disabled={!features.length || !!blockedReason} onClick={() => setOpen(true)} data-testid="build-exploratory-btn">
         Build Exploratory Feature Table / 构建探索性特征表</Button>
-      <Button disabled={!features.length} onClick={() => setOpen(true)} data-testid="build-mlsafe-btn">
+      <Button disabled={!features.length || !!blockedReason} onClick={() => setOpen(true)} data-testid="build-mlsafe-btn">
         Build ML-safe Dataset / 构建模型安全数据集</Button>
     </div>
+    {blockedReason && <p className="notice text-sm mt-2" role="status" data-testid="build-blocked-reason">{blockedReason}</p>}
+    {!blockedReason && !features.length && <p className="text-xs muted mt-2" data-testid="build-blocked-reason">先在 Step 3/5 选择至少一个特征。</p>}
     <DatasetXYPreview open={open} onClose={() => setOpen(false)} target={target} summary={summary}
       features={features} mode={mode} building={mutation.isPending}
       built={mutation.isSuccess} buildError={mutation.error}

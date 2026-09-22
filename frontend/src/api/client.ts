@@ -1226,6 +1226,10 @@ export const client = {
     request<{ splits: { split_id: string; dataset_id: string | null; strategy: string | null; readiness_status: string | null }[] }>(
       `/experiments/${batteryId}/${experimentId}/splits`,
     ),
+  listSplitFolds: (batteryId: string, experimentId: string, splitId: string) =>
+    request<{ split_id: string; strategy: string | null; folds: { fold: string; train_rows: number; held_out_rows: number }[] }>(
+      `/experiments/${batteryId}/${experimentId}/splits/${encodeURIComponent(splitId)}/folds`,
+    ),
   freezeGateCalibration: (batteryId: string, experimentId: string, body: {
     confirmed_by: string;
     calibration_basis: string;
@@ -1473,6 +1477,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-correlations" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/splits" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/splits/{split_id}/folds" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/feature-analyses" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/assistant/session" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/assistant/session/{session_id}" },

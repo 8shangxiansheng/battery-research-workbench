@@ -2085,57 +2085,57 @@
     },
     "/api/v1/experiments/{battery_id}/{experiment_id}/workflow-context": {
       "get": {
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ],
+        "summary": "Workflow Context",
         "description": "Canonical ScientificWorkflowContext read model for every page.\n\nCurrent step, per-step statuses (COMPLETE/CURRENT/READY/BLOCKED/STALE/\nNOT_STARTED/LIMITED), committed scientific identity, artifact freshness,\npending user action, structured blocking and the single recommended next\naction — all aggregated from existing artifacts. Read-only: never\nrecomputes science (no TOF/CE/correlation/model metrics/split) and never\nwrites scientific artifacts (BRW-025R-WF master prompt §42/§43).",
         "operationId": "workflow_context_api_v1_experiments__battery_id___experiment_id__workflow_context_get",
         "parameters": [
           {
-            "in": "path",
             "name": "battery_id",
+            "in": "path",
             "required": true,
             "schema": {
-              "title": "Battery Id",
-              "type": "string"
+              "type": "string",
+              "title": "Battery Id"
             }
           },
           {
-            "in": "path",
             "name": "experiment_id",
+            "in": "path",
             "required": true,
             "schema": {
-              "title": "Experiment Id",
-              "type": "string"
+              "type": "string",
+              "title": "Experiment Id"
             }
           }
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Workflow Context Api V1 Experiments  Battery Id   Experiment Id  Workflow Context Get",
-                  "type": "object"
+                  "title": "Response Workflow Context Api V1 Experiments  Battery Id   Experiment Id  Workflow Context Get"
                 }
               }
-            },
-            "description": "Successful Response"
+            }
           },
           "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
-        },
-        "summary": "Workflow Context",
-        "tags": [
-          "scientific-resources",
-          "artifacts"
-        ]
+        }
       }
     },
     "/api/v1/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission": {
@@ -3831,6 +3831,69 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response List Splits Api V1 Experiments  Battery Id   Experiment Id  Splits Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/splits/{split_id}/folds": {
+      "get": {
+        "tags": [
+          "feature-workbench"
+        ],
+        "summary": "List Split Folds",
+        "description": "Read-only fold inventory of one grouped split (for ML-safe fold choice).",
+        "operationId": "list_split_folds_api_v1_experiments__battery_id___experiment_id__splits__split_id__folds_get",
+        "parameters": [
+          {
+            "name": "battery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Battery Id"
+            }
+          },
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
+            }
+          },
+          {
+            "name": "split_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Split Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Split Folds Api V1 Experiments  Battery Id   Experiment Id  Splits  Split Id  Folds Get"
                 }
               }
             }

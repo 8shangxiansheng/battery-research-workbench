@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { client, type FeatureLabelPreviewResponse, type TargetDefinition } from "../../api/client";
 import { PageHeader, LoadingState, ErrorState, ScopeNote } from "../../components/workbench/shared";
 import { FeatureCatalogue } from "../../components/workbench/FeatureCatalogue";
@@ -20,11 +20,22 @@ import { Button } from "../../components/ui/button";
 
 const PHYSICAL_FEATURES = ["tof_us", "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
 
+const STEP_KEYS: WorkflowStepKey[] = ["target", "alignment", "features", "relationships", "selection", "dataset"];
+
 export function AnalysisWorkbench() {
   const { batteryId = "", experimentId = "" } = useParams();
   const invalidateWorkflow = useInvalidateWorkflow();
   // workflow state — target switch invalidates target-dependent artifacts only
-  const [step, setStep] = useState<WorkflowStepKey>("target");
+  // step is mirrored to ?step= so refresh/deep-link keep the user's position
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [step, setStepState] = useState<WorkflowStepKey>(() => {
+    const s = searchParams.get("step") as WorkflowStepKey | null;
+    return s && STEP_KEYS.includes(s) ? s : "target";
+  });
+  function setStep(s: WorkflowStepKey) {
+    setStepState(s);
+    setSearchParams(prev => { const n = new URLSearchParams(prev); n.set("step", s); return n; }, { replace: true });
+  }
   const [targetId, setTargetId] = useState<string | null>(null);
   const [features, setFeatures] = useState<string[]>([]);
   const [mode, setMode] = useState<"EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE">("EXPLORATORY_FULL_DATA");
@@ -49,22 +60,40 @@ export function AnalysisWorkbench() {
   const all = featuresLib.data?.data.features ?? [];
   const availableNames = useMemo(() => all.filter(f => f.availability === "AVAILABLE").map(f => f.feature_name), [all]);
   const materialized = useQuery({ queryKey: ["materialized-analyses", batteryId, experimentId], queryFn: () => client.listMaterializedAnalyses(batteryId, experimentId) });
+  const splitsQ = useQuery({ queryKey: ["splits", batteryId, experimentId], queryFn: () => client.listSplits(batteryId, experimentId) });
+
+  // ML-safe split/fold choice: user selection wins, then the matching
+  // materialized analysis, then the first available split (fold1 default).
+  const [mlSplitId, setMlSplitId] = useState<string | null>(null);
+  const [mlFold, setMlFold] = useState<string | null>(null);
+  const readyAnalysis = mode === "TRAIN_ONLY_ML_SAFE"
+    ? (materialized.data?.data.analyses ?? []).find(a => a.status === "AVAILABLE" && a.split_id && (a.selected_features ?? []).some(f => features.includes(String(f).split("@")[0]!)))
+    : null;
+  const effectiveSplitId = mlSplitId ?? readyAnalysis?.split_id ?? splitsQ.data?.data.splits[0]?.split_id ?? null;
+  const foldsQ = useQuery({
+    queryKey: ["split-folds", batteryId, experimentId, effectiveSplitId],
+    queryFn: () => client.listSplitFolds(batteryId, experimentId, effectiveSplitId!),
+    enabled: mode === "TRAIN_ONLY_ML_SAFE" && !!effectiveSplitId,
+  });
+  const effectiveFold = mlFold
+    ?? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : null)
+    ?? foldsQ.data?.data.folds[0]?.fold ?? null;
+  // ML-safe ranking/dataset semantics are defined for the Reference SOC
+  // target only; other targets stay EXPLORATORY with an explicit reason.
+  const mlSafeTargetOk = !targetId || targetId === "reference_soc_percent";
+  const trainOnlyActive = mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk;
 
   // preview data for dataset step (fetched once features+target chosen)
   const preview = useQuery({
-    queryKey: ["feature-label-preview", batteryId, experimentId, targetId, features, mode],
+    queryKey: ["feature-label-preview", batteryId, experimentId, targetId, features, mode, effectiveSplitId, effectiveFold],
     queryFn: () => client.postFeatureLabelPreview(batteryId, experimentId, {
       target_id: targetId!, features, limit: 20,
-      split_id: mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined,
-      fold_index: mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined,
+      split_id: trainOnlyActive ? effectiveSplitId ?? undefined : undefined,
+      fold_index: trainOnlyActive ? effectiveFold ?? undefined : undefined,
     }),
     enabled: !!targetId && features.length > 0 && step === "dataset",
   });
   const summary: FeatureLabelPreviewResponse["summary"] | null = preview.data?.data.summary ?? null;
-
-  const readyAnalysis = mode === "TRAIN_ONLY_ML_SAFE"
-    ? (materialized.data?.data.analyses ?? []).find(a => a.status === "AVAILABLE" && a.split_id && (a.selected_features ?? []).some(f => features.includes(String(f).split("@")[0]!)))
-    : null;
 
   function selectTarget(next: string) {
     if (next === targetId) return;
@@ -123,7 +152,7 @@ export function AnalysisWorkbench() {
       </details>
       <div className="mt-5 flex gap-3 items-center">
         <button className="button" onClick={() => setStep("alignment")}>← 上一步</button>
-        <button className="button" disabled={!targetId} onClick={() => setStep("relationships")} data-testid="to-relationships">下一步: 关系 →</button>
+        <button className="button" disabled={!targetId} title={!targetId ? "先在 Step 1 选择研究目标" : undefined} onClick={() => setStep("relationships")} data-testid="to-relationships">下一步: 关系 →</button>
         <span className="text-sm muted">已选 {features.length} 个特征</span>
       </div>
     </section>}
@@ -151,15 +180,30 @@ export function AnalysisWorkbench() {
             Build for Modeling / 用于建模 — Grouped Split → TRAIN-only 分析 → 锁定特征 → held-out 评估</label>
         </div>
       </fieldset>
-      {mode === "TRAIN_ONLY_ML_SAFE" && readyAnalysis && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-analysis-found">已找到匹配的 ML-safe 分析（split 就绪；held-out target 不可访问）。</p>}
-      {mode === "TRAIN_ONLY_ML_SAFE" && !readyAnalysis && <p className="notice text-sm mt-3" role="status">ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</p>}
-      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode === "TRAIN_ONLY_ML_SAFE" ? "TRAIN_ONLY_ML_SAFE" : "EXPLORATORY"}
-        splitId={mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined}
-        foldIndex={mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined}
+      {mode === "TRAIN_ONLY_ML_SAFE" && !mlSafeTargetOk && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-target-na">
+        ML-safe 筛选仅定义于 Reference SOC 建模流程；当前目标（{TARGET_LABELS[targetId ?? ""] ?? targetId}）不支持，以下按 EXPLORATORY 展示。</p>}
+      {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && readyAnalysis && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-analysis-found">已找到匹配的 ML-safe 分析（split 就绪；held-out target 不可访问）。</p>}
+      {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && !readyAnalysis && <p className="notice text-sm mt-3" role="status">{effectiveSplitId
+        ? "未找到与该特征集完全匹配的已物化分析，但 grouped split 可用 — 下方 ranking/preview 直接按所选 fold 的 TRAIN 子集计算（ML-safe）。"
+        : <>ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</>}</p>}
+      {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && effectiveSplitId && <div className="mt-3 flex flex-wrap gap-2 items-center" data-testid="fold-picker" role="group" aria-label="选择 split 与 fold">
+        <span className="text-xs muted">Split:</span>
+        {(splitsQ.data?.data.splits.length ?? 0) > 1
+          ? <select className="text-sm border rounded px-2 py-1" aria-label="选择 split" value={effectiveSplitId ?? ""} onChange={e => { setMlSplitId(e.target.value); setMlFold(null); }}>
+            {(splitsQ.data?.data.splits ?? []).map(s => <option key={s.split_id} value={s.split_id}>{s.split_id} · {s.strategy ?? "grouped"}</option>)}</select>
+          : <code className="text-xs">{effectiveSplitId}</code>}
+        <span className="text-xs muted ml-2">Fold (held-out 组):</span>
+        {(foldsQ.data?.data.folds ?? []).map(f => <button key={f.fold} type="button" data-testid={`fold-${f.fold}`}
+          className={`text-xs rounded-full border px-2 py-0.5 ${effectiveFold === f.fold ? "border-primary bg-[#e9f1ef]" : ""}`}
+          onClick={() => setMlFold(f.fold)}>{f.fold} · TRAIN {f.train_rows}/HELD {f.held_out_rows}</button>)}
+      </div>}
+      <div className="mt-4"><FeatureRankingTable batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={trainOnlyActive ? "TRAIN_ONLY_ML_SAFE" : "EXPLORATORY"}
+        splitId={trainOnlyActive ? effectiveSplitId ?? undefined : undefined}
+        foldIndex={trainOnlyActive ? effectiveFold ?? undefined : undefined}
         selected={features} onSelectedChange={applyRankingSelection} /></div>
       {selectionSource && <p className="text-xs muted mt-2" data-testid="selection-provenance">
         selection_source = {selectionSource} · ml_safe_selection = {selectionSource.startsWith("TRAIN_ONLY") ? "true" : "false"}
-        {mode === "TRAIN_ONLY_ML_SAFE" && readyAnalysis?.split_id ? ` · split ${readyAnalysis.split_id}` : ""}</p>}
+        {trainOnlyActive && effectiveSplitId ? ` · split ${effectiveSplitId} · ${effectiveFold}` : ""}</p>}
       <div className="mt-5 flex gap-3">
         <button className="button" onClick={() => setStep("relationships")}>← 上一步</button>
         <button className="button" disabled={!features.length || !targetId} onClick={() => setStep("dataset")} data-testid="to-dataset">下一步: 数据集 →</button>
@@ -177,8 +221,8 @@ export function AnalysisWorkbench() {
       </div>}
       <div className="mt-4">
         <FeatureLabelTablePreview batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features}
-          splitId={mode === "TRAIN_ONLY_ML_SAFE" ? readyAnalysis?.split_id ?? undefined : undefined}
-          foldIndex={mode === "TRAIN_ONLY_ML_SAFE" ? (readyAnalysis?.fold_index != null ? `fold${readyAnalysis.fold_index}` : undefined) : undefined} />
+          splitId={trainOnlyActive ? effectiveSplitId ?? undefined : undefined}
+          foldIndex={trainOnlyActive ? effectiveFold ?? undefined : undefined} />
       </div>
       <div className="mt-4">
         <DatasetBuildButtons batteryId={batteryId} experimentId={experimentId} targetId={targetId ?? "reference_soc_percent"} features={features} mode={mode} target={target} summary={summary} onBuilt={kind => { setBuilt(kind); invalidateWorkflow(batteryId, experimentId); }}

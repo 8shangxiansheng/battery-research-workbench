@@ -722,6 +722,39 @@ def list_splits(
     return {"data": {"splits": items}, "meta": {}}
 
 
+@router.get("/experiments/{battery_id}/{experiment_id}/splits/{split_id}/folds")
+def list_split_folds(
+    request: Request, battery_id: str, experiment_id: str, split_id: str
+) -> dict[str, Any]:
+    """Read-only fold inventory of one grouped split (for ML-safe fold choice)."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    validate_id(split_id, "split_id")
+    root = get_service(request).processed_root / "splits" / battery_id / experiment_id
+    sa_file = next(root.rglob(f"{split_id}/split_assignments.parquet"), None) if root.is_dir() else None
+    if sa_file is None:
+        raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, f"no split assignments for {split_id}")
+    import pandas as fold_pd
+
+    sa = fold_pd.read_parquet(sa_file, columns=["fold", "role"])
+    folds = []
+    for fold in sorted(sa["fold"].astype(str).unique()):
+        sub = sa[sa["fold"].astype(str) == fold]
+        folds.append({
+            "fold": str(fold),
+            "train_rows": int((sub["role"] == "TRAIN").sum()),
+            "held_out_rows": int((sub["role"] != "TRAIN").sum()),
+        })
+    manifest = next(root.rglob(f"{split_id}/split_manifest.json"), None)
+    strategy = None
+    if manifest is not None:
+        try:
+            strategy = json.loads(manifest.read_text(encoding="utf-8")).get("strategy")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {"data": {"split_id": split_id, "strategy": strategy, "folds": folds}, "meta": {}}
+
+
 # ---------- materialized feature analyses (read-only list) ----------
 
 

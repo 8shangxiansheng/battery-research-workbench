@@ -75,7 +75,7 @@ function ScatterPanel({ detail }: { detail: RankingDetail }) {
   </div>;
 }
 
-type SortKey = "display" | "abs_charge" | "abs_discharge" | "name" | "family" | "coverage";
+type SortKey = "display" | "abs_pearson" | "abs_charge" | "abs_discharge" | "name" | "family" | "coverage";
 
 /** Feature × Target ranking (BRW-021R2). Exploratory = all eligible rows,
  *  explicitly Not ML-safe; TRAIN_ONLY = fold TRAIN rows only (structural). */
@@ -108,6 +108,7 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
     const r = [...(d?.ranking ?? [])];
     const key = (e: FeatureRankingEntry) => {
       switch (sortBy) {
+        case "abs_pearson": return -Math.abs(e.pearson_overall ?? e.pearson ?? 0);
         case "abs_charge": return -Math.abs(e.spearman_charge ?? e.pearson_charge ?? 0);
         case "abs_discharge": return -Math.abs(e.spearman_discharge ?? e.pearson_discharge ?? 0);
         case "name": return e.feature_code;
@@ -136,6 +137,7 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
       {d && <select aria-label="显示排序" data-testid="ranking-sort" className="text-sm border rounded px-2 py-1 ml-auto"
         value={sortBy} onChange={e => setSortBy(e.target.value as SortKey)}>
         <option value="display">Default display ordering (|Spearman overall|)</option>
+        <option value="abs_pearson">|Pearson overall|</option>
         <option value="abs_charge">|Charge Spearman|</option>
         <option value="abs_discharge">|Discharge Spearman|</option>
         <option value="name">Feature name</option>
@@ -144,6 +146,7 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
       </select>}
     </div>
     <p className="text-xs muted mt-2">Ranking 仅描述统计关联：不代表因果关系、不保证预测能力、不指“科学最优”。 / Higher association does not imply causation or guaranteed predictive value.</p>
+    {features.length > 12 && <p className="text-xs text-[#9b782e] mt-1" data-testid="ranking-cap-note">已选 {features.length} 个特征 — 后端最多对前 12 个做 ranking（超出部分未参与）。</p>}
     {rank.isPending && <LoadingState />}
     {err && <div role="alert" className="notice mt-3" data-testid="ranking-error">
       <p className="font-medium">{ERROR_COPY[err.kind]}</p>
