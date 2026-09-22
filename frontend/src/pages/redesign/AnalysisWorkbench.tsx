@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { client, type FeatureLabelPreviewResponse, type TargetDefinition } from "../../api/client";
 import { PageHeader, LoadingState, ErrorState, ScopeNote } from "../../components/workbench/shared";
@@ -61,6 +61,17 @@ export function AnalysisWorkbench() {
   const availableNames = useMemo(() => all.filter(f => f.availability === "AVAILABLE").map(f => f.feature_name), [all]);
   const materialized = useQuery({ queryKey: ["materialized-analyses", batteryId, experimentId], queryFn: () => client.listMaterializedAnalyses(batteryId, experimentId) });
   const splitsQ = useQuery({ queryKey: ["splits", batteryId, experimentId], queryFn: () => client.listSplits(batteryId, experimentId) });
+  const queryClient = useQueryClient();
+  const experimentQ = useQuery({
+    queryKey: ["experiment", batteryId, experimentId],
+    queryFn: () => client.getExperiment(batteryId, experimentId),
+    enabled: mode === "TRAIN_ONLY_ML_SAFE",
+  });
+  const canonicalDatasetId = (experimentQ.data?.data.latest_canonical_artifacts as { dataset_id?: string } | undefined)?.dataset_id ?? null;
+  const createSplitMut = useMutation({
+    mutationFn: () => client.createSplit({ battery_id: batteryId, experiment_id: experimentId, dataset_id: canonicalDatasetId! }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] }); },
+  });
 
   // ML-safe split/fold choice: user selection wins, then the matching
   // materialized analysis, then the first available split (fold1 default).
@@ -185,7 +196,14 @@ export function AnalysisWorkbench() {
       {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && readyAnalysis && <p className="notice text-sm mt-3" role="status" data-testid="ml-safe-analysis-found">已找到匹配的 ML-safe 分析（split 就绪；held-out target 不可访问）。</p>}
       {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && !readyAnalysis && <p className="notice text-sm mt-3" role="status">{effectiveSplitId
         ? "未找到与该特征集完全匹配的已物化分析，但 grouped split 可用 — 下方 ranking/preview 直接按所选 fold 的 TRAIN 子集计算（ML-safe）。"
-        : <>ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</>}</p>}
+        : <>ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。{canonicalDatasetId
+          ? <> 可直接为当前 canonical 数据集创建（按 cycle 分组）：{" "}<Button variant="outline" size="sm" data-testid="create-split-btn"
+              disabled={createSplitMut.isPending}
+              onClick={() => createSplitMut.mutate()}>{createSplitMut.isPending ? "创建中…" : "创建分组划分 / Create grouped split"}</Button>
+              {createSplitMut.isSuccess && <span className="ml-2">已就绪（{String((createSplitMut.data as { data?: { split_id?: string } })?.data?.split_id ?? "").slice(0, 20)}…）</span>}
+              {createSplitMut.error && <span className="ml-2 text-[#9b782e]">创建失败，可到 Advanced 页处理。</span>}
+            </>
+          : <> 请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</>}</>}</p>}
       {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && effectiveSplitId && <div className="mt-3 flex flex-wrap gap-2 items-center" data-testid="fold-picker" role="group" aria-label="选择 split 与 fold">
         <span className="text-xs muted">Split:</span>
         {(splitsQ.data?.data.splits.length ?? 0) > 1

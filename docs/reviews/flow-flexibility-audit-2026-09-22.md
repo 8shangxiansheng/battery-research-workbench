@@ -50,14 +50,20 @@
 - SOH 不做 frame 级相关（cycle 分组摘要）；Temperature 全 null 无假数。
 - 本次新增/修改未触及 feature/TOF/SOC/split/model 算法模块。
 
-## D. 已知限制（如实记录，未伪装成已解决）
+## D. 剩余限制 — 处置状态（同日第二轮更新）
 
-- Step 4 的 ranking 恒为 EXPLORATORY（ML-safe 视图在 Step 5）——按设计。
-- 特征目录有搜索框但无 family 过滤器（低风险，留待后续）。>12 特征时后端
-  截断为 12，UI 现已显式提示（`ranking-cap-note`）。
-- fold 选择器仅在存在 split 时出现；创建 split 仍需去
-  Advanced → Dataset Split（有链接直达）。
-- 电压/电流作为建模目标同样被数据集守卫拦截（仅 SOC 族物化）。
+- Step 4 的 ranking 恒为 EXPLORATORY（ML-safe 视图在 Step 5）——按设计保留。
+- ~~特征目录无 family 过滤器~~ **已解决**：新增“特征族过滤”
+  （全部/核心/物理/相位/TD/FD），与搜索组合生效（实测 34→14 条全为 FD；
+  vitest 3 项）。>12 特征截断已有显式提示（`ranking-cap-note`）。
+- ~~创建 split 仍需去 Advanced 页~~ **已解决**：Step 5 在“无 split 但有
+  canonical 数据集”时直接提供“创建分组划分 / Create grouped split”
+  （POST /splits，官方确定性路径，已存在则 REUSED 幂等），成功后 splits
+  查询失效刷新、fold 选择器就地出现；无数据集时保留 Advanced 链接
+  （vitest 2 项页面级测试）。fold 选择器“仅在存在 split 时出现”随之消除。
+- 电压/电流目标不物化数据集：**保留为设计边界**（V1 工作流以 Reference
+  SOC 为唯一建模目标族），现已在 Step 6 以 `build-blocked-reason` 显式
+  说明，且后端 SCIENTIFIC_READINESS_BLOCKED 双层强制——不再是隐性堵点。
 
 ## 验证
 

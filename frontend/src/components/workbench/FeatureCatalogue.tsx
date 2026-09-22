@@ -48,6 +48,7 @@ export function FeatureCatalogue({ selected, onToggle, availableNames = [] }: {
 }) {
   const catalogue = useQuery({ queryKey: ["feature-definitions"], queryFn: () => client.listFeatureDefinitions() });
   const [query, setQuery] = useState("");
+  const [family, setFamily] = useState<"all" | "core" | "physical" | "phase" | "TD" | "FD">("all");
   const [detail, setDetail] = useState<FeatureDefinitionEntry | null>(null);
 
   const entries = catalogue.data?.data.catalogue ?? [];
@@ -67,6 +68,13 @@ export function FeatureCatalogue({ selected, onToggle, availableNames = [] }: {
   const phaseEntries = filtered.filter(f => PHASE_CODES.includes(f.code));
   const tdEntries = filtered.filter(f => f.family === "TD" && !CORE_CODES.includes(f.code));
   const fdEntries = filtered.filter(f => f.family === "FD");
+  const shown = {
+    core: family === "all" || family === "core" ? coreEntries : [],
+    physical: family === "all" || family === "physical" ? physicalEntries : [],
+    phase: family === "all" || family === "phase" ? phaseEntries : [],
+    td: family === "all" || family === "TD" ? tdEntries : [],
+    fd: family === "all" || family === "FD" ? fdEntries : [],
+  };
 
   function renderGroup(label: string, items: FeatureDefinitionEntry[]) {
     if (!items.length) return null;
@@ -99,15 +107,25 @@ export function FeatureCatalogue({ selected, onToggle, availableNames = [] }: {
         <Input aria-label="搜索特征 / Search features" placeholder="搜索特征 / Search features" className="!pl-9"
           value={query} onChange={e => setQuery(e.target.value)} />
       </label>
+      <select aria-label="特征族过滤" data-testid="catalogue-family-filter" value={family}
+        onChange={e => setFamily(e.target.value as typeof family)}
+        className="text-sm border rounded px-2 py-1">
+        <option value="all">全部特征族 / All families</option>
+        <option value="core">核心 / Core</option>
+        <option value="physical">物理 / Physical</option>
+        <option value="phase">相位 / Phase</option>
+        <option value="TD">时域 / TD</option>
+        <option value="FD">频域 / FD</option>
+      </select>
       <span className="text-xs muted">来源 / Source: <code>{catalogue.data?.data.formula_source_id}</code></span>
     </div>
-    {renderGroup("核心特征 / Core", coreEntries)}
-    {renderGroup("时域特征 / Time-Domain", tdEntries)}
-    {renderGroup("频域特征 / Frequency-Domain", fdEntries)}
-    {renderGroup("物理特征 / Physical", physicalEntries)}
-    {renderGroup("相位特征 / Phase", phaseEntries)}
-    {!coreEntries.length && !tdEntries.length && !fdEntries.length && !physicalEntries.length && !phaseEntries.length
-      && <p className="muted text-sm" role="status">没有匹配 “{query}” 的特征。/ No features match “{query}”.</p>}
+    {renderGroup("核心特征 / Core", shown.core)}
+    {renderGroup("时域特征 / Time-Domain", shown.td)}
+    {renderGroup("频域特征 / Frequency-Domain", shown.fd)}
+    {renderGroup("物理特征 / Physical", shown.physical)}
+    {renderGroup("相位特征 / Phase", shown.phase)}
+    {!shown.core.length && !shown.td.length && !shown.fd.length && !shown.physical.length && !shown.phase.length
+      && <p className="muted text-sm" role="status">没有匹配当前过滤条件（“{query}”）的特征。/ No features match the current filter.</p>}
     <FeatureDetailDialog feature={detail} onClose={() => setDetail(null)} />
   </div>;
 }
