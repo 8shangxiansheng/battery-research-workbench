@@ -251,7 +251,7 @@ export function AnalysisWorkbench() {
       </div>
       {built && <div className="notice mt-4" role="status" data-testid="dataset-handoff">
         <h3>{built === "mlsafe" ? "ML-safe Dataset 请求完成 / ML-safe dataset requested" : "Exploratory Feature Table 请求完成 / Exploratory table requested"}</h3>
-        <p className="text-sm mt-1">下一步：在 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link> 建 grouped split（按 cycle 分组），然后到 SOC 建模页训练。</p>
+        <p className="text-sm mt-1">下一步：到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/models`}>SOC 建模页</Link> 点“启动建模运行”（缺分组划分时可在该页或 Step 5 直接创建）；特征锁定确认会在运行页以用户动作出现。</p>
       </div>}
       <div className="mt-5">
         <button className="button" onClick={() => setStep("selection")}>← 上一步</button>

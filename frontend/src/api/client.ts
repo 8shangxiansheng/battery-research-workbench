@@ -590,6 +590,29 @@ export interface TargetDefinition {
   unit: string;
 }
 
+export interface BoundaryReadiness {
+  code: string;
+  status: "READY" | "PARTIALLY_READY" | "BLOCKED_BY_DATA" | "BLOCKED_BY_VALIDATION" | "NOT_IMPLEMENTED";
+  can_resolve_with_current_data: boolean;
+  reason: string;
+  requirements: string[];
+  future_contract: string;
+}
+
+export interface ExtensionReadinessResponse {
+  battery_id: string;
+  experiment_id: string;
+  observed: Record<string, unknown>;
+  boundaries: BoundaryReadiness[];
+  future_contracts: Record<string, {
+    contract_version: string;
+    enabled: false;
+    planned_endpoint: string;
+    activation_gate: string[];
+    request_schema: Record<string, unknown>;
+  }>;
+}
+
 export interface AlignmentSummaryResponse {
   total_frames: number;
   matched_unique: number;
@@ -1021,7 +1044,9 @@ export const client = {
   startRun: (body: { profile: string; battery_id: string; experiment_id: string }, idempotencyKey?: string) =>
     request<Record<string, unknown>>("/runs", {
       method: "POST",
-      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      // only set `headers` when present — an undefined value would clobber the
+      // default Content-Type through the spread in request()
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
       body: JSON.stringify(body),
     }),
   dryRun: (body: { profile: string; battery_id: string; experiment_id: string }) =>
@@ -1192,6 +1217,8 @@ export const client = {
     ),
   listTargets: (batteryId: string, experimentId: string) =>
     request<{ targets: TargetDefinition[] }>(`/experiments/${batteryId}/${experimentId}/targets`),
+  getExtensionReadiness: (batteryId: string, experimentId: string) =>
+    request<ExtensionReadinessResponse>(`/experiments/${batteryId}/${experimentId}/extension-readiness`),
   getAlignmentSummary: (batteryId: string, experimentId: string) =>
     request<AlignmentSummaryResponse>(`/experiments/${batteryId}/${experimentId}/alignment-summary`),
   getAlignmentSamples: (batteryId: string, experimentId: string, filter: "eligible" | "ambiguous" | "unmatched" | "all", limit = 20, cursor = 0) =>
@@ -1483,6 +1510,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/assistant/session/{session_id}" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/assistant/session/{session_id}/message" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/targets" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/extension-readiness" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-summary" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },

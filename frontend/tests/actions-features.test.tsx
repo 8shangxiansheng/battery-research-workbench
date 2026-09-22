@@ -79,7 +79,8 @@ describe("RunsPage — Scientific Actions（§60 T13-T18）", () => {
     await userEvent.click(screen.getByTestId("submit-action"));
     await waitFor(() => {
       expect(submit).toHaveBeenCalledWith("RUN::test-1", "ACTION::fs", {
-        "ultrasound.sampling_rate_hz": 50_000_000,
+        // orchestrator contract: {value, unit} submitted as-is; backend converts to Hz
+        "ultrasound.sampling_rate_hz": { value: 50, unit: "MHz" },
       });
       expect(resume).toHaveBeenCalledWith("RUN::test-1");
       expect(screen.getByTestId("flow-message")).toHaveTextContent(/resume/);

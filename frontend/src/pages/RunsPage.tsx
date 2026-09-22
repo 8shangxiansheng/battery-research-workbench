@@ -166,27 +166,52 @@ export function RunsPage() {
                     </select>
                     <p>
                       <small>
-                        客户端只做纯单位换算成 Hz 提交；不猜数值；不把 frame cadence
+                        按 {"{value, unit}"} 原样提交，后端负责换算成 Hz 并记录来源；不猜数值；不把 frame cadence
                         当采样率（§14）。
                       </small>
                     </p>
                   </fieldset>
                 ) : (
-                  <p>
-                    <small>required_fields: {JSON.stringify(a.required_fields)}</small>
-                  </p>
+                  <fieldset>
+                    <legend>所需字段 Required fields（回声确认后端给出的值，不新造选择）</legend>
+                    {(a.required_fields as { field?: string; value?: string }[]).map((rf) => {
+                      const name = rf.field ?? "";
+                      if (!name || name === "none") {
+                        return <p key={`${a.action_id}-none`}><small>该动作无需附加字段 — 直接提交确认即可。</small></p>;
+                      }
+                      return (
+                        <label key={`${a.action_id}-${name}`} className="block text-sm mt-1">
+                          {name}：
+                          <input
+                            data-testid={`action-field-${name}`}
+                            className="border rounded px-2 py-1 ml-2"
+                            value={actionValues[name] ?? rf.value ?? ""}
+                            onChange={(e) => setActionValues((prev) => ({ ...prev, [name]: e.target.value }))}
+                          />
+                          {rf.value ? <small className="muted ml-2">（后端建议值 {rf.value} 已预填）</small> : null}
+                        </label>
+                      );
+                    })}
+                  </fieldset>
                 )}
                 <button
                   type="button"
                   data-testid="submit-action"
                   disabled={submitAction.isPending}
                   onClick={() => {
-                    const values: Record<string, unknown> = { ...actionValues };
+                    const values: Record<string, unknown> = {};
+                    for (const rf of a.required_fields as { field?: string; value?: string }[]) {
+                      if (rf.field && rf.field !== "none" && rf.value !== undefined) values[rf.field] = rf.value;
+                    }
+                    Object.assign(values, actionValues);
                     if (values["ultrasound.sampling_rate_hz"] !== undefined) {
                       const unit = (values["fs_unit"] as string) ?? "MHz";
-                      const multipliers: Record<string, number> = { Hz: 1, kHz: 1e3, MHz: 1e6 };
-                      values["ultrasound.sampling_rate_hz"] =
-                        Number(values["ultrasound.sampling_rate_hz"]) * (multipliers[unit] ?? 1);
+                      // orchestrator contract: submit {value, unit} as-is — the
+                      // backend converts to Hz and records provenance (§13-14)
+                      values["ultrasound.sampling_rate_hz"] = {
+                        value: Number(values["ultrasound.sampling_rate_hz"]),
+                        unit,
+                      };
                       delete values["fs_unit"];
                     }
                     submitAction.mutate({ actionId: a.action_id, values });
