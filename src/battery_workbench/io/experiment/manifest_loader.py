@@ -53,6 +53,7 @@ def load_data_assets(path: str | Path) -> list[DataAsset]:
         return [
             DataAsset(
                 asset_id=row["asset_id"],
+                battery_id=row.get("battery_id") or None,
                 experiment_id=row["experiment_id"],
                 modality=cast(Modality, row["modality"]),
                 relative_path=Path(row["relative_path"]),
@@ -63,3 +64,18 @@ def load_data_assets(path: str | Path) -> list[DataAsset]:
             )
             for row in rows
         ]
+
+
+def data_asset_matches(asset: DataAsset, battery_id: str, experiment_id: str) -> bool:
+    """Match the composite experiment identity, including legacy manifests.
+
+    V1.1 manifests did not carry ``battery_id`` on DataAsset rows.  Those rows
+    are accepted only when their canonical relative path proves the owning
+    battery.  No filename-based identity inference is performed.
+    """
+    if asset.experiment_id != experiment_id:
+        return False
+    if asset.battery_id is not None:
+        return asset.battery_id == battery_id
+    parts = asset.relative_path.parts
+    return len(parts) >= 3 and parts[0] == "batteries" and parts[1] == battery_id and parts[2] == experiment_id

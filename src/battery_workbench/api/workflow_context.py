@@ -407,7 +407,19 @@ def build_workflow_context(
     steps["TARGET"] = target
     steps["ALIGNMENT"] = alignment
 
-    if fa is None:
+    dataset_selected = list((dm or {}).get("selected_features") or [])
+    if fa is None and dataset_selected:
+        steps["FEATURES"] = {
+            "status": "COMPLETE",
+            "committed": {
+                "analysis_id": None,
+                "analysis_mode": "DATASET_SPEC_COMMITTED",
+                "target": (dm or {}).get("target_name"),
+                "selected_features": dataset_selected,
+                "selection_basis": "MATERIALIZED_DATASET_SPEC",
+            },
+        }
+    elif fa is None:
         steps["FEATURES"] = {
             "status": "NOT_STARTED",
             "committed": None,
@@ -678,7 +690,9 @@ def build_workflow_context(
         "eligible_count": (alignment.get("committed") or {}).get("eligible"),
         "excluded_count": (alignment.get("committed") or {}).get("excluded"),
         "selected_feature_locators": features_committed.get("selected_features") or [],
-        "feature_selection_source": "FEATURE_ANALYSIS" if fa else None,
+        "feature_selection_source": (
+            "FEATURE_ANALYSIS" if fa else "MATERIALIZED_DATASET_SPEC" if dataset_selected else None
+        ),
         "feature_selection_status": steps["FEATURES"]["status"],
         "preview_spec_hash": None,
         "preview_mode": None,

@@ -36,6 +36,49 @@ def test_t07_plan(client: TestClient) -> None:
     assert resp.json()["data"]["plan_id"].startswith("PLAN::")
 
 
+def test_build_dataset_profile_preserves_user_selected_features(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/runs/plan",
+        json={
+            "profile": "BUILD_DATASET",
+            "battery_id": "CELL_001",
+            "experiment_id": "EXP_001",
+            "target": "soc_reference_percent",
+            "features": {"selected_features": ["SWA"]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()["data"]
+    assert plan["profile"] == "BUILD_DATASET"
+    assert plan["target"] == "soc_reference_percent"
+    assert plan["features"]["selected_features"] == ["SWA"]
+    assert plan["stages"][-1] == "DATASET"
+
+
+def test_modeling_plan_preserves_fold_and_feature_analysis(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/runs/plan",
+        json={
+            "profile": "FULL_PRE_MODEL",
+            "battery_id": "CELL_001",
+            "experiment_id": "EXP_001",
+            "target": "soc_reference_percent",
+            "features": {"selected_features": ["SWA"]},
+            "fold_index": 1,
+            "feature_analysis": {
+                "analysis_mode": "TRAIN_ONLY_ML_SAFE",
+                "target": "soc_reference_percent",
+                "candidate_features": ["SWA"],
+                "selection": {"requested": True, "mode": "TRAIN_ONLY_RULE_BASED"},
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()["data"]
+    assert plan["fold_index"] == 1
+    assert plan["feature_analysis"]["analysis_mode"] == "TRAIN_ONLY_ML_SAFE"
+
+
 def test_t08_dry_run(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/runs/dry-run",

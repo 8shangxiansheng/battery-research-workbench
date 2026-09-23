@@ -166,6 +166,7 @@ class ElectricalCanonicalNode(WorkflowNode):
             write_electrical_experiment,
         )
         from battery_workbench.io.experiment.manifest_loader import (
+            data_asset_matches,
             load_data_assets,
             load_experiments,
         )
@@ -174,12 +175,13 @@ class ElectricalCanonicalNode(WorkflowNode):
             e
             for e in load_experiments(Path(ctx.raw_root) / "manifests" / "experiments.csv")
             if e.experiment_id == plan.project.experiment_id
+            and e.battery_id == plan.project.battery_id
         )
         assets = [
             a
             for a in load_data_assets(Path(ctx.raw_root) / "manifests" / "data_assets.csv")
             if a.modality == "electrical"
-            and a.experiment_id == plan.project.experiment_id
+            and data_asset_matches(a, plan.project.battery_id, plan.project.experiment_id)
             and (Path(ctx.raw_root) / a.relative_path).exists()
         ]
         result = parse_electrical_experiment(experiment, assets, ctx.raw_root)
@@ -220,6 +222,7 @@ class UltrasoundCanonicalNode(WorkflowNode):
 
     def run(self, plan, inputs, ctx):
         from battery_workbench.io.experiment.manifest_loader import (
+            data_asset_matches,
             load_data_assets,
             load_experiments,
         )
@@ -232,12 +235,13 @@ class UltrasoundCanonicalNode(WorkflowNode):
             e
             for e in load_experiments(Path(ctx.raw_root) / "manifests" / "experiments.csv")
             if e.experiment_id == plan.project.experiment_id
+            and e.battery_id == plan.project.battery_id
         )
         assets = [
             a
             for a in load_data_assets(Path(ctx.raw_root) / "manifests" / "data_assets.csv")
             if a.modality == "ultrasound"
-            and a.experiment_id == plan.project.experiment_id
+            and data_asset_matches(a, plan.project.battery_id, plan.project.experiment_id)
             and (Path(ctx.raw_root) / a.relative_path).exists()
         ]
         result = parse_ultrasound_experiment(experiment, assets, ctx.raw_root)
@@ -291,6 +295,7 @@ class TimeAnchorNode(WorkflowNode):
             processed_root=Path(ctx.processed_root),
             manifest_root=Path(ctx.raw_root) / "manifests",
             config=config,
+            battery_id=plan.project.battery_id,
         )
         from battery_workbench.io.experiment.manifest_loader import load_experiments
         from battery_workbench.synchronization.schemas import AssetAnchorAssessment, TimeAnchorState
@@ -1343,9 +1348,29 @@ class DatasetNode(WorkflowNode):
         features_ref = inputs["ULTRASOUND_FEATURES"]
         feature_frame = pd.read_parquet(Path(features_ref.path) / "ultrasound_features.parquet")
         selected = list(plan.features.get("selected_features") or [])
-        # BRW-017 core alias, when explicitly selected
-        if "amplitude_a_u" in selected and "amplitude_a_u" not in feature_frame.columns:
-            feature_frame["amplitude_a_u"] = feature_frame["waveform_abs_peak_a_u"]
+        missing = [code for code in selected if code != "tof_us" and code not in feature_frame]
+        if missing:
+            from battery_workbench.features.selected_series import (
+                load_waveform_frames,
+                selected_feature_series,
+            )
+
+            ultrasound_dir = Path(ctx.processed_root) / "ultrasound" / b / e
+            frames = load_waveform_frames(
+                ultrasound_dir / "waveforms.zarr",
+                feature_frame[["waveform_group", "waveform_row_index"]],
+            )
+            if len(frames) != len(feature_frame):
+                raise ValueError(
+                    "waveform frame count does not match ultrasound feature rows: "
+                    f"{len(frames)} != {len(feature_frame)}"
+                )
+            computed = selected_feature_series(frames, missing)
+            unresolved = [code for code in missing if code not in computed]
+            if unresolved:
+                raise ValueError(f"selected features cannot be materialized: {unresolved}")
+            for code in missing:
+                feature_frame[code] = computed[code]
         # BRW-017R2 canonical envelope-peak TOF predictor: joined read-only from
         # the materialized artifact (never recomputed here); VALID rows only.
         tof_provenance: dict[str, Any] = {}
@@ -1493,6 +1518,16 @@ class FeatureAnalysisNode(WorkflowNode):
         fa = dict(plan.feature_analysis or {})
         if not fa:
             return Readiness(ok=False, reason="no feature_analysis block in plan")
+        mode = str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA"))
+        if mode == "TRAIN_ONLY_ML_SAFE":
+            missing = [name for name in ("DATASET", "SPLIT") if name not in inputs]
+        else:
+            missing = ["FEATURE_LABEL_ANALYSIS"] if "FEATURE_LABEL_ANALYSIS" not in inputs else []
+        if missing:
+            return Readiness(
+                ok=False,
+                reason=f"{mode} requires upstream artifacts: {missing}",
+            )
         return Readiness(ok=True, reason="feature analysis spec present")
 
     def resolve_existing_output(self, plan, inputs, processed_root):
@@ -1737,19 +1772,14 @@ class FeatureAnalysisNode(WorkflowNode):
         }
 
 
-def _confirmed_fold_fingerprint(processed_root: Path, plan) -> set[str]:
-    """Fold fingerprint set: f"{fold}:{selection_id}" for confirmed selections."""
-    dataset_ref = None
-    dn = DatasetNode()
-    dataset_ref, _ = dn.resolve_existing_output(plan, {}, processed_root)
-    dataset_id = dataset_ref.artifact_id if dataset_ref else ""
-    split_node = SplitNode()
-    split_ref, _ = (
-        split_node.resolve_existing_output(plan, {"DATASET": dataset_ref}, processed_root)
-        if dataset_ref
-        else (None, "")
-    )
-    split_id = split_ref.artifact_id if split_ref else ""
+def _confirmed_fold_fingerprint(
+    processed_root: Path, plan, dataset_id: str, split_id: str
+) -> set[str]:
+    """Fold fingerprint set: f"{fold}:{selection_id}" for confirmed selections.
+
+    dataset_id/split_id must come from the artifacts actually under review —
+    re-resolving them with empty inputs can silently yield "" and make the
+    fingerprint vacuously empty (a reuse-verification hole)."""
     base = (
         Path(processed_root)
         / "feature_analysis"
@@ -1758,6 +1788,8 @@ def _confirmed_fold_fingerprint(processed_root: Path, plan) -> set[str]:
         / dataset_id
     )
     out: set[str] = set()
+    if not dataset_id or not base.is_dir():
+        return out
     for mp in base.rglob("analysis_manifest.json"):
         m = _load_json(mp) or {}
         sel = m.get("selection") or {}
@@ -1799,7 +1831,10 @@ class SocModelingNode(WorkflowNode):
             return None, reason
         manifest = _load_json(Path(ref.manifest_path)) or {}
         covered = set(manifest.get("confirmed_fold_selections") or {})
-        current = _confirmed_fold_fingerprint(processed_root, plan)
+        current = _confirmed_fold_fingerprint(
+            processed_root, plan,
+            str(manifest.get("dataset_id") or ""), str(manifest.get("split_id") or ""),
+        )
         if not current.issubset(covered):
             missing = sorted(current - covered)
             return None, (
@@ -1833,7 +1868,9 @@ class SocModelingNode(WorkflowNode):
         strategies = list(
             modeling_cfg.get(
                 "strategies",
-                ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE", "RANDOM_FOREST", "GRADIENT_BOOSTING"],
+                ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
+                 "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION",
+                 "K_NEAREST_NEIGHBORS", "RANDOM_FOREST", "GRADIENT_BOOSTING"],
             )
         )
         random_state = modeling_cfg.get("random_state", 42)
@@ -2033,8 +2070,13 @@ class SocModelingNode(WorkflowNode):
             json.dumps(comparison, indent=2, ensure_ascii=False, default=str) + "\n"
         )
 
+        import hashlib
+
+        model_set_id = "MODELSET::" + hashlib.sha256(
+            f"{plan.project.battery_id}:{plan.project.experiment_id}:{dataset_id}:{split_id}".encode()
+        ).hexdigest()[:24]
         return {
-            "artifact_id": "EXP_001",
+            "artifact_id": model_set_id,
             "path": str(
                 Path(ctx.processed_root)
                 / "models"
@@ -2058,6 +2100,37 @@ class SocModelingNode(WorkflowNode):
         }
 
 
+def _scientific_findings_from_results(results: list[Any]) -> list[str]:
+    """Describe model evidence without assuming the historical CELL_001 outcome."""
+    macro = [
+        result
+        for result in results
+        if getattr(result, "result_type", "") == "MODEL_COMPARISON"
+        and getattr(result, "value", None) is not None
+    ]
+    if not macro:
+        return ["No completed model-comparison artifact is available for this experiment."]
+    by_strategy = {str(result.strategy): float(result.value) for result in macro}
+    dummy = by_strategy.get("DUMMY_MEAN")
+    candidates = {key: value for key, value in by_strategy.items() if key != "DUMMY_MEAN"}
+    if dummy is None or not candidates:
+        return ["Model comparison is incomplete; a Dummy baseline comparison cannot be concluded."]
+    best_name, best_mae = min(candidates.items(), key=lambda item: item[1])
+    if best_mae < dummy:
+        return [
+            (
+                f"{best_name} achieved a lower limited-fold macro MAE than DUMMY_MEAN "
+                f"({best_mae:.4g} vs {dummy:.4g}); no cross-battery claim is supported."
+            )
+        ]
+    return [
+        (
+            "No evaluated candidate achieved a lower limited-fold macro MAE than DUMMY_MEAN "
+            f"({dummy:.4g}); no cross-battery claim is supported."
+        )
+    ]
+
+
 class ScientificReportNode(WorkflowNode):
     """BRW-023 node: aggregates existing artifacts into a scientific report."""
 
@@ -2070,7 +2143,9 @@ class ScientificReportNode(WorkflowNode):
             identity=ArtifactIdentity(
                 battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
             ),
-            output_rel_dir="artifacts/CELL_001/EXP_001/reports",
+            output_rel_dir=(
+                f"artifacts/{plan.project.battery_id}/{plan.project.experiment_id}/reports"
+            ),
             id_key="report_id",
             scan=True,
         )
@@ -2106,7 +2181,6 @@ class ScientificReportNode(WorkflowNode):
             source_artifact_ids=list(plan.scientific_report.get("source_artifact_ids") or []),
             sections=list(plan.scientific_report.get("section_names") or []),
         )
-        ClaimGuard.check("current baselines did not outperform Dummy")
         ClaimGuard.check("TOF currently blocked / unavailable")
 
         exp_record = collect_experiment_record(Path(ctx.processed_root), b, e)
@@ -2148,17 +2222,14 @@ class ScientificReportNode(WorkflowNode):
                     "python_version": _python_version(),
                     "packages": _pkg_versions(),
                 },
-                "dataset_id": "DS::6a3142e5186fc684964ff09e",
-                "split_id": "SPLIT::062cf007d21578a11ab2d728",
-                "label_set_id": "LB::752466f98a93a4d1b44da358",
-                "feature_set_id": "FS::60649fd12c540267fe585914",
-                "gate_set_id": "GATESET::8633ce421ad5e26fe686",
+                "dataset_id": exp_record.latest_canonical_artifacts.get("dataset_id"),
+                "split_id": exp_record.latest_canonical_artifacts.get("split_id"),
+                "label_set_id": exp_record.latest_canonical_artifacts.get("label_set_id"),
+                "feature_set_id": exp_record.latest_canonical_artifacts.get("feature_set_id"),
+                "gate_set_id": exp_record.latest_canonical_artifacts.get("gate_set_id"),
                 "parameter_set_ids": exp_record.parameter_set_ids,
             },
-            "scientific_findings": [
-                "current candidate ultrasonic features do not demonstrate stable "
-                + "held-out-cycle SOC predictive advantage under this protocol",
-            ],
+            "scientific_findings": _scientific_findings_from_results(results),
             "limitations_summary": [l["code"] for l in limitations],
         }
 
@@ -2167,7 +2238,7 @@ class ScientificReportNode(WorkflowNode):
             battery_id=b,
             experiment_id=e,
             report_id=spec.report_id,
-            output_root=Path(ctx.processed_root).parent,
+            output_root=Path(ctx.processed_root),
         )
         return {
             "artifact_id": spec.report_id,

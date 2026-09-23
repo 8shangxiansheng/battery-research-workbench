@@ -114,15 +114,16 @@ def test_t34_artifact_ids_present(tmp_path: Path) -> None:
 
 
 def test_t35_all_key_lineage_ids_present(tmp_path: Path) -> None:
+    from battery_workbench.reporting.collector import collect_experiment_record
+
     engine = _engine(tmp_path)
     report = _report(engine, tmp_path)
     lineage = report.get("lineage_snapshot") or {}
     text = json.dumps(lineage)
-    for known in (
-        "DS::6a3142e5186fc684964ff09e",
-        "SPLIT::062cf007d21578a11ab2d728",
-        "GATESET::8633ce421ad5e26fe686",
-    ):
+    record = collect_experiment_record(Path("data/processed"), "CELL_001", "EXP_001")
+    for known in record.latest_canonical_artifacts.values():
+        if not known:
+            continue
         assert known in text, f"lineage missing {known}"
 
 

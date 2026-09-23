@@ -86,6 +86,27 @@ def _load_json(path: Path) -> Any | None:
         return None
 
 
+def _latest_manifest_value(base: Path, pattern: str, key: str) -> str:
+    candidates = [path for path in base.rglob(pattern) if path.is_file()]
+    if not candidates:
+        return ""
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    return str((_load_json(latest) or {}).get(key, ""))
+
+
+def _source_asset_ids(processed_root: Path, battery_id: str, experiment_id: str) -> list[str]:
+    assets: list[str] = []
+    for modality in ("electrical", "ultrasound"):
+        manifest = _load_json(
+            processed_root / modality / battery_id / experiment_id / "parser_manifest.json"
+        ) or {}
+        for asset in manifest.get("source_assets", []):
+            asset_id = asset.get("data_asset_id") if isinstance(asset, dict) else asset
+            if asset_id and str(asset_id) not in assets:
+                assets.append(str(asset_id))
+    return assets
+
+
 def latest_evaluated_chain(
     processed_root: Path, battery_id: str, experiment_id: str
 ) -> tuple[str, str]:
@@ -141,14 +162,22 @@ def collect_experiment_record(
     return ExperimentRecord(
         battery_id=b,
         experiment_id=e,
-        raw_assets=["E001", "U001"],
+        raw_assets=_source_asset_ids(processed_root, b, e),
         parameter_set_ids=ps_ids,
         latest_canonical_artifacts={
             "dataset_id": latest_ds,
             "label_set_id": label_manifest.get("label_set_id", ""),
             "split_id": latest_split,
-            "gate_set_id": "GATESET::8633ce421ad5e26fe686",
-            "feature_set_id": "FS::60649fd12c540267fe585914",
+            "gate_set_id": _latest_manifest_value(
+                processed_root / "gated_features" / b / e,
+                "gated_feature_manifest.json",
+                "gate_set_id",
+            ),
+            "feature_set_id": _latest_manifest_value(
+                processed_root / "features" / b / e,
+                "feature_set_manifest.json",
+                "feature_set_id",
+            ),
         },
         run_ids=run_ids,
         scientific_status="READY_FOR_LIMITED_EVALUATION",
@@ -356,7 +385,7 @@ def _read_canonical_tof_summary(
             "tof_us_stats": audit.get("tof_us_stats"),
         },
         scope="experiment",
-        dataset_id="DS::6a3142e5186fc684964ff09e",
+        dataset_id=latest_evaluated_chain(processed_root, battery_id, experiment_id)[0] or None,
         evidence_type=EvidenceType.DIRECT_CURRENT_ARTIFACT,
         evidence_ref="features_physical/canonical_tof_audit.json",
         scientific_status=status,

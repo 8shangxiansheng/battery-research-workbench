@@ -30,6 +30,26 @@ from battery_workbench.orchestrator.dag import (
     NODE_OPTIONAL_DEPENDENCIES,
     topological_order,
 )
+
+
+def _required_dependencies(node_id: str, plan: AnalysisPlan) -> list[str]:
+    """Return mode-aware hard dependencies while preserving ordered DAG edges."""
+    deps = list(NODE_DEPENDENCIES.get(node_id, []))
+    if node_id == "FEATURE_ANALYSIS":
+        mode = str((plan.feature_analysis or {}).get("analysis_mode", "EXPLORATORY_FULL_DATA"))
+        if mode == "TRAIN_ONLY_ML_SAFE":
+            return ["DATASET", "SPLIT"]
+    return deps
+
+
+def _all_dependencies(node_id: str, plan: AnalysisPlan) -> list[str]:
+    return list(
+        dict.fromkeys(
+            _required_dependencies(node_id, plan)
+            + NODE_OPTIONAL_DEPENDENCIES.get(node_id, [])
+            + (["FEATURE_LABEL_ANALYSIS"] if node_id == "FEATURE_ANALYSIS" else [])
+        )
+    )
 from battery_workbench.orchestrator.nodes import default_nodes
 from battery_workbench.orchestrator.resolver import content_hash
 from battery_workbench.orchestrator.schemas import (
@@ -124,10 +144,13 @@ class PipelineOrchestrator:
 
         for node_id in order:
             node = self.nodes[node_id]
-            deps = NODE_DEPENDENCIES.get(node_id, [])
+            deps = _required_dependencies(node_id, plan)
+            all_deps = _all_dependencies(node_id, plan)
             dep_states = [states[d] for d in deps if d in states]
             dep_refs = {
-                d: results[d].outputs[0] for d in deps if d in results and results[d].outputs
+                d: results[d].outputs[0]
+                for d in all_deps
+                if d in results and results[d].outputs
             }
             ref, reason = node.resolve_existing_output(plan, dep_refs, self.processed_root)
 
@@ -209,8 +232,7 @@ class PipelineOrchestrator:
             node = self.nodes[node_id]
             dep_inputs = {
                 d: resolved[d]
-                for d in NODE_DEPENDENCIES.get(node_id, [])
-                + NODE_OPTIONAL_DEPENDENCIES.get(node_id, [])
+                for d in _all_dependencies(node_id, plan)
                 if d in resolved
             }
             ref, reason = node.resolve_existing_output(plan, dep_inputs, self.processed_root)
@@ -231,8 +253,18 @@ class PipelineOrchestrator:
                 resolved[node_id] = ref
             else:
                 readiness = node.validate_readiness(plan, resolved)
-                if not readiness.ok and _deps_scheduled_this_run(
-                    node_id, NODE_DEPENDENCIES, node_states
+                optional_dep_pending = any(
+                    node_states.get(dep) in (NodeState.READY, NodeState.PENDING)
+                    for dep in set(_all_dependencies(node_id, plan))
+                    - set(_required_dependencies(node_id, plan))
+                )
+                if not readiness.ok and (
+                    _deps_scheduled_this_run(
+                        node_id,
+                        {node_id: _required_dependencies(node_id, plan)},
+                        node_states,
+                    )
+                    or optional_dep_pending
                 ):
                     # a required dep is READY and will execute in pass 2;
                     # re-validate readiness with real inputs at run time
@@ -273,8 +305,10 @@ class PipelineOrchestrator:
         for node_id in order:
             result = node_results[node_id]
             node = self.nodes[node_id]
-            deps = NODE_DEPENDENCIES.get(node_id, [])
-            optional_deps = NODE_OPTIONAL_DEPENDENCIES.get(node_id, [])
+            deps = _required_dependencies(node_id, plan)
+            optional_deps = [
+                dep for dep in _all_dependencies(node_id, plan) if dep not in deps
+            ]
             dep_states = [node_states.get(d) for d in deps if d in node_states]
             if any(
                 s
@@ -291,6 +325,36 @@ class PipelineOrchestrator:
                     result.reason = result.reason or "upstream not available"
                 node_states[node_id] = result.state
                 continue
+            if result.state == NodeState.REUSED:
+                # pass 1 froze this reuse decision before an upstream node had
+                # executed (its confirmation/fingerprint did not exist on disk
+                # yet). Re-verify against the fresh upstream output; a node
+                # whose upstream only re-produced identical artifacts keeps
+                # its reuse.
+                executed_upstream = any(
+                    node_states.get(d) == NodeState.SUCCEEDED for d in deps
+                )
+                if executed_upstream:
+                    fresh_inputs: dict[str, ArtifactRef] = {}
+                    for d in deps + optional_deps:
+                        dres = node_results.get(d)
+                        if dres and dres.outputs:
+                            fresh_inputs[d] = dres.outputs[0]
+                    recheck_ref, recheck_reason = node.resolve_existing_output(
+                        plan, fresh_inputs, self.processed_root
+                    )
+                    if recheck_ref is None:
+                        result.state = NodeState.READY
+                        result.outputs = []
+                        result.metrics = {}
+                        result.reason = recheck_reason
+                        node_states[node_id] = result.state
+                        self._append_event(
+                            ctx.run_dir,
+                            "REUSE_REVALIDATED",
+                            node_id=node_id,
+                            detail={"reason": recheck_reason},
+                        )
             if result.state in (NodeState.READY, NodeState.PENDING):
                 # collect upstream refs: from this run, or resolved on demand
                 # (partial plans may execute a node whose deps are pre-existing)
@@ -408,7 +472,7 @@ class PipelineOrchestrator:
             result = node_results[node_id]
             if result.state not in (NodeState.PENDING,):
                 continue
-            deps = NODE_DEPENDENCIES.get(node_id, [])
+            deps = _required_dependencies(node_id, plan)
             if any(
                 node_states.get(d)
                 in (NodeState.FAILED, NodeState.BLOCKED, NodeState.WAITING_FOR_USER)

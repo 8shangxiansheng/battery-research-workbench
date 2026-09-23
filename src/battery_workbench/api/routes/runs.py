@@ -11,7 +11,12 @@ from battery_workbench.api.errors import APIError, ErrorCode
 
 router = APIRouter(tags=["runs"])
 
-_PROFILES = ("INGEST_TO_MEASUREMENT_EVENTS", "SCIENTIFIC_ANALYSIS", "FULL_PRE_MODEL")
+_PROFILES = (
+    "INGEST_TO_MEASUREMENT_EVENTS",
+    "SCIENTIFIC_ANALYSIS",
+    "BUILD_DATASET",
+    "FULL_PRE_MODEL",
+)
 
 
 _PLAN_FIELD_ALLOWLIST = (
@@ -26,6 +31,9 @@ _PLAN_FIELD_ALLOWLIST = (
     "gates",
     "feature_analysis",
     "modeling",
+    "fold_index",
+    "split_id",
+    "scientific_report",
 )
 
 

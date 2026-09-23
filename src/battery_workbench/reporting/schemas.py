@@ -172,17 +172,20 @@ def build_lineage_snapshot(
     """Structured lineage: Raw → Canonical → Sync → Events → Slice → Features/Gates
     → Labels → Dataset → Split → Feature Analysis → Selection → Model → Evaluation."""
     from battery_workbench.orchestrator.lineage import get_artifact_lineage
+    from battery_workbench.reporting.collector import collect_experiment_record
 
+    record = collect_experiment_record(processed_root, battery_id, experiment_id)
+    artifacts = record.latest_canonical_artifacts
     stages = [
         ("MEASUREMENT_EVENTS", None),
         ("ANALYSIS_SLICE", None),
-        ("ULTRASOUND_FEATURE_SET", None),
-        ("GATED_FEATURE_SET", None),
-        ("LABEL_SET", None),
+        ("ULTRASOUND_FEATURE_SET", artifacts.get("feature_set_id") or None),
+        ("GATED_FEATURE_SET", artifacts.get("gate_set_id") or None),
+        ("LABEL_SET", artifacts.get("label_set_id") or None),
         ("PARAMETER_SET", None),
-        ("DATASET", "DS::6a3142e5186fc684964ff09e"),
-        ("SPLIT", "SPLIT::062cf007d21578a11ab2d728"),
-        ("SOC_MODELING", "EXP_001"),
+        ("DATASET", artifacts.get("dataset_id") or None),
+        ("SPLIT", artifacts.get("split_id") or None),
+        ("SOC_MODELING", None),
     ]
     stages_out = []
     for artifact_type, artifact_id in stages:
@@ -197,7 +200,7 @@ def build_lineage_snapshot(
     return {
         "battery_id": battery_id,
         "experiment_id": experiment_id,
-        "raw_assets": ["E001", "U001"],
+        "raw_assets": record.raw_assets,
         "lineage_chain": [
             (
                 "Raw Assets → Canonical → Synchronization → MeasurementEvents → "

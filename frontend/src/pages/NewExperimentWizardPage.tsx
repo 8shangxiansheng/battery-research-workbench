@@ -38,6 +38,7 @@ export function NewExperimentWizardPage() {
   const [validation, setValidation] = useState<ImportValidation | null>(null);
   const [stepError, setStepError] = useState<unknown>(null);
   const [committed, setCommitted] = useState<Record<string, unknown> | null>(null);
+  const [ultrasoundStartTime, setUltrasoundStartTime] = useState("");
   const [uploaded, setUploaded] = useState<{ role: string; filename: string; size: number; sha256: string }[]>([]);
 
   const sessionQuery = useQuery({
@@ -73,7 +74,12 @@ export function NewExperimentWizardPage() {
   const upload = useMutation({
     mutationFn: async ({ role, file }: { role: "ELECTRICAL" | "ULTRASOUND"; file: File }) => {
       if (!session) throw new Error("no session");
-      return client.uploadIntakeAsset(session.session_id, role, file);
+      return client.uploadIntakeAsset(
+        session.session_id,
+        role,
+        file,
+        role === "ULTRASOUND" ? ultrasoundStartTime : undefined,
+      );
     },
     onSuccess: (r) => {
       setStepError(null);
@@ -286,6 +292,17 @@ export function NewExperimentWizardPage() {
       {step === 1 && (
         <>
           <h3>上传数据资产（走 intake API，禁止手工 raw 目录 — §5）</h3>
+          <p className="field max-w-md">
+            <label htmlFor="ultrasound-start-time">超声文件起始时间（推荐，用于电学对齐）</label>
+            <input
+              id="ultrasound-start-time"
+              type="datetime-local"
+              data-testid="ultrasound-start-time"
+              value={ultrasoundStartTime}
+              onChange={(event) => setUltrasoundStartTime(event.target.value)}
+            />
+            <small>请使用仪器记录；留空时同步保持 blocked/provisional，不从文件名或帧间隔猜测。</small>
+          </p>
           <table data-testid="upload-table">
             <thead>
               <tr>

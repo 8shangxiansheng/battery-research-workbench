@@ -532,10 +532,12 @@ class ResearchPlanner:
             msg = (
                 f"当前没有任何模型跑赢 Dummy 基准（Dummy 宏观 MAE {dummy_val}%）。"
                 "也就是说，本轮候选特征在 held-out cross-cycle 评估中尚未表现出稳定预测优势。"
-                "这是科学结论，不是处理故障。"
+                "这是 SOC 预测能力的科学结论，不是处理故障的判断。"
+                " 这仍是 within-battery、limited 评估，不代表跨电池泛化。"
             )
         else:
             msg = f"最好的模型是 {best['strategy']}（宏观 MAE {best['value']}%），优于 Dummy {dummy_val}%。"
+            msg += "这是 SOC 预测能力的科学结论，不是处理故障的判断。"
             msg += " 这仍是 within-battery、limited 评估，不代表跨电池泛化。"
         ctx.phase = "INTERPRET"
         return PlannerResponse(message=msg, intent=classified.intent.value, phase=ctx.phase,

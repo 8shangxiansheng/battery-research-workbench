@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -234,8 +236,19 @@ class IntakeEngine:
         role: AssetRole,
         original_filename: str,
         content: bytes,
+        file_start_time: str | None = None,
+        file_end_time: str | None = None,
     ) -> IntakeAssetRecord:
         self._require_mutatable(session)
+        for field_name, value in (
+            ("file_start_time", file_start_time),
+            ("file_end_time", file_end_time),
+        ):
+            if value:
+                try:
+                    datetime.fromisoformat(value)
+                except ValueError as exc:
+                    raise IntakePolicyError(f"invalid {field_name}: expected ISO-8601") from exc
         if len(session.assets) >= MAX_ASSETS_PER_SESSION:
             raise IntakePolicyError(f"session asset limit reached ({MAX_ASSETS_PER_SESSION})")
         if len(content) > MAX_FILE_SIZE:
@@ -260,6 +273,8 @@ class IntakeEngine:
             sha256=sha256_file(target),
             received_at=utc_now_iso(),
             content_kind=Path(original_filename).suffix.lower().lstrip(".") or None,
+            file_start_time=file_start_time or None,
+            file_end_time=file_end_time or None,
         )
         session.assets.append(record)
         session.status = "ASSETS_RECEIVED"
@@ -538,11 +553,12 @@ class IntakeEngine:
                 manifest_assets.append(
                     {
                         "asset_id": asset_id,
+                        "battery_id": battery_id,
                         "experiment_id": experiment_id,
                         "modality": modality,
                         "relative_path": str(dest.relative_to(self.raw_root)),
-                        "file_start_time": "",
-                        "file_end_time": "",
+                        "file_start_time": asset.file_start_time or "",
+                        "file_end_time": asset.file_end_time or "",
                         "parser_name": detection.adapter_id or "",
                         "parser_version": detection.adapter_version or "",
                         "sha256": asset.sha256,
@@ -605,8 +621,10 @@ class IntakeEngine:
         """Append committed assets to the canonical manifests (Orchestrator-compatible)."""
         assets_csv = self.manifests_dir / "data_assets.csv"
         experiments_csv = self.manifests_dir / "experiments.csv"
+        batteries_csv = self.manifests_dir / "batteries.csv"
         fieldnames = [
             "asset_id",
+            "battery_id",
             "experiment_id",
             "modality",
             "relative_path",
@@ -617,12 +635,23 @@ class IntakeEngine:
         ]
         if not assets_csv.exists():
             assets_csv.write_text(",".join(fieldnames) + "\n", encoding="utf-8")
+        else:
+            with assets_csv.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                existing_header = list(reader.fieldnames or [])
+                existing_rows = list(reader)
+            if "battery_id" not in existing_header:
+                with assets_csv.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in existing_rows:
+                        relative = Path(row.get("relative_path", "")).parts
+                        inferred = relative[1] if len(relative) >= 3 and relative[0] == "batteries" else ""
+                        writer.writerow({**row, "battery_id": inferred})
         existing_checksum_keys = set()
         if assets_csv.is_file():
             for line in assets_csv.read_text(encoding="utf-8").splitlines()[1:]:
                 existing_checksum_keys.add(line)
-        import csv
-
         with assets_csv.open("a", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
             for asset in assets:
@@ -638,7 +667,9 @@ class IntakeEngine:
         with experiments_csv.open("r", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         if not any(
-            r["experiment_id"] == assets[0]["experiment_id"] and r.get("battery_id") for r in rows
+            r["experiment_id"] == assets[0]["experiment_id"]
+            and r.get("battery_id") == battery_id
+            for r in rows
         ):
             with experiments_csv.open("a", encoding="utf-8", newline="") as handle:
                 writer = csv.DictWriter(
@@ -659,6 +690,26 @@ class IntakeEngine:
                         "start_time": "",
                         "end_time": "",
                         "protocol": "",
+                        "notes": "created via intake",
+                    }
+                )
+        if not batteries_csv.exists():
+            batteries_csv.write_text(
+                "battery_id,chemistry,nominal_capacity_ah,notes\n", encoding="utf-8"
+            )
+        with batteries_csv.open("r", encoding="utf-8", newline="") as handle:
+            battery_rows = list(csv.DictReader(handle))
+        if not any(row.get("battery_id") == battery_id for row in battery_rows):
+            with batteries_csv.open("a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["battery_id", "chemistry", "nominal_capacity_ah", "notes"],
+                )
+                writer.writerow(
+                    {
+                        "battery_id": battery_id,
+                        "chemistry": "",
+                        "nominal_capacity_ah": "",
                         "notes": "created via intake",
                     }
                 )

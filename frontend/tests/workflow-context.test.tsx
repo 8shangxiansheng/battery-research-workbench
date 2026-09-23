@@ -484,6 +484,47 @@ describe("W12 — Deep link shows prerequisite panel (not 404)", () => {
 // ---------- W14 — StepGate analysis chain ----------
 
 describe("W14 — StepGate analysis chain blocking", () => {
+  it("does not let unfinished downstream preview/dataset block feature selection", async () => {
+    const { firstBlockingPrerequisite } = await import("../src/pages/redesign/WorkbenchShell");
+    const wf = makeWorkflowCtx({
+      step_statuses: {
+        TARGET: "COMPLETE", ALIGNMENT: "COMPLETE", FEATURES: "NOT_STARTED",
+        PREVIEW: "BLOCKED", DATASET: "NOT_STARTED", SPLIT: "BLOCKED",
+        MODELS: "BLOCKED", REPORT: "BLOCKED",
+      },
+    });
+    expect(firstBlockingPrerequisite("analysis", wf)).toBeNull();
+  });
+
+  it("still blocks analysis when an upstream target/alignment prerequisite is blocked", async () => {
+    const { firstBlockingPrerequisite } = await import("../src/pages/redesign/WorkbenchShell");
+    const wf = makeWorkflowCtx({
+      step_statuses: {
+        TARGET: "COMPLETE", ALIGNMENT: "BLOCKED", FEATURES: "NOT_STARTED",
+        PREVIEW: "BLOCKED", DATASET: "NOT_STARTED", SPLIT: "BLOCKED",
+        MODELS: "BLOCKED", REPORT: "BLOCKED",
+      },
+    });
+    expect(firstBlockingPrerequisite("analysis", wf)).toBe("ALIGNMENT");
+  });
+
+  it("allows Models to render its in-situ split repair when a dataset is committed", async () => {
+    const { firstBlockingPrerequisite } = await import("../src/pages/redesign/WorkbenchShell");
+    const wf = makeWorkflowCtx({
+      step_statuses: {
+        TARGET: "COMPLETE", ALIGNMENT: "COMPLETE", FEATURES: "COMPLETE",
+        PREVIEW: "COMPLETE", DATASET: "COMPLETE", SPLIT: "NOT_STARTED",
+        MODELS: "BLOCKED", REPORT: "BLOCKED",
+      },
+      steps: {
+        ...makeWorkflowCtx().steps,
+        DATASET: { status: "COMPLETE", committed: { dataset_id: "DS::fresh" } },
+        MODELS: { status: "BLOCKED", blocking: { blocking_code: "VALID_SPLIT_REQUIRED", blocking_message: "无合法 grouped split", required_action: "CREATE_SPLIT", scientific_reason: "需要 grouped split" } },
+      },
+    });
+    expect(firstBlockingPrerequisite("models", wf)).toBeNull();
+  });
+
   it("PrerequisitePanel shows first BLOCKED step in analysis chain", async () => {
     const { PrerequisitePanel } = await import("../src/components/workbench/PrerequisitePanel");
     const chain = ["TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET"] as const;

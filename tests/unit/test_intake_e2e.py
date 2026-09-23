@@ -36,7 +36,7 @@ def test_sandbox_create_to_measurement_events(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (manifests / "batteries.csv").write_text(
-        "battery_id,chemistry,nominal_capacity_ah,notes\nCELL_100,,,sandbox\n", encoding="utf-8"
+        "battery_id,chemistry,nominal_capacity_ah,notes\n", encoding="utf-8"
     )
     client = TestClient(create_app(raw_root=raw, processed_root=processed))
 
@@ -89,6 +89,8 @@ def test_sandbox_create_to_measurement_events(tmp_path: Path) -> None:
     # manifests now visible to the orchestrator loaders
     assets_csv = (raw / "manifests/data_assets.csv").read_text(encoding="utf-8")
     assert "EXP_100" in assets_csv
+    assert "battery_id" in assets_csv.splitlines()[0]
+    assert "CELL_100" in (raw / "manifests/batteries.csv").read_text(encoding="utf-8")
 
     # 7. BRW-019 INGEST_TO_MEASUREMENT_EVENTS — via the same API
     run = client.post(

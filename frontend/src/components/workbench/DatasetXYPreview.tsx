@@ -113,12 +113,23 @@ function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, 
         ? "本实验无温度通道，无可用目标。"
         : "当前流程仅物化 Reference SOC 数据集族；该目标不支持数据集构建。";
   const mutation = useMutation({
-    mutationFn: () => client.createDataset({
-      battery_id: batteryId, experiment_id: experimentId,
-      dataset_family: "SOC",
-      target: targetId === "reference_soc_percent" ? "soc_reference_percent" : targetId,
-      selected_features: features,
-    }),
+    mutationFn: async () => {
+      const canonicalTarget = targetId === "reference_soc_percent" ? "soc_reference_percent" : targetId;
+      const spec = await client.createDataset({
+        battery_id: batteryId, experiment_id: experimentId,
+        dataset_family: "SOC",
+        target: canonicalTarget,
+        selected_features: features,
+      });
+      const run = await client.startRun({
+        profile: "BUILD_DATASET",
+        battery_id: batteryId,
+        experiment_id: experimentId,
+        target: canonicalTarget,
+        features: { selected_features: features },
+      });
+      return { spec, run };
+    },
     onSuccess: () => { setOpen(false); onBuilt(mode === "TRAIN_ONLY_ML_SAFE" ? "mlsafe" : "exploratory"); },
   });
   return <>

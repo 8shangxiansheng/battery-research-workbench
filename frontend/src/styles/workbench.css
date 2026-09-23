@@ -58,7 +58,7 @@
 .research-overview .meta-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .research-overview .meta-item > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
 .research-overview table td, .research-overview table th { padding: 6px 8px; font-size: 12px; }
-@media (min-width: 1600px) { .research-overview .panel !p-5 { padding: 22px; } }
+@media (min-width: 1600px) { .research-overview .panel { padding: 22px; } }
 .overview-workbench .page-heading h1 { font-size: 26px; margin-bottom: 6px; }
 .overview-workbench .page-heading p:last-child { font-family: ui-monospace, monospace; }
 .pipeline-card { border: 1px solid var(--border); border-radius: 8px; background: white; padding: 16px 24px; margin-bottom: 16px; }

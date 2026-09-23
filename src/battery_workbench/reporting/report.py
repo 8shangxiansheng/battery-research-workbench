@@ -128,24 +128,29 @@ def build_reproducibility_manifest(
 
     raw_checksums = {}
     for rel in (
-        "electrical/CELL_001/EXP_001/records.parquet",
-        "ultrasound/CELL_001/EXP_001/waveforms.zarr",
+        f"electrical/{battery_id}/{experiment_id}/records.parquet",
+        f"ultrasound/{battery_id}/{experiment_id}/waveforms.zarr",
     ):
         full = processed_root / rel
         if full.exists():
             raw_checksums[rel] = _sha(full)
 
     git_commit = _git_commit(repo_root)
+    from battery_workbench.reporting.collector import collect_experiment_record
+
+    record = collect_experiment_record(processed_root, battery_id, experiment_id)
+    artifacts = record.latest_canonical_artifacts
+    dataset_id = artifacts.get("dataset_id", "")
     return {
         "battery_id": battery_id,
         "experiment_id": experiment_id,
         "raw_asset_checksums": raw_checksums,
         "artifact_ids": {
-            "dataset_id": "DS::6a3142e5186fc684964ff09e",
-            "split_id": "SPLIT::062cf007d21578a11ab2d728",
-            "label_set_id": "LB::752466f98a93a4d1b44da358",
-            "feature_set_id": "FS::60649fd12c540267fe585914",
-            "gate_set_id": "GATESET::8633ce421ad5e26fe686",
+            "dataset_id": dataset_id,
+            "split_id": artifacts.get("split_id", ""),
+            "label_set_id": artifacts.get("label_set_id", ""),
+            "feature_set_id": artifacts.get("feature_set_id", ""),
+            "gate_set_id": artifacts.get("gate_set_id", ""),
             "parameter_set_ids": sorted(
                 p.name
                 for p in (processed_root / "parameters" / battery_id / experiment_id).glob("PS::*")
@@ -157,7 +162,7 @@ def build_reproducibility_manifest(
                     / "feature_analysis"
                     / battery_id
                     / experiment_id
-                    / "DS::6a3142e5186fc684964ff09e"
+                    / dataset_id
                 ).glob("AN::*")
             ),
         },

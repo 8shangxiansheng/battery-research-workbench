@@ -1,19 +1,20 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Link, Route, Routes, useParams, useNavigate, Navigate, useLocation } from "react-router-dom";
 import { Activity, ArrowUpRight, ChartNoAxesCombined, Check, ChevronsUpDown, FileText, FlaskConical, LayoutDashboard, Library, Settings2, Waves } from "lucide-react";
 import { client } from "../../api/client";
+import type { WorkflowContextPayload } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "../../components/ui/command";
 import { SidebarProvider, Sidebar, SidebarHeader, SidebarContent, SidebarFooter, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarInset, SidebarTrigger, SidebarGroup } from "../../components/ui/sidebar";
-import { ResearchOverview } from "./ResearchOverview";
-import { WaveformWorkbench } from "./WaveformWorkbench";
-import { AnalysisWorkbench } from "./AnalysisWorkbench";
-import { ModelsWorkbench } from "./ModelsWorkbench";
-import { ReportWorkbench } from "./ReportWorkbench";
-import { AdvancedPage } from "./AdvancedPage";
+const ResearchOverview = lazy(() => import("./ResearchOverview").then(module => ({ default: module.ResearchOverview })));
+const WaveformWorkbench = lazy(() => import("./WaveformWorkbench").then(module => ({ default: module.WaveformWorkbench })));
+const AnalysisWorkbench = lazy(() => import("./AnalysisWorkbench").then(module => ({ default: module.AnalysisWorkbench })));
+const ModelsWorkbench = lazy(() => import("./ModelsWorkbench").then(module => ({ default: module.ModelsWorkbench })));
+const ReportWorkbench = lazy(() => import("./ReportWorkbench").then(module => ({ default: module.ReportWorkbench })));
+const AdvancedPage = lazy(() => import("./AdvancedPage").then(module => ({ default: module.AdvancedPage })));
 import { ExperimentLibraryPage } from "../LibraryPage";
 import { NewExperimentWizardPage } from "../NewExperimentWizardPage";
 import { RunsPage } from "../RunsPage";
@@ -28,7 +29,7 @@ const navigation = [
   { path: "analysis", label: "特征分析", icon: Activity }, { path: "models", label: "SOC 建模", icon: ChartNoAxesCombined }, { path: "report", label: "科学报告", icon: FileText },
 ];
 
-const ANALYSIS_CHAIN = ["TARGET", "ALIGNMENT", "FEATURES", "PREVIEW", "DATASET"] as const;
+const ANALYSIS_PREREQUISITES = ["TARGET", "ALIGNMENT"] as const;
 
 function pageToStep(page: string): string | null {
   if (page === "models") return "MODELS";
@@ -38,24 +39,39 @@ function pageToStep(page: string): string | null {
   return null;
 }
 
+export function firstBlockingPrerequisite(
+  activePage: string,
+  workflow: WorkflowContextPayload,
+): string | null {
+  if (activePage === "analysis") {
+    return ANALYSIS_PREREQUISITES.find(
+      step => workflow.step_statuses[step] === "BLOCKED",
+    ) ?? null;
+  }
+  const step = pageToStep(activePage);
+  if (
+    activePage === "models"
+    && workflow.step_statuses.MODELS === "BLOCKED"
+    && workflow.steps.DATASET?.committed
+  ) {
+    return null;
+  }
+  return step && workflow.step_statuses[step] === "BLOCKED" ? step : null;
+}
+
 function StepGate({ wfData, activePage, children }: { wfData: ReturnType<typeof useWorkflowContext>["data"]; activePage: string; children: React.ReactNode }) {
   if (!wfData) return <>{children}</>;
-  if (activePage === "analysis") {
-    const blocked = ANALYSIS_CHAIN.find(s => wfData.step_statuses[s] === "BLOCKED");
-    if (blocked) {
-      const step = wfData.steps[blocked];
-      if (!step) return <>{children}</>;
-      return <PrerequisitePanel stepKey={blocked} stepStatus="BLOCKED" stepDetail={step} recommended={wfData.recommended_next_action} batteryId={wfData.battery_id} experimentId={wfData.experiment_id} />;
-    }
-    return <>{children}</>;
-  }
-  const stepKey = pageToStep(activePage);
-  if (stepKey && wfData.step_statuses[stepKey] === "BLOCKED") {
+  const stepKey = firstBlockingPrerequisite(activePage, wfData);
+  if (stepKey) {
     const step = wfData.steps[stepKey];
     if (!step) return <>{children}</>;
     return <PrerequisitePanel stepKey={stepKey} stepStatus="BLOCKED" stepDetail={step} recommended={wfData.recommended_next_action} batteryId={wfData.battery_id} experimentId={wfData.experiment_id} />;
   }
   return <>{children}</>;
+}
+
+function RouteLoading() {
+  return <div className="panel text-sm muted" role="status">页面加载中…</div>;
 }
 
 export function StaleBanner({ freshness, stepKey }: { freshness: Record<string, string>; stepKey: string }) {
@@ -95,7 +111,7 @@ function ExperimentLayout() {
     {wfData && <WaitingBanner pendingAction={wfData.pending_action} />}
     {stepperStatuses && <WorkflowStepperV2 statuses={stepperStatuses} activePage={activePage} />}
     <Routes>
-    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<ResearchOverview/>}/><Route path="overview-classic" element={<Navigate to="overview" replace/>}/><Route path="waveform" element={<WaveformWorkbench/>}/><Route path="analysis" element={<StepGate wfData={wfData} activePage={activePage}><AnalysisWorkbench/></StepGate>}/><Route path="models" element={<StepGate wfData={wfData} activePage={activePage}><ModelsWorkbench/></StepGate>}/><Route path="report" element={<StepGate wfData={wfData} activePage={activePage}><ReportWorkbench/></StepGate>}/><Route path="advanced/:section" element={<StepGate wfData={wfData} activePage={activePage}><AdvancedPage/></StepGate>}/>
+    <Route index element={<Navigate to="overview" replace/>}/><Route path="overview" element={<Suspense fallback={<RouteLoading/>}><ResearchOverview/></Suspense>}/><Route path="overview-classic" element={<Navigate to="overview" replace/>}/><Route path="waveform" element={<Suspense fallback={<RouteLoading/>}><WaveformWorkbench/></Suspense>}/><Route path="analysis" element={<StepGate wfData={wfData} activePage={activePage}><Suspense fallback={<RouteLoading/>}><AnalysisWorkbench/></Suspense></StepGate>}/><Route path="models" element={<StepGate wfData={wfData} activePage={activePage}><Suspense fallback={<RouteLoading/>}><ModelsWorkbench/></Suspense></StepGate>}/><Route path="report" element={<StepGate wfData={wfData} activePage={activePage}><Suspense fallback={<RouteLoading/>}><ReportWorkbench/></Suspense></StepGate>}/><Route path="advanced/:section" element={<StepGate wfData={wfData} activePage={activePage}><Suspense fallback={<RouteLoading/>}><AdvancedPage/></Suspense></StepGate>}/>
     <Route path="modeling" element={<Navigate to={`${base}/models`} replace/>}/><Route path="reports" element={<Navigate to={`${base}/report`} replace/>}/><Route path="features" element={<Navigate to={`${base}/analysis`} replace/>}/>
     {['data','dataset-split','evidence','workspace','runs'].map(p=><Route key={p} path={p} element={<Navigate to={`${base}/advanced/${p}`} replace/>}/>)}<Route path="*" element={<Navigate to={`${base}/overview`} replace/>}/>
   </Routes></div></SidebarInset></SidebarProvider></AssistantProvider>;

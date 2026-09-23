@@ -81,7 +81,8 @@ describe("BRW-027R E2E A–O", () => {
     if (!available) ctx.skip();
     const d = await send("这个模型效果怎么样？");
     expect(d.message).toContain("Dummy");
-    expect(d.message).toContain("不是处理故障");
+    expect(d.message).toMatch(/limited|有限/);
+    expect(d.message).toMatch(/跨电池|泛化/);
   });
 
   it("E: 训练SOH模型 — blocked with 2-state explanation", async (ctx) => {

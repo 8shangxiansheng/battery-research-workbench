@@ -11,6 +11,7 @@ Modality = Literal["electrical", "ultrasound"]
 
 class DataAsset(BaseModel):
     asset_id: str
+    battery_id: str | None = None
     experiment_id: str
     modality: Modality
     relative_path: Path

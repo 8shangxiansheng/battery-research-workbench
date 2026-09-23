@@ -276,6 +276,8 @@ export interface IntakeAssetRecord {
   sha256: string;
   received_at: string;
   content_kind: string | null;
+  file_start_time: string | null;
+  file_end_time: string | null;
 }
 
 export interface AdapterDetection {
@@ -1041,7 +1043,23 @@ export const client = {
   // runs
   listRuns: (limit = 50, cursor?: string) =>
     request<{ runs: RunRecord[] }>(`/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-  startRun: (body: { profile: string; battery_id: string; experiment_id: string }, idempotencyKey?: string) =>
+  startRun: (body: {
+    profile: string;
+    battery_id: string;
+    experiment_id: string;
+    stages?: string[];
+    parameters?: Record<string, unknown>;
+    target?: string;
+    features?: Record<string, unknown>;
+    analysis_slice?: Record<string, unknown>;
+    split?: Record<string, unknown>;
+    gates?: Record<string, unknown>;
+    feature_analysis?: Record<string, unknown>;
+    modeling?: Record<string, unknown>;
+    fold_index?: number;
+    split_id?: string;
+    scientific_report?: Record<string, unknown>;
+  }, idempotencyKey?: string) =>
     request<Record<string, unknown>>("/runs", {
       method: "POST",
       // only set `headers` when present — an undefined value would clobber the
@@ -1049,7 +1067,7 @@ export const client = {
       ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
       body: JSON.stringify(body),
     }),
-  dryRun: (body: { profile: string; battery_id: string; experiment_id: string }) =>
+  dryRun: (body: { profile: string; battery_id: string; experiment_id: string } & Record<string, unknown>) =>
     request<Record<string, unknown>>("/runs/dry-run", { method: "POST", body: JSON.stringify(body) }),
   getRun: (runId: string) =>
     request<Record<string, unknown>>(`/runs/${encodeURIComponent(runId)}`),
@@ -1105,10 +1123,11 @@ export const client = {
     request<IntakeSessionDetail>(`/experiments/${batteryId}/${experimentId}/intake-sessions`, { method: "POST", body: JSON.stringify({}) }),
   getIntakeSession: (sessionId: string) =>
     request<IntakeSessionDetail>(`/intake-sessions/${encodeURIComponent(sessionId)}`),
-  uploadIntakeAsset: (sessionId: string, role: AssetRole, file: File) => {
+  uploadIntakeAsset: (sessionId: string, role: AssetRole, file: File, fileStartTime?: string) => {
     const form = new FormData();
     form.append("role", role);
     form.append("file", file);
+    if (fileStartTime) form.append("file_start_time", fileStartTime);
     return request<IntakeAssetRecord>(`/intake-sessions/${encodeURIComponent(sessionId)}/assets`, {
       method: "POST",
       body: form,

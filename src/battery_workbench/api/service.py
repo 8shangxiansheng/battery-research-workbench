@@ -1170,47 +1170,31 @@ class WorkbenchService:
         experiment_id = payload.get("experiment_id", "EXP_001")
         target = payload.get("target", "soc_reference_percent")
         self._require_experiment(battery_id, experiment_id)
-        canonical = json.dumps(
-            {
-                "target": target,
-                "battery_id": battery_id,
-                "experiment_id": experiment_id,
-                "source_artifact_ids": [],
-                "reporting_policy_version": "0.1.0",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+        from battery_workbench.reporting.schemas import ReportSpec
+
+        spec = ReportSpec(
+            target=target,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            source_artifact_ids=list(payload.get("source_artifact_ids") or []),
+            sections=list(payload.get("sections") or []),
         )
-        report_id = "REPORT::" + hashlib.sha256(canonical.encode()).hexdigest()[:24]
-        report_dir = (
-            self.processed_root / "artifacts" / battery_id / experiment_id / "reports" / report_id
+        report_file = (
+            self.processed_root
+            / "artifacts" / battery_id / experiment_id / "reports"
+            / spec.report_id / "scientific_report.json"
         )
-        reuse = (report_dir / "scientific_report.json").is_file()
-        limitations = [l["code"] for l in collect_limitation_registry()]
-        if not reuse:
-            report_dir.mkdir(parents=True, exist_ok=True)
-            (report_dir / "scientific_report.json").write_text(
-                json.dumps(
-                    {
-                        "report_id": report_id,
-                        "target": target,
-                        "battery_id": battery_id,
-                        "experiment_id": experiment_id,
-                        "limitations": limitations,
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-        return {
-            "report_id": report_id,
-            "target": target,
-            "battery_id": battery_id,
-            "experiment_id": experiment_id,
-            "reuse_status": "REUSED" if reuse else "CREATED",
-            "limitations": limitations,
-        }
+        reused = report_file.is_file()
+        report = self._runs.generate_report(
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            target=target,
+            source_artifact_ids=spec.source_artifact_ids,
+            sections=spec.sections,
+        )
+        report["reuse_status"] = "REUSED" if reused else "CREATED"
+        report["limitations"] = list(report.get("limitations_summary") or [])
+        return report
 
     def list_reports(
         self, battery_id: str, experiment_id: str, *, limit: int = 50, cursor: str | None = None

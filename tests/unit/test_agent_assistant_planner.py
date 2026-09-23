@@ -263,7 +263,9 @@ class TestInterpretation:
     def test_a33_dummy_first_when_all_lose(self, workspace):
         planner, session, _ = workspace
         r = _send(planner, session, "这个模型效果怎么样？")
-        assert "尚未表现出稳定预测优势" in r.message or "没有模型跑赢 Dummy" in r.message
+        assert "Dummy" in r.message
+        assert "limited" in r.message
+        assert "优于 Dummy" in r.message or "尚未表现出稳定预测优势" in r.message
 
     def test_a34_dummy_mentioned_in_interpretation(self, workspace):
         planner, session, _ = workspace

@@ -15,7 +15,7 @@ const clientMock = {
   submitUserAction: vi.fn(), resumeRun: vi.fn(),
   getResults: vi.fn(), getWorkflowContext: vi.fn(), listSplits: vi.fn(),
   listSplitFolds: vi.fn(), createSplit: vi.fn(), dryRun: vi.fn(), startRun: vi.fn(),
-  getArtifact: vi.fn(),
+  getArtifact: vi.fn(), createDataset: vi.fn(),
 };
 vi.mock("../src/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/api/client")>()),
@@ -24,6 +24,7 @@ vi.mock("../src/api/client", async (importOriginal) => ({
 
 const { RunsPage } = await import("../src/pages/RunsPage");
 const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
+const { DatasetBuildButtons } = await import("../src/components/workbench/DatasetXYPreview");
 
 function wrap(node: React.ReactNode, route = "/runs", pattern = route) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -61,7 +62,9 @@ describe("RunsPage user actions", () => {
     await user.type(inp, "50");
     await user.click(screen.getByTestId("submit-action"));
     await waitFor(() => expect(clientMock.submitUserAction).toHaveBeenCalledWith(
-      "RUN::r1", "UA::P1", { "ultrasound.sampling_rate_hz": { value: 50, unit: "MHz" } }));
+      "RUN::r1", "UA::P1", { "ultrasound.sampling_rate_hz": {
+        value: 50, unit: "MHz", source_reference: "实验记录", verification_status: "UNVERIFIED",
+      } }));
   });
 
   it("echoes selection_id prefilled for CONFIRM_FEATURE_SELECTION", async () => {
@@ -83,7 +86,7 @@ describe("Models-page launcher", () => {
     clientMock.getWorkflowContext.mockResolvedValue({ data: {
       schema_version: "1", battery_id: "CELL_001", experiment_id: "EXP_001", current_step: "DATASET",
       step_statuses: {}, artifact_freshness: {}, typed_actions: [],
-      steps: { DATASET: { status: "COMPLETE", committed: { dataset_id: "DS::d1" } },
+      steps: { DATASET: { status: "COMPLETE", committed: { dataset_id: "DS::d1", selected_features: ["SWA"] } },
                ...(withSplit ? { SPLIT: { status: "COMPLETE", committed: { split_id: "SPLIT::s1" } } } : {}) },
     }, meta: {} });
     clientMock.listSplits.mockResolvedValue({ data: { splits: withSplit ? [{ split_id: "SPLIT::s1" }] : [] }, meta: {} });
@@ -100,8 +103,19 @@ describe("Models-page launcher", () => {
     const btn = await screen.findByTestId("launcher-start-run");
     await waitFor(() => expect(btn).toBeEnabled());
     await user.click(btn);
-    await waitFor(() => expect(clientMock.startRun).toHaveBeenCalledWith({
-      profile: "FULL_PRE_MODEL", battery_id: "CELL_001", experiment_id: "EXP_001" }));
+    await waitFor(() => expect(clientMock.startRun).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "FULL_PRE_MODEL", battery_id: "CELL_001", experiment_id: "EXP_001",
+      target: "soc_reference_percent", features: { selected_features: ["SWA"] },
+      fold_index: 1,
+      modeling: expect.objectContaining({
+        strategies: expect.arrayContaining([
+          "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS"]),
+        random_state: 42,
+      }),
+      feature_analysis: expect.objectContaining({
+        analysis_mode: "TRAIN_ONLY_ML_SAFE", candidate_features: ["SWA"],
+      }),
+    })));
   });
 
   it("offers in-page split creation when split is missing", async () => {
@@ -118,5 +132,26 @@ describe("Models-page launcher", () => {
     wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
     expect(await screen.findByTestId("launcher-waiting-run")).toBeInTheDocument();
     expect(screen.getByTestId("launcher-start-run")).toBeDisabled();
+  });
+});
+
+describe("Dataset materialization handoff", () => {
+  it("creates the dataset spec and immediately launches BUILD_DATASET", async () => {
+    clientMock.createDataset.mockResolvedValue({
+      data: { dataset_id: "DS::draft", materialization_status: "SPEC_PENDING_RUN" }, meta: {},
+    });
+    clientMock.startRun.mockResolvedValue({ data: { run_id: "RUN::dataset", status: "SUCCEEDED" }, meta: {} });
+    const onBuilt = vi.fn();
+    wrap(<DatasetBuildButtons batteryId="CELL_001" experimentId="EXP_001"
+      targetId="reference_soc_percent" features={["SWA"]} mode="TRAIN_ONLY_ML_SAFE"
+      target={undefined} summary={null} onBuilt={onBuilt} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("build-mlsafe-btn"));
+    await user.click(await screen.findByTestId("confirm-build-dataset"));
+    await waitFor(() => expect(clientMock.startRun).toHaveBeenCalledWith({
+      profile: "BUILD_DATASET", battery_id: "CELL_001", experiment_id: "EXP_001",
+      target: "soc_reference_percent", features: { selected_features: ["SWA"] },
+    }));
+    expect(onBuilt).toHaveBeenCalledWith("mlsafe");
   });
 });

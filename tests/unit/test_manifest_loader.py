@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from battery_workbench.io.experiment.manifest_loader import (
+    data_asset_matches,
     load_batteries,
     load_data_assets,
     load_experiments,
@@ -40,3 +41,20 @@ def test_manifest_hierarchy(tmp_path: Path) -> None:
     assert e[0].battery_id == "CELL_A"
     assert len(a) == 3
     assert [x.asset_id for x in a if x.modality == "ultrasound"] == ["U1", "U2"]
+    assert all(data_asset_matches(x, "CELL_A", "EXP_A") for x in a)
+    assert not any(data_asset_matches(x, "CELL_B", "EXP_A") for x in a)
+
+
+def test_data_asset_explicit_battery_identity_wins_over_same_experiment_id(
+    tmp_path: Path,
+) -> None:
+    assets = tmp_path / "data_assets.csv"
+    assets.write_text(
+        "asset_id,battery_id,experiment_id,modality,relative_path,file_start_time,file_end_time,"
+        "parser_name,parser_version\n"
+        "E1,CELL_A,EXP_001,electrical,batteries/CELL_A/EXP_001/electrical/a.xlsx,,,custom_excel,0.1\n"
+        "E2,CELL_B,EXP_001,electrical,batteries/CELL_B/EXP_001/electrical/b.xlsx,,,custom_excel,0.1\n",
+        encoding="utf-8",
+    )
+    rows = load_data_assets(assets)
+    assert [row.asset_id for row in rows if data_asset_matches(row, "CELL_B", "EXP_001")] == ["E2"]

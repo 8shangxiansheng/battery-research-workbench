@@ -167,6 +167,16 @@ class TestWorkflowContextContract:
         assert committed["dataset_id"] == "DS::83013a61b316f3489093b358"
         assert d["scientific_context"]["dataset_id"] == committed["dataset_id"]
 
+    def test_materialized_dataset_carries_committed_feature_selection(self, tmp_path: Path) -> None:
+        sandbox = _sandbox(tmp_path)
+        feature_analysis = sandbox / "feature_analysis"
+        if feature_analysis.exists() or feature_analysis.is_symlink():
+            feature_analysis.unlink()
+        d = build_workflow_context(sandbox, B, E)
+        assert d["steps"]["FEATURES"]["status"] == "COMPLETE"
+        assert d["steps"]["FEATURES"]["committed"]["selected_features"]
+        assert d["scientific_context"]["feature_selection_source"] == "MATERIALIZED_DATASET_SPEC"
+
     def test_w11_split_bound_to_committed_dataset(self, tmp_path: Path) -> None:
         d = build_workflow_context(_sandbox(tmp_path), B, E)
         committed = d["steps"]["SPLIT"]["committed"]
@@ -179,9 +189,10 @@ class TestWorkflowContextContract:
         d = build_workflow_context(_sandbox(tmp_path), B, E)
         committed = d["steps"]["MODELS"]["committed"]
         assert committed is not None
-        # RC1 fixed baseline suite on the canonical-TOF dataset
-        assert committed["model_count"] == 5
-        assert len(committed["model_ids"]) == 5
+        # Model history may grow as a dataset is rerun with different splits;
+        # the read model must include all matching manifests, not a fixed suite size.
+        assert committed["model_count"] == len(committed["model_ids"])
+        assert committed["model_count"] >= 1
         assert committed["dataset_id"] == d["scientific_context"]["dataset_id"]
 
     def test_w13_report_latest(self, tmp_path: Path) -> None:

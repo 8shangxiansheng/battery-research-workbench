@@ -80,7 +80,9 @@ describe("E2E happy path（§69）", () => {
       data: { result_type: string; strategy: string | null; value: unknown }[];
     };
     const macro = results.data.filter((r) => r.result_type === "MODEL_COMPARISON");
-    expect(macro.length).toBe(5);
+    expect(macro.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(macro.map((r) => r.strategy)).size).toBe(macro.length);
+    expect(macro.some((r) => r.strategy === "DUMMY_MEAN")).toBe(true);
 
     // 5. evidence + lineage
     const evidence = (await getJson(`/experiments/${B}/${E}/evidence`)) as {

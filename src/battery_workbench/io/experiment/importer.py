@@ -24,6 +24,7 @@ from battery_workbench.io.adapters.registry import (
     build_default_adapter_registry,
 )
 from battery_workbench.io.experiment.manifest_loader import (
+    data_asset_matches,
     load_batteries,
     load_data_assets,
     load_experiments,
@@ -58,9 +59,20 @@ def _manifest_dir(raw_root: Path) -> Path:
 
 def _resolve_experiment(raw_root: Path, experiment_id: str) -> Experiment:
     experiments = load_experiments(_manifest_dir(raw_root) / "experiments.csv")
-    for experiment in experiments:
-        if experiment.experiment_id == experiment_id:
-            return experiment
+    matches = [item for item in experiments if item.experiment_id == experiment_id]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ExperimentImportError(
+            ImportError(
+                code="AMBIGUOUS_EXPERIMENT_ID",
+                message=(
+                    f"experiment_id {experiment_id!r} belongs to multiple batteries; "
+                    "use a composite-identity entry point"
+                ),
+                experiment_id=experiment_id,
+            )
+        )
     raise ExperimentImportError(
         ImportError(
             code="EXPERIMENT_NOT_FOUND",
@@ -84,11 +96,11 @@ def _resolve_battery(raw_root: Path, battery_id: str) -> BatteryCell:
     )
 
 
-def _resolve_assets(raw_root: Path, experiment_id: str) -> list[DataAsset]:
+def _resolve_assets(raw_root: Path, battery_id: str, experiment_id: str) -> list[DataAsset]:
     return [
         asset
         for asset in load_data_assets(_manifest_dir(raw_root) / "data_assets.csv")
-        if asset.experiment_id == experiment_id
+        if data_asset_matches(asset, battery_id, experiment_id)
     ]
 
 
@@ -135,7 +147,9 @@ def plan_experiment_import(
     # Resolve (and validate) the owning battery even though planning itself
     # never invokes a parser: a missing battery must surface at plan time.
     battery = _resolve_battery(raw_root, experiment.battery_id)
-    assets = _filter_modalities(_resolve_assets(raw_root, experiment_id), modalities)
+    assets = _filter_modalities(
+        _resolve_assets(raw_root, experiment.battery_id, experiment_id), modalities
+    )
 
     groups = _group_by_modality(assets)
     supported, unsupported = _split_supported(groups, registry)
@@ -214,7 +228,9 @@ def import_experiment(
 
     experiment = _resolve_experiment(raw_root, experiment_id)
     battery = _resolve_battery(raw_root, experiment.battery_id)
-    assets = _filter_modalities(_resolve_assets(raw_root, experiment_id), modalities)
+    assets = _filter_modalities(
+        _resolve_assets(raw_root, experiment.battery_id, experiment_id), modalities
+    )
 
     groups = _group_by_modality(assets)
     supported, unsupported = _split_supported(groups, registry)

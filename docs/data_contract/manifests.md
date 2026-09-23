@@ -19,10 +19,14 @@ experiment_id,battery_id,start_time,end_time,protocol,notes
 ## data_assets.csv
 
 ```text
-asset_id,experiment_id,modality,relative_path,file_start_time,file_end_time,parser_name,parser_version
+asset_id,battery_id,experiment_id,modality,relative_path,file_start_time,file_end_time,parser_name,parser_version
 ```
 
 一个 Experiment 可以有多个 Electrical DataAsset 和多个 Ultrasound DataAsset。
+
+`battery_id + experiment_id` 是 DataAsset 的复合实验身份。旧版缺少
+`battery_id` 的 manifest 仅在 canonical relative path 能明确证明所属 Battery
+时向后兼容；不得只凭 `experiment_id` 或文件名匹配。
 
 `file_start_time` 对超声文件非常关键：
 每帧绝对时间 = `file_start_time + elapsed_time_s`。

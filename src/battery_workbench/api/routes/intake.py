@@ -93,7 +93,10 @@ def _asset_summary(engine: IntakeEngine, record: ExperimentRecord) -> dict[str, 
 
         with assets_csv.open("r", encoding="utf-8") as handle:
             count = sum(
-                1 for r in csv.DictReader(handle) if r.get("experiment_id") == record.experiment_id
+                1
+                for row in csv.DictReader(handle)
+                if row.get("experiment_id") == record.experiment_id
+                and (not row.get("battery_id") or row.get("battery_id") == record.battery_id)
             )
     return {"committed_assets": count, "intake_sessions": _session_count(engine, record)}
 
@@ -333,6 +336,8 @@ async def upload_asset(
     request: Request,
     session_id: str,
     role: AssetRole = Form(...),  # noqa: B008 — FastAPI DI pattern
+    file_start_time: str | None = Form(default=None),
+    file_end_time: str | None = Form(default=None),
     file: UploadFile = File(...),  # noqa: B008 — FastAPI DI pattern
 ) -> dict[str, Any]:
     validate_id(session_id, "session_id")
@@ -343,7 +348,12 @@ async def upload_asset(
     content = await file.read()
     try:
         record = engine.store_asset(
-            session, role=role, original_filename=file.filename, content=content
+            session,
+            role=role,
+            original_filename=file.filename,
+            content=content,
+            file_start_time=file_start_time,
+            file_end_time=file_end_time,
         )
     except IntakePolicyError as exc:
         raise _policy_error(exc) from exc

@@ -42,6 +42,13 @@ from battery_workbench.features.physical_v2 import (
     surface_bottom_xcorr_tof,
     surface_wave_amplitude,
 )
+from battery_workbench.features.selected_series import (
+    ALIAS_TO_RAW as _ALIAS_TO_RAW,
+)
+from battery_workbench.features.selected_series import (
+    load_waveform_frames,
+    selected_feature_series,
+)
 from battery_workbench.features.state_correlation import (
     FeatureStateRow,
     correlate_feature_state,
@@ -63,15 +70,7 @@ def _load_frames(request: Request, battery_id: str, experiment_id: str) -> np.nd
     )
     if not store.is_dir() or not frames_meta.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "waveform store not available")
-    import pandas as pd
-    import zarr
-
-    frames = pd.read_parquet(frames_meta, columns=["waveform_group", "waveform_row_index"])
-    zg = zarr.open_group(str(store), mode="r")
-    group = str(frames["waveform_group"].iloc[0])
-    rows = frames["waveform_row_index"].to_numpy()
-    arr = np.asarray(zg[group])
-    return np.asarray(arr[rows], dtype=np.float64)
+    return load_waveform_frames(store, frames_meta)
 
 
 def _load_events_labels(request: Request, battery_id: str, experiment_id: str):
@@ -1054,19 +1053,6 @@ _PREDEFINED_PHYSICAL_CODES = (
     "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "ATTEN_MEAN", "ATTEN_ENERGY", "BPS",
 )
 
-_ALIAS_TO_RAW: dict[str, str] = {
-    "amplitude_a_u": "waveform_abs_peak_a_u",  # user-visible core alias (gates engine)
-    "waveform_mean_a_u": "waveform_mean_a_u",
-    "waveform_std_a_u": "waveform_std_a_u",
-    "waveform_max_a_u": "waveform_max_a_u",
-    "waveform_min_a_u": "waveform_min_a_u",
-    "waveform_p2p_a_u": "waveform_p2p_a_u",
-    "waveform_rms_a_u": "waveform_rms_a_u",
-    "envelope_peak_a_u": "envelope_peak_a_u",
-    "waveform_abs_peak_a_u": "waveform_abs_peak_a_u",
-}
-
-
 def _catalogue_feature_series(
     frames: np.ndarray, features: list[str]
 ) -> dict[str, np.ndarray]:
@@ -1076,73 +1062,7 @@ def _catalogue_feature_series(
     default explicit spectral transform (no fs requirement). Only codes the
     catalogue defines are accepted; unknown codes raise NOT_FOUND upstream.
     """
-    from battery_workbench.features.envelope import compute_envelope_features
-    from battery_workbench.features.matlab_features import (
-        FD_CODES,
-        TD_CODES,
-        compute_frequency_domain,
-        compute_time_domain,
-    )
-    from battery_workbench.features.raw_features import compute_raw_amplitude_features
-    from battery_workbench.features.spectral_transform import (
-        SpectralTransformDefinition,
-        spectrum_from_waveform,
-    )
-
-    requested = set(features)
-    out: dict[str, np.ndarray] = {}
-    n = frames.shape[0]
-
-    td_needed = sorted(requested & set(TD_CODES))
-    fd_needed = sorted(requested & set(FD_CODES))
-    if td_needed or fd_needed:
-        td_rows: dict[str, list[float]] = {c: [] for c in td_needed}
-        fd_rows: dict[str, list[float]] = {c: [] for c in fd_needed}
-        transform = SpectralTransformDefinition(spectral_transform_id="PREVIEW_DEFAULT")
-        for i in range(n):
-            x = np.asarray(frames[i], dtype=np.float64)
-            if td_needed:
-                td_vals = compute_time_domain(x)
-                for c in td_needed:
-                    td_rows[c].append(float(td_vals[c]))
-            if fd_needed:
-                f_axis, y = spectrum_from_waveform(x, transform)
-                fd_vals = compute_frequency_domain(f_axis, y)
-                for c in fd_needed:
-                    fd_rows[c].append(float(fd_vals[c]))
-        for c, vals in td_rows.items():
-            out[c] = np.asarray(vals, dtype=np.float64)
-        for c, vals in fd_rows.items():
-            out[c] = np.asarray(vals, dtype=np.float64)
-
-    # raw-alias codes: key the output by the REQUESTED code name so callers
-    # index series_by_code with what they asked for (e.g. amplitude_a_u)
-    alias_requests: dict[str, str] = {
-        code: _ALIAS_TO_RAW[code] for code in requested if code in _ALIAS_TO_RAW
-    }
-    if alias_requests:
-        raw_needed = sorted(set(alias_requests.values()))
-        raw_rows: dict[str, list[float | None]] = {c: [] for c in raw_needed}
-        for i in range(n):
-            raw = compute_raw_amplitude_features(np.asarray(frames[i], dtype=np.float64))
-            for c in raw_needed:
-                raw_rows[c].append(raw.get(c))
-        for alias_code, raw_name in alias_requests.items():
-            out[alias_code] = np.asarray(
-                [float(v) if v is not None else np.nan for v in raw_rows[raw_name]],
-                dtype=np.float64,
-            )
-
-    env_needed = sorted(requested & {"envelope_peak_a_u"})
-    if env_needed:
-        vals = [
-            compute_envelope_features(np.asarray(frames[i], dtype=np.float64))["envelope_peak_a_u"]
-            for i in range(n)
-        ]
-        out["envelope_peak_a_u"] = np.asarray(
-            [float(v) if v is not None else np.nan for v in vals], dtype=np.float64
-        )
-    return out
+    return selected_feature_series(frames, features)
 
 
 def _read_json_local(path: Path) -> dict[str, Any] | None:
@@ -1201,15 +1121,7 @@ def feature_label_preview(
     # codes the catalogue genuinely does not define.
     from battery_workbench.features.definitions_v2 import default_registry
 
-    physical_series: dict[str, np.ndarray] = {
-        "BOTTOM_AMP": bottom_wave_amplitude(frames)["raw"],
-        "SWA": surface_wave_amplitude(frames)["raw"],
-        "TOF_XCORR": surface_bottom_xcorr_tof(frames)["tof_samples"].astype(float),
-        "ATTEN_MAX": np.asarray(bottom_attenuation_explicit(frames)["amp_max"]),
-        "ATTEN_MEAN": np.asarray(bottom_attenuation_explicit(frames)["amp_mean"]),
-        "ATTEN_ENERGY": np.asarray(bottom_attenuation_explicit(frames)["amp_energy"]),
-        "BPS": bottom_wave_phase_shift(frames)["raw_radian"],
-    }
+    physical_series = selected_feature_series(frames, list(_PREDEFINED_PHYSICAL_CODES))
     catalogue = default_registry()
     resolved_alias: dict[str, str] = {}
     unknown_features = []

@@ -8,6 +8,28 @@
             "title": "File",
             "type": "string"
           },
+          "file_end_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File End Time"
+          },
+          "file_start_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Start Time"
+          },
           "role": {
             "enum": [
               "ELECTRICAL",

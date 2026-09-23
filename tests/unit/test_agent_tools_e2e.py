@@ -79,7 +79,9 @@ class TestE2EA_DemoReadOnlyAudit:
         r4 = demo_gateway.execute("inspect_model_comparison", ctx, {})
         assert r4.status == "SUCCEEDED"
         macro = r4.data.get("macro", [])
-        assert len(macro) == 5
+        assert len(macro) >= 5
+        assert len({row["strategy"] for row in macro}) == len(macro)
+        assert any(row["strategy"] == "DUMMY_MEAN" for row in macro)
         assert r4.data.get("dummy_baseline") is not None
         assert r4.evidence  # evidence propagated
 

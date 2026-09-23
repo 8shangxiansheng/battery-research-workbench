@@ -23,6 +23,40 @@ function ComparisonTable({rows}:{rows:ResultRecord[]}) {
   const table=useReactTable({data:rows,columns,state:{sorting},onSortingChange:setSorting,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel()});
   return <Table><TableHeader>{table.getHeaderGroups().map(g=><TableRow key={g.id}>{g.headers.map(h=><TableHead key={h.id}><button onClick={h.column.getToggleSortingHandler()} aria-label={`按 ${h.column.id} 排序`}>{flexRender(h.column.columnDef.header,h.getContext())}</button></TableHead>)}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.map(r=><TableRow key={r.id} className={r.original.strategy==="DUMMY_MEAN"?"bg-[#f1f5f4]":""}>{r.getVisibleCells().map(c=><TableCell key={c.id}>{flexRender(c.column.columnDef.cell,c.getContext())}</TableCell>)}</TableRow>)}</TableBody></Table>;
 }
+
+export function modelingRunRequest(
+  batteryId: string,
+  experimentId: string,
+  selectedFeatures: string[],
+) {
+  return {
+    profile: "FULL_PRE_MODEL",
+    battery_id: batteryId,
+    experiment_id: experimentId,
+    stages: ["DATASET", "SPLIT", "FEATURE_ANALYSIS", "SOC_MODELING", "SCIENTIFIC_REPORT"],
+    target: "soc_reference_percent",
+    features: { selected_features: selectedFeatures },
+    fold_index: 1,
+    split: {
+      strategy: "LEAVE_ONE_GROUP_OUT",
+      split_unit: "CYCLE",
+      group_column: "cycle_group_id",
+    },
+    feature_analysis: {
+      analysis_mode: "TRAIN_ONLY_ML_SAFE",
+      target: "soc_reference_percent",
+      candidate_features: selectedFeatures,
+      fold_index: 1,
+      methods: ["descriptive", "spearman"],
+      selection: {
+        requested: true,
+        mode: "TRAIN_ONLY_RULE_BASED",
+        policy: { min_abs_spearman: 0.15, max_missing_fraction: 0.05 },
+      },
+    },
+    modeling: { strategies: FIXED_BASELINE_SUITE, random_state: 42 },
+  };
+}
 /**
  * Dataset → modeling handoff (official orchestrator path only):
  * shows the prerequisite chain, creates the grouped split when missing,
@@ -30,6 +64,14 @@ function ComparisonTable({rows}:{rows:ResultRecord[]}) {
  * progress and user actions (CONFIRM_FEATURE_SELECTION etc.) are handled
  * on the Runs page — this panel never trains or rebuilds implicitly.
  */
+/** The predeclared fixed baseline suite (mirrors modeling/schemas.STRATEGIES
+ *  order; Dummy stays first — no tuning, no additions at runtime). */
+const FIXED_BASELINE_SUITE = [
+  "DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
+  "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS",
+  "RANDOM_FOREST", "GRADIENT_BOOSTING",
+];
+
 function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; experimentId: string; wf: ReturnType<typeof useWorkflowContext>["data"] }) {
   const qc = useQueryClient();
   const splitsQ = useQuery({ queryKey: ["splits", batteryId, experimentId], queryFn: () => client.listSplits(batteryId, experimentId) });
@@ -44,9 +86,11 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
     mutationFn: () => client.createSplit({ battery_id: batteryId, experiment_id: experimentId, dataset_id: datasetId! }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] }); },
   });
-  const dryRun = useMutation({ mutationFn: () => client.dryRun({ profile: "FULL_PRE_MODEL", battery_id: batteryId, experiment_id: experimentId }) });
+  const selectedFeatures = ((steps.DATASET?.committed as { selected_features?: string[] } | undefined)?.selected_features ?? []);
+  const request = modelingRunRequest(batteryId, experimentId, selectedFeatures);
+  const dryRun = useMutation({ mutationFn: () => client.dryRun(request) });
   const startRun = useMutation({
-    mutationFn: () => client.startRun({ profile: "FULL_PRE_MODEL", battery_id: batteryId, experiment_id: experimentId }),
+    mutationFn: () => client.startRun(request),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["runs", 5] }); },
   });
   const planned = (dryRun.data?.data as { nodes?: { node_id: string; state: string }[] } | undefined)?.nodes ?? [];
@@ -64,7 +108,7 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
     <div className="flex gap-3 mt-3 items-center flex-wrap">
       <Button variant="outline" size="sm" data-testid="launcher-dry-run" disabled={!datasetId || !hasSplit || dryRun.isPending}
         onClick={() => dryRun.mutate()}>{dryRun.isPending ? "计划中…" : "查看运行计划（只读 dry-run）"}</Button>
-      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !!waitingRun || startRun.isPending}
+      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !selectedFeatures.length || !!waitingRun || startRun.isPending}
         onClick={() => startRun.mutate()}>{startRun.isPending ? "启动中…" : "启动建模运行 / Start run"}</Button>
       {startRun.isSuccess && <span className="text-sm">已启动：<code>{String((startRun.data as { data?: { run_id?: string } })?.data?.run_id ?? "").slice(0, 28)}</code> · <Link className="underline" to="/runs">运行页跟踪与确认</Link></span>}
       {startRun.error && <span className="text-sm text-[#9b782e]" data-testid="launcher-start-error">启动失败：{(startRun.error as Error).message?.slice(0, 120)}</span>}

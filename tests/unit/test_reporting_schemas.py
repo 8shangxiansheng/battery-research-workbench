@@ -181,16 +181,15 @@ def test_t12_lineage_snapshot_structure(tmp_path: Path) -> None:
 
 
 def test_t13_ids_preserved_in_lineage(tmp_path: Path) -> None:
+    from battery_workbench.reporting.collector import collect_experiment_record
     from battery_workbench.reporting.schemas import build_lineage_snapshot as build_full_lineage
 
     lineage = build_full_lineage(Path("data/processed"), "CELL_001", "EXP_001")
     text = json.dumps(lineage)
-    for known_id in (
-        "DS::6a3142e5186fc684964ff09e",
-        "LB::752466f98a93a4d1b44da358",
-        "SPLIT::062cf007d21578a11ab2d728",
-        "GATESET::8633ce421ad5e26fe686",
-    ):
+    record = collect_experiment_record(Path("data/processed"), "CELL_001", "EXP_001")
+    for known_id in record.latest_canonical_artifacts.values():
+        if not known_id:
+            continue
         assert known_id in text, f"lineage missing {known_id}"
 
 

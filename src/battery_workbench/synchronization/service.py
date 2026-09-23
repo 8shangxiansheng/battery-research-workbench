@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 
 from battery_workbench.io.experiment.manifest_loader import (
+    data_asset_matches,
     load_data_assets,
     load_experiments,
 )
@@ -54,6 +55,7 @@ def assess_experiment_time_anchors(
     processed_root: Path,
     manifest_root: Path,
     config: TimeAnchorConfig,
+    battery_id: str | None = None,
     overrides: dict[str, TimeAnchorOverride] | None = None,
 ) -> TimeAnchorReport:
     """Assess one experiment's elapsed-time anchors; read-only, no parser.
@@ -67,7 +69,11 @@ def assess_experiment_time_anchors(
 
     # --- Experiment & asset metadata (read-only) ---
     experiments = load_experiments(manifest_root / "experiments.csv")
-    experiment = next((e for e in experiments if e.experiment_id == experiment_id), None)
+    candidates = [
+        e for e in experiments
+        if e.experiment_id == experiment_id and (battery_id is None or e.battery_id == battery_id)
+    ]
+    experiment = candidates[0] if len(candidates) == 1 else None
     if experiment is None:
         return TimeAnchorReport(
             battery_id="",
@@ -81,7 +87,10 @@ def assess_experiment_time_anchors(
         )
 
     assets = load_data_assets(manifest_root / "data_assets.csv")
-    experiment_assets = [a for a in assets if a.experiment_id == experiment_id]
+    experiment_assets = [
+        a for a in assets
+        if data_asset_matches(a, experiment.battery_id, experiment_id)
+    ]
 
     # --- Electrical coverage window from processed records (read-only) ---
     electrical_start: pd.Timestamp | None = None
