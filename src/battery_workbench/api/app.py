@@ -148,6 +148,7 @@ def create_app(
         assistant,
         data,
         experiments,
+        extensions,
         features_v2,
         intake,
         resources,
@@ -159,6 +160,7 @@ def create_app(
     app.include_router(system.router, prefix="/api/v1")
     app.include_router(intake.router, prefix="/api/v1")
     app.include_router(experiments.router, prefix="/api/v1")
+    app.include_router(extensions.router, prefix="/api/v1")
     app.include_router(runs.router, prefix="/api/v1")
     app.include_router(resources.router, prefix="/api/v1")
     app.include_router(waveform.router, prefix="/api/v1")

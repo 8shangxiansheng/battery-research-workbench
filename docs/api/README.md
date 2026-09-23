@@ -11,6 +11,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | Group | Endpoints |
 |---|---|
 | system | `GET /health`, `GET /capabilities`, `GET /version` |
+| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment + dormant request schemas; no future write endpoints are mounted) |
 | experiments | `GET /experiments`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence`, `/research-overview`, `/workflow-context` |
 | runs | `POST /runs/plan`, `POST /runs/dry-run`, `POST /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`, `POST /runs/{run_id}/resume`, `POST /runs/{run_id}/retry/{node_id}` |
 | user-actions | `GET /runs/{run_id}/user-actions`, `POST /runs/{run_id}/user-actions/{action_id}` (typed values required; API never fills scientific values) |
