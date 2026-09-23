@@ -19,16 +19,29 @@ STRATEGIES = (
     "DUMMY_MEAN",
     "LINEAR_REGRESSION",
     "RIDGE",
+    "SUPPORT_VECTOR_REGRESSION",
+    "GAUSSIAN_PROCESS_REGRESSION",
+    "K_NEAREST_NEIGHBORS",
     "RANDOM_FOREST",
     "GRADIENT_BOOSTING",
 )
 STOCHASTIC_STRATEGIES = {"RANDOM_FOREST", "GRADIENT_BOOSTING"}
 
 # PREDECLARED_FIXED_BASELINE_CONFIG (no tuning; frozen for this task pack).
+# GPR/SVR/kNN hyperparameters follow the small-sample conventions reported in
+# the ultrasonic battery-state literature (fixed kernel/regularization, no
+# validation-set search — there is no independent validation group).
 FIXED_CONFIGS: dict[str, dict[str, Any]] = {
     "DUMMY_MEAN": {"strategy": "mean"},
     "LINEAR_REGRESSION": {},
     "RIDGE": {"alpha": 1.0},
+    "SUPPORT_VECTOR_REGRESSION": {"kernel": "rbf", "C": 1.0, "epsilon": 0.1},
+    "GAUSSIAN_PROCESS_REGRESSION": {
+        "kernel": "1.0*RBF(length_scale=1.0) + WhiteKernel(noise_level=1.0)",
+        "normalize_y": True,
+        "hyperparameter_optimization": "NONE (fixed; fit with optimizer=None)",
+    },
+    "K_NEAREST_NEIGHBORS": {"n_neighbors": 10, "weights": "distance"},
     "RANDOM_FOREST": {"n_estimators": 300, "max_depth": None},
     "GRADIENT_BOOSTING": {"n_estimators": 200, "learning_rate": 0.05},
 }

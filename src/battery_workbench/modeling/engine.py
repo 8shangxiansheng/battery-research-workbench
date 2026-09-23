@@ -15,15 +15,25 @@ import numpy as np
 import pandas as pd
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.neighbors import KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
 
 from battery_workbench.modeling.schemas import ModelSpec
 from battery_workbench.modeling.view import FoldTrainingView, MissingPredictorError
 
 MODEL_INPUT_NOT_COMPLETE = "MODEL_INPUT_NOT_COMPLETE"
-SCALED_STRATEGIES = {"LINEAR_REGRESSION", "RIDGE"}
+SCALED_STRATEGIES = {
+    "LINEAR_REGRESSION",
+    "RIDGE",
+    "SUPPORT_VECTOR_REGRESSION",
+    "GAUSSIAN_PROCESS_REGRESSION",
+    "K_NEAREST_NEIGHBORS",
+}
 
 
 @dataclass
@@ -58,6 +68,32 @@ def fit_model(view: FoldTrainingView, spec: ModelSpec) -> FittedModel:
             else Ridge(alpha=spec.config.get("alpha", 1.0))
         )
         pipeline = Pipeline([("scaler", StandardScaler()), ("regressor", inner)])
+        pipeline.fit(x, y)
+        est = pipeline.named_steps["regressor"]
+    elif spec.strategy == "SUPPORT_VECTOR_REGRESSION":
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            ("regressor", SVR(kernel="rbf", C=1.0, epsilon=0.1)),
+        ])
+        pipeline.fit(x, y)
+        est = pipeline.named_steps["regressor"]
+    elif spec.strategy == "GAUSSIAN_PROCESS_REGRESSION":
+        kernel = RBF(length_scale=1.0) + WhiteKernel(noise_level=1.0)
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            # optimizer=None freezes the declared kernel hyperparameters
+            ("regressor", GaussianProcessRegressor(
+                kernel=kernel, optimizer=None, normalize_y=True,
+                random_state=spec.random_state,
+            )),
+        ])
+        pipeline.fit(x, y)
+        est = pipeline.named_steps["regressor"]
+    elif spec.strategy == "K_NEAREST_NEIGHBORS":
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            ("regressor", KNeighborsRegressor(n_neighbors=10, weights="distance")),
+        ])
         pipeline.fit(x, y)
         est = pipeline.named_steps["regressor"]
     elif spec.strategy == "RANDOM_FOREST":

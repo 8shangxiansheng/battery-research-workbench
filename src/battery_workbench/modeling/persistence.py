@@ -76,8 +76,11 @@ def write_model_payload(
         "selected_features": spec.selected_features,
         "preprocessing": (
             "StandardScaler fitted on TRAIN rows only (sklearn Pipeline)"
-            if spec.strategy in ("LINEAR_REGRESSION", "RIDGE")
-            else "NONE (tree-based, no scaling)"
+            if spec.strategy in (
+                "LINEAR_REGRESSION", "RIDGE", "SUPPORT_VECTOR_REGRESSION",
+                "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS",
+            )
+            else "NONE (tree-based/dummy, no scaling)"
         ),
         "missing_value_policy": "FAIL",
         "train_row_count": metrics["overall"]["n"],

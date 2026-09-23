@@ -7,6 +7,8 @@ const names: Record<string, string> = {
   waveform_min_a_u: "Minimum amplitude", waveform_max_a_u: "Maximum amplitude",
   envelope_peak_a_u: "Envelope peak", xcorr_shift_samples: "Relative waveform shift",
   DUMMY_MEAN: "Dummy Mean", LINEAR_REGRESSION: "Linear regression", RIDGE: "Ridge",
+  SUPPORT_VECTOR_REGRESSION: "SVR (RBF)", GAUSSIAN_PROCESS_REGRESSION: "GPR",
+  K_NEAREST_NEIGHBORS: "k-NN (k=10)",
   RANDOM_FOREST: "Random forest", GRADIENT_BOOSTING: "Gradient boosting",
   PROVISIONAL: "Provisional timebase", READY_FOR_LIMITED_EVALUATION: "Limited evaluation",
   NOT_READY_FOR_MODEL_EVALUATION: "Not ready for evaluation", BLOCKED: "Input required",
