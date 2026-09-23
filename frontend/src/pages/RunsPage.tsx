@@ -164,10 +164,28 @@ export function RunsPage() {
                       <option value="kHz">kHz</option>
                       <option value="MHz">MHz</option>
                     </select>
+                    <label className="ml-3" htmlFor="fs-source">来源：</label>
+                    <input
+                      id="fs-source"
+                      data-testid="fs-source"
+                      className="border rounded px-2 py-1"
+                      value={actionValues["fs_source"] ?? "实验记录"}
+                      onChange={(e) => setActionValues((prev) => ({ ...prev, fs_source: e.target.value }))}
+                    />
+                    <label className="ml-3" htmlFor="fs-verification">核验状态：</label>
+                    <select
+                      id="fs-verification"
+                      data-testid="fs-verification"
+                      value={actionValues["fs_verification"] ?? "UNVERIFIED"}
+                      onChange={(e) => setActionValues((prev) => ({ ...prev, fs_verification: e.target.value }))}
+                    >
+                      <option value="UNVERIFIED">UNVERIFIED（默认，未核验）</option>
+                      <option value="VERIFIED">VERIFIED（本人已对照实验记录核验）</option>
+                    </select>
                     <p>
                       <small>
-                        按 {"{value, unit}"} 原样提交，后端负责换算成 Hz 并记录来源；不猜数值；不把 frame cadence
-                        当采样率（§14）。
+                        按 {"{value, unit, source_reference, verification_status}"} 原样提交，后端负责换算成 Hz
+                        并记录来源；不猜数值；不把 frame cadence 当采样率（§14）。
                       </small>
                     </p>
                   </fieldset>
@@ -206,13 +224,17 @@ export function RunsPage() {
                     Object.assign(values, actionValues);
                     if (values["ultrasound.sampling_rate_hz"] !== undefined) {
                       const unit = (values["fs_unit"] as string) ?? "MHz";
-                      // orchestrator contract: submit {value, unit} as-is — the
-                      // backend converts to Hz and records provenance (§13-14)
+                      // orchestrator contract: submit the record fields as-is —
+                      // the backend converts to Hz and derives provenance (§13-14)
                       values["ultrasound.sampling_rate_hz"] = {
                         value: Number(values["ultrasound.sampling_rate_hz"]),
                         unit,
+                        source_reference: (values["fs_source"] as string) ?? "实验记录",
+                        verification_status: (values["fs_verification"] as string) ?? "UNVERIFIED",
                       };
                       delete values["fs_unit"];
+                      delete values["fs_source"];
+                      delete values["fs_verification"];
                     }
                     submitAction.mutate({ actionId: a.action_id, values });
                   }}
