@@ -20,6 +20,11 @@ import { Button } from "../../components/ui/button";
 
 const PHYSICAL_FEATURES = ["tof_us", "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "BPS", "amplitude_a_u"];
 
+/** BRW-021R2 follow-up: exact-set feature identity (gate/variant suffix
+ * stripped, order-insensitive). Partial overlap is NOT a match. */
+export const normFeatureSet = (list: readonly unknown[] | undefined) =>
+  (list ?? []).map(f => String(f).split("@")[0]).sort().join("|");
+
 const STEP_KEYS: WorkflowStepKey[] = ["target", "alignment", "features", "relationships", "selection", "dataset"];
 
 export function AnalysisWorkbench() {
@@ -77,8 +82,13 @@ export function AnalysisWorkbench() {
   // materialized analysis, then the first available split (fold1 default).
   const [mlSplitId, setMlSplitId] = useState<string | null>(null);
   const [mlFold, setMlFold] = useState<string | null>(null);
-  const readyAnalysis = mode === "TRAIN_ONLY_ML_SAFE"
-    ? (materialized.data?.data.analyses ?? []).find(a => a.status === "AVAILABLE" && a.split_id && (a.selected_features ?? []).some(f => features.includes(String(f).split("@")[0]!)))
+  // BRW-021R2 follow-up: identity is EXACT-SET matching — an analysis only
+  // counts when its selected feature set equals the current draft feature set
+  // (per-name, gate/variant suffix stripped); partial overlap is not a match.
+  const readyAnalysis = mode === "TRAIN_ONLY_ML_SAFE" && features.length > 0
+    ? (materialized.data?.data.analyses ?? []).find(a =>
+        a.status === "AVAILABLE" && !!a.split_id
+        && normFeatureSet(a.selected_features) === normFeatureSet(features))
     : null;
   const effectiveSplitId = mlSplitId ?? readyAnalysis?.split_id ?? splitsQ.data?.data.splits[0]?.split_id ?? null;
   const foldsQ = useQuery({

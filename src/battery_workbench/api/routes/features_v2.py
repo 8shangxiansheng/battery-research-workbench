@@ -31,6 +31,7 @@ from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.service import validate_id
 from battery_workbench.features.gate_calibration import (
     CALIBRATION_POLICY_ID,
+    GateBoundPair,
     GateCalibrationRecord,
     select_calibration_frames,
 )
@@ -443,10 +444,25 @@ def gate_calibration(
     # target-blind calibration frames (A-scan + envelope + per-gate peaks).
     from battery_workbench.features.gate_calibration import (
         SOURCE_TEMPLATE_FROZEN,
+        resolve_gate_calibration,
         resolve_tof_gate_calibration,
     )
 
     service_for_resolve = get_service(request)
+    generic_cal = resolve_gate_calibration(
+        battery_id, experiment_id, service_for_resolve.processed_root
+    )
+    for entry in templates:
+        entry["bounds_source"] = "SOURCE_TEMPLATE"
+        if generic_cal:
+            pair = (generic_cal["gate_bounds"] or {}).get(entry["gate_template_id"])
+            if pair:
+                entry["python_start"] = int(pair["start"])
+                entry["python_end_exclusive"] = int(pair["end_exclusive"])
+                entry["length_samples"] = (
+                    int(pair["end_exclusive"]) - int(pair["start"])
+                )
+                entry["bounds_source"] = "EXPERIMENT_FROZEN"
     tof_cal = resolve_tof_gate_calibration(
         battery_id, experiment_id, service_for_resolve.processed_root
     )
@@ -467,6 +483,7 @@ def gate_calibration(
             "tof_calibration": tof_cal | {"fallback_identity": SOURCE_TEMPLATE_FROZEN},
             "tof_gate_diagnostics": tof_diagnostics,
             "recommendation": "review peak containment and edge hits, then confirm",
+            "generic_calibration": generic_cal,
         },
         "meta": {
             "policy_id": CALIBRATION_POLICY_ID,
@@ -493,7 +510,42 @@ def freeze_gate_calibration(
     service = get_service(request)
     n_total = _load_frames(request, battery_id, experiment_id).shape[0]
     frame_ids = select_calibration_frames(n_total)
-    fingerprint = f"{battery_id}|{experiment_id}|{sorted(frame_ids)}|{basis}"
+
+    # user-adjusted template bounds persisted with the freeze (empty = source
+    # template bounds stay authoritative); unknown templates / bad ints reject
+    raw_bounds = body.get("gate_bounds") or {}
+    if not isinstance(raw_bounds, dict):
+        raise APIError(ErrorCode.VALIDATION_ERROR, "gate_bounds must be an object")
+    gate_bounds: dict[str, GateBoundPair] = {}
+    for template_id, pair in raw_bounds.items():
+        try:
+            template = get_gate_template(str(template_id))
+        except Exception as exc:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR, f"unknown gate template {template_id!r}"
+            ) from exc
+        try:
+            start = int(pair["start"])
+            end = int(pair["end"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "each gate bound must be {start, end} integers",
+            ) from exc
+        if start < 0 or end <= start:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                f"invalid bounds for {template.gate_template_id}: require 0<=start<end",
+            )
+        gate_bounds[template.gate_template_id] = GateBoundPair(
+            start=start, end_exclusive=end
+        )
+    bounds_key = ",".join(
+        f"{k}:{v.start}:{v.end_exclusive}" for k, v in sorted(gate_bounds.items())
+    )
+    fingerprint = (
+        f"{battery_id}|{experiment_id}|{sorted(frame_ids)}|{basis}|{bounds_key}"
+    )
     calibration_id = "GC::" + hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
 
     record = GateCalibrationRecord(
@@ -508,6 +560,7 @@ def freeze_gate_calibration(
         calibration_basis=basis,  # type: ignore[arg-type]
         start_frame=0,
         end_frame=n_total - 1,
+        gate_bounds=gate_bounds,
         confirmed_by=confirmed_by,
     ).freeze(confirmed_at=str(body.get("confirmed_at", "")))
 

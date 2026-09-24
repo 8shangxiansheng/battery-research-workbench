@@ -168,6 +168,17 @@ describe("AnalysisWorkbench（R1 target-first workflow）", () => {
       expect(screen.getByTestId("step-target")).toBeInTheDocument();
     });
   });
+
+  it("TRAIN_ONLY_ML_SAFE identity is exact-set, gate suffix stripped", async () => {
+    const { normFeatureSet } = await import("../src/pages/redesign/AnalysisWorkbench");
+    expect(normFeatureSet(["amplitude_a_u@GATE::1", "envelope_peak_a_u"])).toBe(
+      normFeatureSet(["envelope_peak_a_u", "amplitude_a_u"]),
+    );
+    // partial overlap must NOT equal a two-feature draft identity
+    expect(normFeatureSet(["amplitude_a_u@GATE::1"])).not.toBe(
+      normFeatureSet(["amplitude_a_u", "envelope_peak_a_u"]),
+    );
+  });
 });
 
 describe("Waveform workbench（§9/§11）", () => {
@@ -189,6 +200,42 @@ describe("Waveform workbench（§9/§11）", () => {
       expect(screen.getByRole("button", { name: /添加采样频率|add sampling rate/i })).toBeInTheDocument();
     });
     expect(screen.queryByText(/^0$/)).not.toBeInTheDocument();
+  });
+
+  it("events are fetched scoped to the selected frame and sync provenance stays visible", async () => {
+    clientMock.listWaveformFrames.mockResolvedValue({ data: { battery_id: "C", experiment_id: "E",
+      frame_count: 1, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
+      frames: [{ frame_index: 7, waveform_group: "g", waveform_row_index: 0, sample_count: 1250 }] }, meta: {} });
+    clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
+    const event = {
+      measurement_event_id: "ME::1", frame_index_raw: 7, timestamp: null,
+      provisional_absolute_timestamp: "2026-01-01T00:00:10+08:00",
+      cycle_index_raw: 1, step_index_raw: 2, voltage_v: 3.7, current_a: 1.0,
+      soc_reference_percent: 55, step_type: "恒流充电", temperature_c: null,
+      sync_error_s: 0.0312, match_status: "MATCHED", sync_ambiguous: false,
+      anchor_status: "PROVISIONAL", source_file: "u.txt",
+      ultrasound_asset_id: "AS::u1111111", electrical_asset_id: "AS::e2222222",
+      electrical_timestamp: "2026-01-01T00:00:10",
+    };
+    clientMock.getMeasurementEvents.mockResolvedValue({ data: { total: 1, events: [event] }, meta: {} });
+    clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
+    clientMock.getWaveformFrame.mockResolvedValue({ data: { frame_index: 7, waveform_group: "g",
+      waveform_row_index: 0, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_us: null,
+      sampling_rate_status: "NOT_VERIFIED", max_points: 1000, samples: [] }, meta: {} });
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+    await waitFor(() => {
+      expect(screen.getByTestId("frame-sync-error")).toBeInTheDocument();
+    });
+    // cross-asset electrical context: the query is scoped to THIS frame,
+    // not a shared first-50 preview
+    expect(clientMock.getMeasurementEvents).toHaveBeenCalledWith(
+      "CELL_001", "EXP_001", 50, undefined, { frameIndex: 7 },
+    );
+    // sync_error_s + both asset identities are displayed (never hidden)
+    expect(screen.getByTestId("frame-sync-error").textContent).toContain("0.031");
+    expect(screen.getByTestId("frame-us-asset").textContent).toContain("u1111111");
+    expect(screen.getByTestId("frame-el-asset").textContent).toContain("e2222222");
   });
 });
 

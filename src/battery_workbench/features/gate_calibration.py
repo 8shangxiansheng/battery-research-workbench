@@ -92,6 +92,13 @@ def select_calibration_frames(
     return sorted(set(chosen))[:n_frames]
 
 
+class GateBoundPair(BaseModel):
+    """User-confirmed sample bounds for one gate template (0-based, half-open)."""
+
+    start: int
+    end_exclusive: int
+
+
 class GateCalibrationRecord(BaseModel):
     """Frozen, versioned calibration record (§118)."""
 
@@ -107,6 +114,9 @@ class GateCalibrationRecord(BaseModel):
     calibration_basis: CalibrationBasis
     start_frame: int
     end_frame: int
+    #: adjusted template bounds persisted at freeze time (empty = source
+    #: template bounds remain authoritative)
+    gate_bounds: dict[str, GateBoundPair] = Field(default_factory=dict)
     confirmed_by: str
     status: Literal["DRAFT", "FROZEN"] = "DRAFT"
     version: int = 1
@@ -441,6 +451,43 @@ def tof_calibration_id_from_fingerprint(fingerprint: str, version: int) -> str:
     import hashlib
 
     return "GC-TOF::" + hashlib.sha256(f"{fingerprint}|v{version}".encode()).hexdigest()[:24]
+
+
+def resolve_gate_calibration(
+    battery_id: str, experiment_id: str, processed_root: Path
+) -> dict[str, Any] | None:
+    """Latest FROZEN generic GateCalibrationRecord for the experiment, if any.
+
+    Returns persisted adjusted template bounds (gate_bounds) so the calibration
+    UI and any downstream consumer can treat a user-confirmed freeze as
+    durable state instead of local-only draft.
+    """
+    import json as _json
+
+    root = processed_root / "gate_calibrations" / battery_id / experiment_id
+    candidates: list[tuple[tuple[str, str], dict[str, Any]]] = []
+    if root.is_dir():
+        for p in sorted(root.glob("GC::*.json")):
+            try:
+                record = _json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, _json.JSONDecodeError):
+                continue
+            if record.get("status") != "FROZEN":
+                continue
+            candidates.append(((str(record.get("confirmed_at") or ""), p.name), record))
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda c: c[0])[1]
+    return {
+        "gate_calibration_id": best.get("gate_calibration_id", ""),
+        "gate_bounds": {
+            k: {"start": v["start"], "end_exclusive": v["end_exclusive"]}
+            for k, v in (best.get("gate_bounds") or {}).items()
+        },
+        "calibration_basis": best.get("calibration_basis"),
+        "confirmed_at": best.get("confirmed_at"),
+        "version": best.get("version", 1),
+    }
 
 
 def resolve_tof_gate_calibration(

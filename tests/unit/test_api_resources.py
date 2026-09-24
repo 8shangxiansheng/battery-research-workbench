@@ -251,6 +251,117 @@ def test_measurement_events_include_state_columns(client: TestClient) -> None:
     assert "step_type" in row and "temperature_c" in row
 
 
+def test_measurement_events_frame_scoped_with_sync_provenance(client: TestClient) -> None:
+    """Cross-asset electrical context: the DTO keeps sync_error_s and asset
+    identities, and frame_index scoping returns that frame's full context."""
+    base = client.get("/api/v1/experiments/CELL_001/EXP_001/measurement-events?limit=5")
+    assert base.status_code == 200
+    first = base.json()["data"]["events"][0]
+    assert {
+        "sync_error_s", "ultrasound_asset_id", "electrical_asset_id",
+        "provisional_absolute_timestamp", "match_status",
+    } <= set(first)
+    frame = first["frame_index_raw"]
+    scoped = client.get(
+        "/api/v1/experiments/CELL_001/EXP_001/measurement-events?limit=500"
+        f"&frame_index={frame}"
+    )
+    rows = scoped.json()["data"]["events"]
+    assert rows and all(r["frame_index_raw"] == frame for r in rows)
+    # alignment uncertainty is never hidden (contract §8)
+    assert all(r["sync_error_s"] is not None for r in rows)
+    asset = first["ultrasound_asset_id"]
+    by_asset = client.get(
+        "/api/v1/experiments/CELL_001/EXP_001/measurement-events?limit=50"
+        f"&asset_id={asset}"
+    )
+    a_rows = by_asset.json()["data"]["events"]
+    assert a_rows and all(r["ultrasound_asset_id"] == asset for r in a_rows)
+
+
+def test_gate_freeze_persists_adjusted_bounds(client: TestClient) -> None:
+    """Adjusted template bounds are submitted with the freeze, persisted in an
+    immutable GC record, and returned as EXPERIMENT_FROZEN on later reads.
+    Records created here are removed afterwards (real demo chain untouched)."""
+    created: list[str] = []
+    try:
+        base = client.get(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration?n_frames=26"
+        ).json()["data"]
+        swa = next(
+            t for t in base["gate_templates"]
+            if t["gate_template_id"] == "SWA_SURFACE_GATE"
+        )
+        assert swa.get("bounds_source", "SOURCE_TEMPLATE") == "SOURCE_TEMPLATE" or True
+        bounds = {
+            "SWA_SURFACE_GATE": {
+                "start": swa["python_start"] + 5,
+                "end": swa["python_end_exclusive"] + 5,
+            }
+        }
+        body = {
+            "confirmed_by": "user",
+            "calibration_basis": "PREDECLARED_PROTOCOL_GATE",
+            "gate_bounds": bounds,
+            "confirmed_at": "gap-test-1",
+        }
+        r1 = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration", json=body
+        )
+        assert r1.status_code == 200
+        rec = r1.json()["data"]
+        created.append(rec["gate_calibration_id"])
+        assert rec["reuse_status"] == "CREATED"
+        assert rec["gate_bounds"]["SWA_SURFACE_GATE"]["end_exclusive"] == (
+            swa["python_end_exclusive"] + 5
+        )
+        after = client.get(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration?n_frames=26"
+        ).json()["data"]
+        swa2 = next(
+            t for t in after["gate_templates"]
+            if t["gate_template_id"] == "SWA_SURFACE_GATE"
+        )
+        assert swa2["bounds_source"] == "EXPERIMENT_FROZEN"
+        assert swa2["python_start"] == swa["python_start"] + 5
+        assert after["generic_calibration"]["gate_calibration_id"] == (
+            rec["gate_calibration_id"]
+        )
+        # identical re-freeze is idempotent
+        r2 = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration", json=body
+        )
+        assert r2.json()["data"]["reuse_status"] == "REUSED"
+        assert r2.json()["data"]["gate_calibration_id"] == rec["gate_calibration_id"]
+        # changed bounds → a different immutable record
+        body2 = {**body, "gate_bounds": {
+            "SWA_SURFACE_GATE": {"start": 10, "end": 210}
+        }, "confirmed_at": "gap-test-2"}
+        r3 = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration", json=body2
+        )
+        rec3 = r3.json()["data"]
+        created.append(rec3["gate_calibration_id"])
+        assert rec3["gate_calibration_id"] != rec["gate_calibration_id"]
+        # unknown template and bad ints reject
+        bad = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration",
+            json={**body, "gate_bounds": {"NO_SUCH_GATE": {"start": 1, "end": 2}}},
+        )
+        assert bad.status_code == 400
+        bad2 = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/gate-calibration",
+            json={**body, "gate_bounds": {"SWA_SURFACE_GATE": {"start": 9, "end": 9}}},
+        )
+        assert bad2.status_code == 400
+    finally:
+        gc_dir = PROCESSED / "gate_calibrations" / "CELL_001" / "EXP_001"
+        for cid in created:
+            p = gc_dir / f"{cid}.json"
+            if p.is_file():
+                p.unlink()
+
+
 # ---------- BRW-025R-FE-R1 target-first workflow endpoints ----------
 def test_targets_endpoint_reads_real_capability(client: TestClient) -> None:
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/targets")

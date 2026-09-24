@@ -105,6 +105,8 @@ def measurement_events(
     experiment_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     cursor: int | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    frame_index: int | None = Query(default=None),
 ) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
@@ -113,6 +115,13 @@ def measurement_events(
     if not events_path.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
     events = pd.read_parquet(events_path)
+    # asset/frame scoping keeps the electrical context tied to the exact
+    # ultrasound asset + frame being viewed (cross-asset context, not a
+    # shared first-N preview)
+    if asset_id is not None and "ultrasound_asset_id" in events.columns:
+        events = events[events["ultrasound_asset_id"].astype(str) == asset_id]
+    if frame_index is not None and "frame_index_raw" in events.columns:
+        events = events[events["frame_index_raw"].astype("Int64") == frame_index]
     if cursor is not None:
         events = events[events.index >= cursor]
     page = events.head(limit)
@@ -122,6 +131,7 @@ def measurement_events(
             "measurement_event_id",
             "frame_index_raw",
             "timestamp",
+            "provisional_absolute_timestamp",
             "cycle_index_raw",
             "step_index_raw",
             "voltage_v",
@@ -129,6 +139,14 @@ def measurement_events(
             "soc_reference_percent",
             "step_type",
             "temperature_c",
+            "sync_error_s",
+            "match_status",
+            "sync_ambiguous",
+            "anchor_status",
+            "source_file",
+            "ultrasound_asset_id",
+            "electrical_asset_id",
+            "electrical_timestamp",
         )
         if col in page.columns
     ]

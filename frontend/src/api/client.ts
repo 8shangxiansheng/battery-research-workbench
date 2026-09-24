@@ -365,6 +365,7 @@ export interface MeasurementEventRow {
   measurement_event_id: string;
   frame_index_raw: number | null;
   timestamp: string | null;
+  provisional_absolute_timestamp?: string | null;
   cycle_index_raw: number | null;
   step_index_raw: number | null;
   voltage_v: number | null;
@@ -372,6 +373,15 @@ export interface MeasurementEventRow {
   soc_reference_percent: number | null;
   step_type?: string | null;
   temperature_c?: number | null;
+  /** sync provenance — never hide alignment uncertainty */
+  sync_error_s?: number | null;
+  match_status?: string | null;
+  sync_ambiguous?: boolean | null;
+  anchor_status?: string | null;
+  source_file?: string | null;
+  ultrasound_asset_id?: string | null;
+  electrical_asset_id?: string | null;
+  electrical_timestamp?: string | null;
 }
 
 // ---------- BRW-025R-FE scientific feature workbench DTOs ----------
@@ -446,6 +456,8 @@ export interface GateTemplateEntry {
   python_start: number;
   python_end_exclusive: number;
   length_samples: number;
+  /** bounds come from this experiment's frozen record vs the source template */
+  bounds_source?: "EXPERIMENT_FROZEN" | "SOURCE_TEMPLATE";
 }
 
 export interface CalibrationFrameSample {
@@ -468,6 +480,14 @@ export interface GateCalibrationResponse {
   /** BRW-018R2 */
   tof_calibration?: TofCalibrationProvenance;
   tof_gate_diagnostics?: Record<"surface" | "bottom", TofGateDiagnostics>;
+  /** generic frozen calibration (adjusted template bounds persisted at freeze) */
+  generic_calibration?: {
+    gate_calibration_id: string;
+    gate_bounds: Record<string, { start: number; end_exclusive: number }>;
+    calibration_basis: string | null;
+    confirmed_at: string | null;
+    version: number;
+  } | null;
 }
 
 export interface TofCalibrationProvenance {
@@ -1157,9 +1177,18 @@ export const client = {
     request<DataQuality>(`/experiments/${batteryId}/${experimentId}/data-quality`),
   getSynchronization: (batteryId: string, experimentId: string) =>
     request<SynchronizationSummary>(`/experiments/${batteryId}/${experimentId}/synchronization`),
-  getMeasurementEvents: (batteryId: string, experimentId: string, limit = 50, cursor?: number) =>
+  getMeasurementEvents: (
+    batteryId: string,
+    experimentId: string,
+    limit = 50,
+    cursor?: number,
+    scope?: { frameIndex?: number | null; assetId?: string | null },
+  ) =>
     request<{ total: number; events: MeasurementEventRow[] }>(
-      `/experiments/${batteryId}/${experimentId}/measurement-events?limit=${limit}${cursor !== undefined ? `&cursor=${cursor}` : ""}`,
+      `/experiments/${batteryId}/${experimentId}/measurement-events?limit=${limit}` +
+        `${cursor !== undefined ? `&cursor=${cursor}` : ""}` +
+        `${scope?.frameIndex != null ? `&frame_index=${scope.frameIndex}` : ""}` +
+        `${scope?.assetId ? `&asset_id=${encodeURIComponent(scope.assetId)}` : ""}`,
     ),
 
   // ---------- BRW-025R-FE feature workbench ----------
@@ -1279,6 +1308,7 @@ export const client = {
   freezeGateCalibration: (batteryId: string, experimentId: string, body: {
     confirmed_by: string;
     calibration_basis: string;
+    gate_bounds?: Record<string, { start: number; end: number }>;
   }) =>
     request<GateCalibrationRecordEntry>(
       `/experiments/${batteryId}/${experimentId}/gate-calibration`,

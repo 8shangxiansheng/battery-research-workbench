@@ -22,10 +22,11 @@ const GATE_COLORS: Record<string, string> = {
   BPS_BOTTOM_GATE: "#7a5470",
 };
 
-function OverlayPlot({ frameData, templates, gates, onResize }: {
+function OverlayPlot({ frameData, templates, gates, showEnvelope = true, onResize }: {
   frameData: GateCalibrationResponse["frames"][number] | undefined;
   templates: GateTemplateEntry[];
   gates: Record<string, { start: number; end: number }>;
+  showEnvelope?: boolean;
   onResize: (gateId: string, start: number, end: number) => void;
 }) {
   const shapes = templates.map(t => {
@@ -44,7 +45,7 @@ function OverlayPlot({ frameData, templates, gates, onResize }: {
     {frameData ? <Plot
       data={[
         { x: frameData.samples.map(s => s.sample_index), y: frameData.samples.map(s => s.amplitude_a_u), type: "scatter", mode: "lines", line: { color: "#426976", width: 1.2 }, name: "Waveform / 波形", hovertemplate: "Sample %{x}<br>%{y:.3f}<extra></extra>" },
-        { x: frameData.samples.map(s => s.sample_index), y: frameData.samples.map(s => s.envelope_a_u), type: "scatter", mode: "lines", line: { color: "#2f7d6d", width: 1.4, dash: "dot" }, name: "Envelope / 包络", hovertemplate: "Sample %{x}<br>env %{y:.3f}<extra></extra>" },
+        ...(showEnvelope ? [{ x: frameData.samples.map(s => s.sample_index), y: frameData.samples.map(s => s.envelope_a_u), type: "scatter" as const, mode: "lines", line: { color: "#2f7d6d", width: 1.4, dash: "dot" }, name: "Envelope / 包络", hovertemplate: "Sample %{x}<br>env %{y:.3f}<extra></extra>" }] : []),
       ]}
       layout={{
         autosize: true, height: 400, margin: { l: 64, r: 24, t: 28, b: 52 },
@@ -93,9 +94,17 @@ export function CalibrationWorkbench({ batteryId, experimentId, waveformLength }
     enabled: open,
   });
   const freeze = useMutation({
-    mutationFn: () => client.freezeGateCalibration(batteryId, experimentId, {
-      confirmed_by: "user", calibration_basis: "PREDECLARED_PROTOCOL_GATE",
-    }),
+    mutationFn: () => {
+      // adjusted template bounds persist with the freeze — an adjustment
+      // that is not submitted can never be claimed as persisted
+      const gate_bounds = Object.fromEntries(
+        Object.entries(gates).map(([k, v]) => [k, { start: v.start, end: v.end }]),
+      );
+      return client.freezeGateCalibration(batteryId, experimentId, {
+        confirmed_by: "user", calibration_basis: "PREDECLARED_PROTOCOL_GATE",
+        ...(Object.keys(gates).length ? { gate_bounds } : {}),
+      });
+    },
     onSuccess: r => {
       setConfirmOpen(false);
       setFrozen({ id: r.data.gate_calibration_id, reuse: r.data.reuse_status });
@@ -170,13 +179,14 @@ export function CalibrationWorkbench({ batteryId, experimentId, waveformLength }
             Peak containment {numberText(frameDiag.peak_containment_fraction * 100, 1)}%{frameDiag.edge_hit ? " · Edge hit!" : ""}</Badge>}
           {edgeHits > 0 && <span className="text-xs muted">{edgeHits} 帧 packet 触及闸门边缘 / edge hits</span>}
         </div>
-        <div className="mt-3"><OverlayPlot frameData={frameData} templates={showEnvelope ? data.gate_templates : data.gate_templates} gates={gates} onResize={resize} /></div>
+        <div className="mt-3"><OverlayPlot frameData={frameData} templates={data.gate_templates} gates={gates} showEnvelope={showEnvelope} onResize={resize} /></div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs">
           {data.gate_templates.map(t => {
             const adj = gates[t.gate_template_id];
             return <Badge key={t.gate_template_id} variant="outline" data-testid={`gate-chip-${t.gate_template_id}`}>
               {t.role_zh} / {t.role_en}: {adj ? `${adj.start}–${adj.end}` : `${t.python_start}–${t.python_end_exclusive}`}
               {adj && <span className="ml-1 muted">(已调整)</span>}
+              {!adj && t.bounds_source === "EXPERIMENT_FROZEN" && <span className="ml-1" data-testid={`frozen-bounds-${t.gate_template_id}`}>(已冻结持久化)</span>}
             </Badge>;
           })}
         </div>

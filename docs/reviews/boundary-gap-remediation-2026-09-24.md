@@ -1,0 +1,71 @@
+# 能力边界与 UI/工作流缺口 —— 完善计划
+
+日期：2026-09-24。范围：回应"这些缺口怎么完善"。逐项给出：当前证据 → 缺口的真实性质（数据受限 vs 代码受限）→ 完善路径 → 验收标准。本轮同时落地了三个代码可闭环的 UI/工作流缺口（见 B 节）。
+
+`GET /api/v1/experiments/{b}/{e}/extension-readiness` 是本节论断的机器可读来源；
+当前真实链路观测：`battery_count=1, timebase=PROVISIONAL, independent_soh_states=2,
+temperature_valid_count=0, has_independent_validation=false`。
+
+## A. 科学证据边界（数据受限 —— 不能用代码"修掉"，只能准备到"数据一到即可激活"）
+
+### A1. 数据规模有限 / 跨电池泛化证据不足
+- 性质：单电池（CELL_001）、2 个循环组。任何调参或换模型都不会制造第二块电池。
+- 完善路径：
+  1. **数据**：用现有 intake 生命周期接入第 2+ 块电池（多资产导入链已可用，`NewExperimentWizard` 支持 file_start_time 来源标注）。
+  2. **协议**：跨电池评估必须 `battery_id` 作外层分组（leave-one-battery-out）；契约已写入
+     `cohort-dataset/1.0`（docs/architecture/future-scientific-extension-contracts.md），激活门 = ≥2 独立电池 + 特征/目标定义对齐。
+  3. **代码可先行**：在合成双电池 fixture 上实现并测试 LOBO 拆分与聚合宏平均（确定性模块，非 Agent 提示），readiness 端点保持 `BLOCKED_BY_DATA` 直到真实第 2 块电池到位——实现先行不等于能力开启。
+- 验收：合成 fixture 的 LOBO 单测通过；真实链路报告仍只声明 WITHIN_BATTERY 范围；readiness 状态在真实双电池出现前不得翻绿。
+
+### A2. 超参数调优
+- 性质：不是"没写调参器"，是没有合法评估它的验证角色（无独立 VALIDATION 组）。在没有留出验证集时调参=在训练集上自我打分。
+- 完善路径：`tuning-study/1.0` 契约已休眠待装；实施顺序 = ①嵌套分组选择模块（内层 TRAIN-only CV）→ ②readiness 门检查 `has_independent_validation` → ③通过后才挂 `POST /tuning-studies`。任何 tuning 运行不得读外层 HELD_OUT 目标。
+- 验收：调参候选选择在折叠内完成的结构测试；HELD_OUT 目标在 tuner 代码路径不可达（签名级隔离，与 BRW-022 fit_model 同一手法）；UI 的"暂不支持调参"入口保持诚实直至门通过。
+
+### A3. 温度通道
+- 性质：真实 events 有 `temperature_c` 列但有效读数=0、无观测方差 → 无信息通道。目标定义 `temperature_c` 已在 targets 列表中存在（定义 ≠ 可建模）。
+- 完善路径：①采集端保证温度与电学同资产时间对齐入库；②readiness 的 `TEMPERATURE_MODELING` 需要 measured>0、覆盖率审计与真实方差才翻 `PARTIALLY_READY`；③届时尚无特征-温度混杂控制前，温度只作诊断维度不作预测目标。
+- 验收：覆盖率/方差阈值全部由 `extension-readiness` 观测值驱动，禁止手工置 READY；UI 已按温度可用性分支（Analysis 关系视图已实现该分支）。
+
+### A4. 独立 SOH 状态能力
+- 性质：当前仅 2 个独立健康状态；契约规定帧行不算独立状态（3999 行 ≠ 3999 个电池）。目标 `soh_capacity_reference_percent` 已在 API 报告 `NOT_READY_INSUFFICIENT_SOH_STATES`（test_api_resources 断言在案）。
+- 完善路径：`target-dataset/1.0` 激活门 = ≥3 独立 SOH 状态 + cycle/battery 级目标粒度 + 参考容量来源；数据侧需要带标定容量记录的独立循环/电池。
+- 验收：SOH 建模入口只在 readiness 翻绿后出现；报告永远携带"独立状态数"这一限制。
+
+## B. 本轮已闭环的 UI/工作流缺口（2026-09-24）
+
+### B1. 标定参数持久化（原审查：调整后的 gates 不随冻结提交）
+- 已落地：`freeze_gate_calibration` 接受并校验 `gate_bounds`（未知模板/非法区间 400）；
+  边界进入记录指纹 → 相同重提交幂等 REUSED，修改边界生成新的不可变 GC 记录；
+  `resolve_gate_calibration` 读回最新 FROZEN 记录；GET gate-calibration 将冻结边界覆盖进
+  `gate_templates` 并标注 `bounds_source=EXPERIMENT_FROZEN`；CalibrationWorkbench 提交调整值、
+  闸门 chip 显示"已冻结持久化"。顺带修复了包络开关两分支相同的死控件。
+- 测试：tests/unit/test_gate_bounds_persistence.py（解析器）+ test_api_resources.py 两个 API 用例（含清理）。
+- 遗留（属计算链改造，单列任务）：SWA 等模板驱动特征的**计算**目前仍读源模板；让
+  physical_v2/gated-features 消费冻结边界会改变特征值 → 需 golden/parity 测试与整链重算
+  （合同 §12/§13），不在本轮顺手做。
+
+### B2. 跨资产电学上下文（原审查：WaveformWorkbench 固定前 50 事件）
+- 已落地：`GET /measurement-events` 增加 `frame_index`/`asset_id` 过滤，DTO 暴露
+  `sync_error_s、provisional_absolute_timestamp、match_status、anchor_status、
+  ultrasound_asset_id、electrical_asset_id、electrical_timestamp`（合同 §8：对齐不确定性不得隐藏）；
+  WaveformWorkbench 按当前帧取事件，顶栏显示 同步 ±0.031 s · 超声 U001 · 电学 E001（浏览器已验证）。
+- 测试：test_measurement_events_frame_scoped_with_sync_provenance + redesign.test.tsx 帧作用域查询/芯片断言。
+
+### B3. 部分特征身份匹配（原审查：`selected_features.some` 重叠即算 ML-safe）
+- 已落地：AnalysisWorkbench 改为精确集合相等（`normFeatureSet`：去 gate 后缀、排序拼接），
+  仍要求 split_id；部分重叠不再命中 ready-analysis。
+- 测试：redesign.test.tsx 身份函数直测（相等/不等两组断言）。
+
+## C. 昨日运行链路补记
+
+- SOC_MODELING 假复用（pass-1/pass-2 时序洞）的回归测试 tests/unit/test_soc_modeling_reuse_guard.py
+  随本轮提交（引擎 REUSE_REVALIDATED 修复已在 8a1dfd5 落地）。
+
+## D. 优先级建议（执行顺序）
+
+1. ~~B1/B2/B3~~（本轮完成）
+2. A1-③：LOBO 合成 fixture 拆分+聚合实现（不依赖新数据、纯代码）
+3. A2-①：嵌套分组选择模块骨架 + 签名级 HELD_OUT 隔离
+4. B1 遗留：冻结边界进入特征计算（golden 测试 + canonical 链重算，作为独立 BRW 任务排期）
+5. 数据侧：第二块电池/带温度梯度实验/SOH 标定循环 —— 实验台账决定，不受代码影响
