@@ -236,6 +236,8 @@ describe("Waveform workbench（§9/§11）", () => {
     expect(screen.getByTestId("frame-sync-error").textContent).toContain("0.031");
     expect(screen.getByTestId("frame-us-asset").textContent).toContain("u1111111");
     expect(screen.getByTestId("frame-el-asset").textContent).toContain("e2222222");
+    // 参考 SOC now has a real value from the label-joined event row
+    expect(screen.getAllByText(/参考 SOC/)[0]!.textContent).toContain("55");
   });
 });
 

@@ -151,13 +151,34 @@ def measurement_events(
         if col in page.columns
     ]
     rows = page[columns].astype(object).where(page[columns].notna(), None).to_dict("records")
+    # Reference SOC is a LABEL artifact (event_labels.parquet), not an event
+    # column — join by measurement_event_id so the header never confuses it
+    # with the raw electrical soc_dod. Ambiguous/unlabeled events stay null.
+    label_source = "UNAVAILABLE"
+    labels_path = processed / "labels" / battery_id / experiment_id / "event_labels.parquet"
+    if labels_path.is_file():
+        lab = pd.read_parquet(
+            labels_path, columns=["measurement_event_id", "soc_reference_percent"]
+        )
+        soc_map = dict(
+            zip(lab["measurement_event_id"], lab["soc_reference_percent"], strict=False)
+        )
+        for r in rows:
+            value = soc_map.get(r.get("measurement_event_id"))
+            r["soc_reference_percent"] = None if pd.isna(value) else float(value)
+        label_source = f"labels/{battery_id}/{experiment_id}/event_labels.parquet"
     next_cursor = int(page.index[-1]) + 1 if len(events) > limit and len(page) else None
     return {
         "data": {
             "total": len(events),
             "events": rows,
         },
-        "meta": {"limit": limit, "cursor": cursor, "next_cursor": next_cursor},
+        "meta": {
+            "limit": limit,
+            "cursor": cursor,
+            "next_cursor": next_cursor,
+            "soc_reference_label_source": label_source,
+        },
     }
 
 

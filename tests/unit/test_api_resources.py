@@ -251,6 +251,23 @@ def test_measurement_events_include_state_columns(client: TestClient) -> None:
     assert "step_type" in row and "temperature_c" in row
 
 
+def test_measurement_events_join_reference_soc_from_labels(client: TestClient) -> None:
+    """参考 SOC 是标签工件（event_labels），事件接口按 measurement_event_id 联读，
+    与电学 soc_dod 严格区分；歧义事件保持 null，绝不猜测。"""
+    resp = client.get(
+        "/api/v1/experiments/CELL_001/EXP_001/measurement-events?frame_index=2000"
+    )
+    row = resp.json()["data"]["events"][0]
+    assert row["soc_reference_percent"] == pytest.approx(0.123143, abs=1e-4)
+    assert resp.json()["meta"]["soc_reference_label_source"] != "UNAVAILABLE"
+    amb = client.get(
+        "/api/v1/experiments/CELL_001/EXP_001/measurement-events?frame_index=691"
+    )
+    a_row = amb.json()["data"]["events"][0]
+    assert a_row["soc_reference_percent"] is None
+    assert a_row["match_status"] == "MATCHED_AMBIGUOUS"
+
+
 def test_measurement_events_frame_scoped_with_sync_provenance(client: TestClient) -> None:
     """Cross-asset electrical context: the DTO keeps sync_error_s and asset
     identities, and frame_index scoping returns that frame's full context."""
