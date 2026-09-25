@@ -56,6 +56,7 @@ def create_app(
     raw_root: Path | None = None,
     processed_root: Path | None = None,
     runs_root: Path | None = None,
+    static_dir: Path | str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Battery Research Workbench API",
@@ -167,7 +168,41 @@ def create_app(
     app.include_router(data.router, prefix="/api/v1")
     app.include_router(features_v2.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")
+
+    if static_dir is not None:
+        _mount_spa(app, Path(static_dir))
     return app
+
+
+def _mount_spa(app: FastAPI, dist: Path) -> None:
+    """Serve a built SPA (vite output) on the same origin: hashed assets under
+    /assets, index.html for every non-/api GET path so deep links resolve."""
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    index = dist / "index.html"
+    if not index.is_file():
+        raise ValueError(f"static dir {dist} has no index.html")
+    assets = dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="spa-assets")
+    api_prefixes = ("api", "docs", "redoc", "openapi.json")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(request: Request, full_path: str) -> FileResponse:
+        if request.url.path.startswith("/api"):
+            # keep the API envelope contract — the SPA fallback never
+            # impersonates a missing endpoint
+            raise APIError(ErrorCode.NOT_FOUND, "endpoint not found")
+        candidate = (dist / full_path).resolve() if full_path else index
+        if (
+            full_path
+            and not str(full_path).startswith(api_prefixes)
+            and candidate.is_file()
+            and dist.resolve() in candidate.parents
+        ):
+            return FileResponse(candidate)
+        return FileResponse(index)
 
 
 def as_envelope(data: Any, meta: dict | None = None) -> dict[str, Any]:

@@ -1,6 +1,23 @@
 services:
+  workbench:
+    build: .
+    image: brw-workbench
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # the repo's data tree: raw (read by contract) + processed/artifacts
+      # (written by runs). For a clean-room deployment, mount raw read-only:
+      #   - type: bind
+      #     source: ./data/raw
+      #     target: /srv/brw/data/raw
+      #     read_only: true
+      - ./data:/srv/brw/data
+    restart: unless-stopped
+
+  # dev-only: the parser/SQL layer can target this; not required to serve the UI
   postgres:
     image: postgres:16
+    profiles: ["db"]
     environment:
       POSTGRES_USER: brw
       POSTGRES_PASSWORD: brw

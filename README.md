@@ -181,6 +181,22 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Docker deployment (single port: UI + /api/v1)
+
+```bash
+docker build -t brw-workbench .
+docker run -d --name brw -p 127.0.0.1:8000:8000 \
+  -e BRW_RAW_ROOT=/srv/brw/data/raw \
+  -e BRW_PROCESSED_ROOT=/srv/brw/data/processed \
+  -e BRW_RUNS_ROOT=/srv/brw/data/artifacts/runs \
+  -e BRW_STATIC_DIR=/srv/brw/frontend/dist \
+  -v "$PWD/data:/srv/brw/data" brw-workbench
+# 打开 http://127.0.0.1:8000/ （前端构建已烤入镜像，同源调 /api/v1）
+```
+
+`docker-compose.yml` 的 `workbench` 服务封装以上全部；`postgres` 仅开发期用 `--profile db` 启动。
+多架构发布：`docker buildx build --platform linux/amd64,linux/arm64 -t <registry>/brw-workbench:<ver> --push .`
+
 ## Key documents
 
 - `docs/development-plan.md`

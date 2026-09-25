@@ -19,6 +19,7 @@ dependencies = [
   "zarr>=2.18",
   "sqlalchemy>=2.0",
   "fastapi>=0.115",
+  "python-multipart>=0.0.9",
   "uvicorn>=0.30",
   "pyyaml>=6.0",
   "matplotlib>=3.9",
