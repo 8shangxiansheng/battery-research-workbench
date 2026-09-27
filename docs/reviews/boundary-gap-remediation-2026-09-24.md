@@ -65,7 +65,30 @@ temperature_valid_count=0, has_independent_validation=false`。
 ## D. 优先级建议（执行顺序）
 
 1. ~~B1/B2/B3~~（本轮完成）
-2. A1-③：LOBO 合成 fixture 拆分+聚合实现（不依赖新数据、纯代码）
+2. **A1-③ LOBO 内核已完成（2026-09-27；仅确定性拆分与合成测试）**
 3. A2-①：嵌套分组选择模块骨架 + 签名级 HELD_OUT 隔离
 4. B1 遗留：冻结边界进入特征计算（golden 测试 + canonical 链重算，作为独立 BRW 任务排期）
 5. 数据侧：第二块电池/带温度梯度实验/SOH 标定循环 —— 实验台账决定，不受代码影响
+
+## E. LOBO 内核执行记录（2026-09-27）
+
+- `SplitSpec` 对 `split_unit=BATTERY` 强制 `group_column=battery_id`；沿用现有
+  deterministic `LEAVE_ONE_GROUP_OUT` 分组器，不新增随机或按行拆分策略。
+- 新增 `macro_average_by_battery()`：每块电池一条 held-out 指标、等电池权重；
+  pooled-row 诊断不属于该宏平均。
+- 新增 `tests/unit/test_battery_lobo.py`，使用 3 块合成电池、多个实验/循环和不等行数，
+  覆盖 fold 原子性、行顺序/目标值独立、单电池不可行、空/重复身份和等权聚合。
+- 验证集：LOBO、既有 cycle split、modeling、persistence、extension-readiness
+  单元/集成测试通过；Ruff check 与 `git diff --check` 通过。
+- 上述记录是 Phase A 完成时状态；Phase B 已在 2026-09-27 接入，详见下节。真实 CELL_001
+  的科学范围仍为 `WITHIN_BATTERY_CROSS_CYCLE`，跨电池 readiness 仍由真实兼容 cohort 数据门控。
+
+## F. Cohort 端到端启用记录（2026-09-27）
+
+- 新增严格 Cohort Dataset 请求契约：source dataset IDs、目标映射、特征映射、单位、方法/策略版本与 evidence refs 必填；禁止客户端路径。V1 仅支持 retrospective reference SOC，要求 source label 公式版本/temporality 完全一致；特征单位必须与 definitions sidecar 完全一致，暂不转换单位。
+- `POST/GET /api/v1/cohort-datasets`：按服务端 manifest 解析数据，写入独立 `data/processed/cohorts/` namespace；source datasets 不被改写。事件 ID 在 cohort 内按 Battery 命名空间化，保留 source event ID。
+- Cohort 身份由完整请求确定；source manifest、Parquet、feature definition checksum 被记录。source 变化时列表标 `STALE_SOURCE`、新评估被拒绝，需生成新 cohort version。
+- `POST /api/v1/cohort-datasets/{id}/lobo-evaluations` 使用 `battery_id` 分组和已有 fixed baseline；fit 视图只含 TRAIN 电池的 target，held-out target 仅进入评分。持久化 per-battery 指标、等权 macro、单独标记的 pooled-row diagnostic、assignments、predictions 与 cohort JSON/HTML report。
+- Models 页增加 cohort LOBO 区域；无包含当前实验且至少 2 块电池的有效 cohort 时明确阻断。合成 cohort API E2E 验证多电池折叠、来源、macro、报告与 stale invalidation；前端以正式 API client 读取/运行。
+- Readiness 不再用全局注册 Battery 数量激活跨电池状态；只接受 source/Parquet checksum 验证通过、且包含当前实验的 cohort。当前 repository 没有第二块真实兼容电池的 processed dataset，因此真实 readiness 仍 `BLOCKED_BY_DATA`；synthetic success 不构成真实泛化证据。
+- 限制：V1 不做单位换算、温度/SOH cohort、嵌套调参；生成了 cohort-specific fixed-baseline 报告，但尚未并入单实验报告列表或 Result Registry。旧 CELL_001 单实验模型/报告 contract 保持原样。

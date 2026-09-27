@@ -11,7 +11,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | Group | Endpoints |
 |---|---|
 | system | `GET /health`, `GET /capabilities`, `GET /version` |
-| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment + dormant request schemas; no future write endpoints are mounted) |
+| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment; timebase/target/tuning contracts remain dormant) |
 | experiments | `GET /experiments`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence`, `/research-overview`, `/workflow-context` |
 | runs | `POST /runs/plan`, `POST /runs/dry-run`, `POST /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`, `POST /runs/{run_id}/resume`, `POST /runs/{run_id}/retry/{node_id}` |
 | user-actions | `GET /runs/{run_id}/user-actions`, `POST /runs/{run_id}/user-actions/{action_id}` (typed values required; API never fills scientific values) |
@@ -21,6 +21,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | gates | `GET /experiments/{battery_id}/{experiment_id}/gates` |
 | features | `GET /experiments/{battery_id}/{experiment_id}/features` |
 | datasets | `POST /datasets` (deterministic, idempotent REUSED), `GET /datasets/{dataset_id}` |
+| cohorts | `POST /cohort-datasets`, `GET /cohort-datasets`, `GET /cohort-datasets/{cohort_dataset_id}` (immutable, harmonized SOC cohort); `POST /cohort-datasets/{cohort_dataset_id}/lobo-evaluations`, `GET /cohort-lobo-evaluations/{evaluation_id}` (fixed baselines, Battery-grouped LOBO) |
 | splits | `POST /splits` (deterministic, idempotent REUSED), `GET /splits/{split_id}` |
 | feature-analyses | `POST /feature-analyses` (deterministic AN::id), `GET /feature-analyses/{analysis_id}` |
 | models | `POST /models/baseline-runs` (fixed baseline only — no tuning endpoint), deterministic MODEL::id |
@@ -70,6 +71,16 @@ Error:
 | INTERNAL_ERROR | 500 | unexpected bug; traceback logged server-side only, client gets `request_id` |
 
 Scientific blocked/waiting states are **409 with typed error**, never HTTP 500.
+
+### Cohort / battery-level evaluation
+
+Cohort inputs reference server-side source dataset IDs, not client paths. V1 accepts only
+manifest-backed retrospective reference-SOC datasets with identical SOC formula/temporality
+and exact, definition-backed feature units/versions. Unit conversion is not implemented.
+Source manifest/data/feature-definition checksums make a cohort stale if its inputs change.
+The LOBO report's primary metrics are equal-weight macro means of held-out battery metrics;
+pooled-row metrics are diagnostic only. Synthetic fixtures exercise this route but do not
+activate real cross-battery readiness.
 
 ## UserActionRequired
 

@@ -43,6 +43,40 @@ _TOF_REASON = "sampling rate/time-zero and arrival detector are not validated"
 _SOC_REASON = "retrospective protocol-anchored reference, not true SOC"
 
 
+def _cohort_evaluation_artifacts_current(processed_root: Path, manifest: dict[str, Any]) -> bool:
+    """Verify every declared cohort evaluation artifact against its checksum."""
+    artifacts = manifest.get("artifacts")
+    checksums = manifest.get("artifact_checksums")
+    required_names = {
+        "held_out_predictions",
+        "split_assignments",
+        "cohort_report_json",
+        "cohort_report_html",
+    }
+    if (
+        not isinstance(artifacts, dict)
+        or not isinstance(checksums, dict)
+        or set(artifacts) != required_names
+        or set(checksums) != required_names
+    ):
+        return False
+    root = Path(processed_root).resolve()
+    for name, expected_checksum in checksums.items():
+        relative_path = Path(str(artifacts.get(name, "")))
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            return False
+        artifact_path = (root / relative_path).resolve()
+        if root not in artifact_path.parents or not artifact_path.is_file():
+            return False
+        digest = hashlib.sha256()
+        with artifact_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_checksum:
+            return False
+    return True
+
+
 class WorkbenchService:
     """Application service — the only public seam HTTP routes call into."""
 
@@ -503,7 +537,9 @@ class WorkbenchService:
         except (TypeError, ValueError):
             numeric = 0.0
         if not numeric > 0 or not math.isfinite(numeric):
-            raise APIError(ErrorCode.VALIDATION_ERROR, "sampling rate must be a positive finite number")
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR, "sampling rate must be a positive finite number"
+            )
 
         ps_payload = {
             "values": values,
@@ -541,7 +577,9 @@ class WorkbenchService:
                                     "unit": unit,
                                     "_source": source,
                                     "verification_status": (
-                                        "VERIFIED" if bool(payload.get("verified")) else "UNVERIFIED"
+                                        "VERIFIED"
+                                        if bool(payload.get("verified"))
+                                        else "UNVERIFIED"
                                     ),
                                 }
                             },
@@ -604,9 +642,7 @@ class WorkbenchService:
                             "value": prior.get("fs_value"),
                             "unit": prior.get("fs_unit", "Hz"),
                             "_source": prior.get("source", "retry"),
-                            "verification_status": prior.get(
-                                "verification_status", "UNVERIFIED"
-                            ),
+                            "verification_status": prior.get("verification_status", "UNVERIFIED"),
                         }
                     },
                     runs_root=self.runs_root,
@@ -625,7 +661,9 @@ class WorkbenchService:
             return updated
         except Exception as exc:  # surfaced to Retry Resume UI
             updated = dict(prior)
-            updated.update({"resume_status": "FAILED", "resume_error": f"{type(exc).__name__}: {exc}"})
+            updated.update(
+                {"resume_status": "FAILED", "resume_error": f"{type(exc).__name__}: {exc}"}
+            )
             self._journal_submission(battery_id, experiment_id, submission_id, updated)
             raise APIError(
                 ErrorCode.SCIENTIFIC_ACTION_REQUIRED,
@@ -949,10 +987,14 @@ class WorkbenchService:
         # workflow; a non-SOC explicit spec must never be written under the
         # "SOC" family directory (mislabeled artifact risk).
         target_name = payload.get("target")
-        if explicit_spec and target_name not in (None, "", "soc_reference_percent", "reference_soc_percent"):
+        if explicit_spec and target_name not in (
+            None,
+            "",
+            "soc_reference_percent",
+            "reference_soc_percent",
+        ):
             reason = {
-                "soh_capacity_reference_percent":
-                    "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",
+                "soh_capacity_reference_percent": "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",
                 "temperature_c": "本实验无温度通道，无可用目标",
             }.get(str(target_name), "当前流程仅物化 Reference SOC 数据集族")
             raise APIError(
@@ -1056,6 +1098,27 @@ class WorkbenchService:
                         "row_count": None,
                         "preview": [],
                     }
+        if prefix == "COHORT":
+            for manifest_path in sorted(
+                (self.processed_root / "cohorts").rglob("cohort_manifest.json")
+            ):
+                if manifest_path.parent.name == artifact_id:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    from battery_workbench.datasets.cohort import cohort_sources_current
+
+                    is_current = cohort_sources_current(self.processed_root, data)
+                    data["status"] = "READY_FOR_BATTERY_SPLIT" if is_current else "STALE_SOURCE"
+                    return {
+                        "artifact_id": artifact_id,
+                        "artifact_type": "COHORT_DATASET",
+                        "availability": "AVAILABLE" if is_current else "STALE",
+                        "status": data.get("status", ""),
+                        "row_count": data.get("row_count"),
+                        "preview": [],
+                        "fields": {
+                            key: value for key, value in data.items() if key != "output_path"
+                        },
+                    }
         if prefix in ("GATE", "GATESET"):
             return self.get_gate(artifact_id)
         # generic semantic lookup
@@ -1067,6 +1130,190 @@ class WorkbenchService:
             "row_count": None,
             "preview": [],
         }
+
+    def create_cohort_dataset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Materialize a new immutable cohort version from manifest identities."""
+        from pydantic import ValidationError
+
+        from battery_workbench.api.future_contracts import CohortDatasetRequest
+        from battery_workbench.datasets.cohort import (
+            CohortMaterializationError,
+            materialize_cohort_dataset,
+        )
+
+        try:
+            request = CohortDatasetRequest.model_validate(payload)
+            return materialize_cohort_dataset(request=request, processed_root=self.processed_root)
+        except ValidationError as exc:
+            raise APIError(ErrorCode.VALIDATION_ERROR, "invalid cohort dataset request") from exc
+        except CohortMaterializationError as exc:
+            raise APIError(
+                ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                "source datasets cannot be harmonized into an eligible cohort",
+                {"reason": str(exc)},
+            ) from exc
+
+    def list_datasets(self) -> list[dict[str, Any]]:
+        """List dataset identities and definition metadata without filesystem paths."""
+        from battery_workbench.datasets.cohort import list_dataset_catalogue
+
+        return list_dataset_catalogue(self.processed_root)
+
+    def list_cohort_datasets(self) -> list[dict[str, Any]]:
+        """List immutable cohort manifests without exposing filesystem paths."""
+        from battery_workbench.datasets.cohort import cohort_sources_current
+
+        root = self.processed_root / "cohorts"
+        if not root.is_dir():
+            return []
+        items: list[dict[str, Any]] = []
+        for path in sorted(root.rglob("cohort_manifest.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data.pop("output_path", None)
+                data["status"] = (
+                    "READY_FOR_BATTERY_SPLIT"
+                    if cohort_sources_current(self.processed_root, data)
+                    else "STALE_SOURCE"
+                )
+                items.append(data)
+            except (OSError, json.JSONDecodeError):
+                continue
+        return items
+
+    def run_cohort_lobo(self, cohort_dataset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Run fixed baselines on a verified cohort artifact and persist evidence."""
+        import pandas as pd
+
+        from battery_workbench.datasets.cohort import _sha256, cohort_sources_current
+        from battery_workbench.modeling.cohort_lobo import evaluate_cohort_lobo
+
+        manifests = [
+            path
+            for path in (self.processed_root / "cohorts").rglob("cohort_manifest.json")
+            if path.parent.name == cohort_dataset_id
+        ]
+        if len(manifests) != 1:
+            raise APIError(ErrorCode.NOT_FOUND, "cohort dataset not found")
+        manifest_path = manifests[0]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not cohort_sources_current(self.processed_root, manifest):
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "cohort sources changed after harmonization; rebuild a new cohort version",
+            )
+        output_rel = Path(manifest.get("output_path", ""))
+        if output_rel.is_absolute() or ".." in output_rel.parts:
+            raise APIError(ErrorCode.INTEGRITY_ERROR, "cohort output path is invalid")
+        parquet_path = (self.processed_root / output_rel).resolve()
+        if self.processed_root.resolve() not in parquet_path.parents or not parquet_path.is_file():
+            raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "cohort Parquet is unavailable")
+        if _sha256(parquet_path) != manifest.get("output_checksum"):
+            raise APIError(ErrorCode.INTEGRITY_ERROR, "cohort Parquet checksum mismatch")
+        from pydantic import ValidationError
+
+        from battery_workbench.api.future_contracts import CohortLOBORequest
+
+        try:
+            evaluation_request = CohortLOBORequest.model_validate(payload)
+        except ValidationError as exc:
+            raise APIError(ErrorCode.VALIDATION_ERROR, "invalid cohort LOBO request") from exc
+        frame = pd.read_parquet(parquet_path)
+        try:
+            result = evaluate_cohort_lobo(
+                frame,
+                dataset_id=cohort_dataset_id,
+                features=list(manifest.get("predictor_columns", [])),
+                target=str(manifest.get("target_column", "")),
+                strategies=evaluation_request.strategies,
+                random_state=evaluation_request.random_state,
+                cohort_id=str(manifest.get("cohort_id", "")),
+            )
+        except (ValueError, KeyError) as exc:
+            raise APIError(
+                ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                "cohort cannot support the requested LOBO evaluation",
+                {"reason": str(exc)},
+            ) from exc
+        evaluation_id = result["evaluation_id"]
+        evaluation_dir = manifest_path.parent / "evaluations" / evaluation_id
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        evaluation_manifest_path = evaluation_dir / "evaluation_manifest.json"
+        if evaluation_manifest_path.is_file():
+            cached = json.loads(evaluation_manifest_path.read_text(encoding="utf-8"))
+            if not _cohort_evaluation_artifacts_current(self.processed_root, cached):
+                raise APIError(
+                    ErrorCode.INTEGRITY_ERROR,
+                    "stored cohort evaluation artifacts are missing or failed checksum validation",
+                )
+            return cached
+        predictions = pd.DataFrame(result.pop("predictions"))
+        assignments = pd.DataFrame(result.pop("split_assignments"))
+        predictions_path = evaluation_dir / "held_out_predictions.parquet"
+        assignments_path = evaluation_dir / "split_assignments.parquet"
+        predictions.to_parquet(predictions_path, index=False)
+        assignments.to_parquet(assignments_path, index=False)
+        result["provenance"] = {
+            "cohort_id": manifest["cohort_id"],
+            "cohort_dataset_id": cohort_dataset_id,
+            "source_datasets": manifest["source_datasets"],
+            "harmonization_policy_id": manifest["harmonization_policy_id"],
+            "harmonization_method_version": manifest["harmonization_method_version"],
+            "cohort_manifest_checksum": _sha256(manifest_path),
+            "cohort_dataset_checksum": manifest["output_checksum"],
+        }
+        result["artifacts"] = {
+            "held_out_predictions": str(predictions_path.relative_to(self.processed_root)),
+            "split_assignments": str(assignments_path.relative_to(self.processed_root)),
+        }
+        result["artifact_checksums"] = {
+            "held_out_predictions": _sha256(predictions_path),
+            "split_assignments": _sha256(assignments_path),
+        }
+        report_json_path = evaluation_dir / "cohort_evaluation_report.json"
+        report_html_path = evaluation_dir / "cohort_evaluation_report.html"
+        report_payload = {key: value for key, value in result.items()}
+        report_json_path.write_text(
+            json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        import html
+
+        report_html_path.write_text(
+            "<!doctype html><html><head><meta charset='utf-8'><title>Cohort LOBO Report</title></head>"
+            "<body><h1>Cohort LOBO Limited Evaluation</h1><pre>"
+            + html.escape(json.dumps(report_payload, ensure_ascii=False, indent=2))
+            + "</pre></body></html>\n",
+            encoding="utf-8",
+        )
+        result["artifacts"].update(
+            {
+                "cohort_report_json": str(report_json_path.relative_to(self.processed_root)),
+                "cohort_report_html": str(report_html_path.relative_to(self.processed_root)),
+            }
+        )
+        result["artifact_checksums"].update(
+            {
+                "cohort_report_json": _sha256(report_json_path),
+                "cohort_report_html": _sha256(report_html_path),
+            }
+        )
+        evaluation_manifest_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return result
+
+    def get_cohort_lobo_evaluation(self, evaluation_id: str) -> dict[str, Any]:
+        root = self.processed_root / "cohorts"
+        for path in sorted(root.rglob("evaluation_manifest.json")) if root.is_dir() else []:
+            if path.parent.name == evaluation_id:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                if not _cohort_evaluation_artifacts_current(self.processed_root, manifest):
+                    raise APIError(
+                        ErrorCode.INTEGRITY_ERROR,
+                        "cohort evaluation artifacts are missing or failed checksum validation",
+                    )
+                return manifest
+        raise APIError(ErrorCode.NOT_FOUND, "cohort LOBO evaluation not found")
 
     # ---------- splits (deterministic, reuse-only) ----------
     def create_split(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1181,8 +1428,12 @@ class WorkbenchService:
         )
         report_file = (
             self.processed_root
-            / "artifacts" / battery_id / experiment_id / "reports"
-            / spec.report_id / "scientific_report.json"
+            / "artifacts"
+            / battery_id
+            / experiment_id
+            / "reports"
+            / spec.report_id
+            / "scientific_report.json"
         )
         reused = report_file.is_file()
         report = self._runs.generate_report(

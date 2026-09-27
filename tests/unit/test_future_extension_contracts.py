@@ -28,17 +28,49 @@ def test_timebase_contract_requires_asset_anchors_and_evidence() -> None:
 
 
 def test_cohort_contract_requires_two_unique_batteries() -> None:
+    source = {
+        "source_dataset_id": "DS::A",
+        "battery_id": "CELL_A",
+        "experiment_id": "EXP_A",
+    }
+    source_b = {
+        "source_dataset_id": "DS::B",
+        "battery_id": "CELL_B",
+        "experiment_id": "EXP_B",
+    }
+    payload = {
+        "cohort_id": "COHORT_A",
+        "source_datasets": [source, source_b],
+        "target_mapping": {
+            "canonical_target_id": "reference_soc_percent",
+            "source_target_ids": {
+                "DS::A": "soc_reference_percent",
+                "DS::B": "soc_reference_percent",
+            },
+            "unit": "percent",
+            "method_version": "soc-map/1.0",
+        },
+        "feature_mappings": [
+            {
+                "canonical_feature_id": "peak_to_peak_v",
+                "source_feature_ids": {"DS::A": "peak_to_peak_v", "DS::B": "peak_to_peak_v"},
+                "method_version": "feature/1.0",
+            }
+        ],
+        "unit_mapping": {
+            "peak_to_peak_v": {
+                "source_units": {"DS::A": "V", "DS::B": "V"},
+                "canonical_unit": "V",
+            }
+        },
+        "harmonization_method_version": "cohort-harmonization/1.0",
+        "harmonization_policy_id": "POLICY_A",
+        "evidence_refs": ["EVIDENCE_A"],
+    }
+    one_source_payload = {**payload, "source_datasets": [source]}
     with pytest.raises(ValidationError):
-        CohortDatasetRequest(
-            cohort_id="COHORT_A",
-            battery_ids=["CELL_001"],
-            target_id="reference_soc_percent",
-        )
-    request = CohortDatasetRequest(
-        cohort_id="COHORT_A",
-        battery_ids=["CELL_001", "CELL_002"],
-        target_id="reference_soc_percent",
-    )
+        CohortDatasetRequest.model_validate(one_source_payload)
+    request = CohortDatasetRequest.model_validate(payload)
     assert request.group_column == "battery_id"
 
 
@@ -91,3 +123,48 @@ def test_readiness_distinguishes_missing_comparison_from_failed_comparison() -> 
     assert by_code["TIMEBASE_VALIDATION"].can_resolve_with_current_data is True
     assert by_code["MODEL_ADVANTAGE_OVER_DUMMY"].can_resolve_with_current_data is False
     assert "no comparable" in by_code["MODEL_ADVANTAGE_OVER_DUMMY"].reason
+    assert by_code["CROSS_BATTERY_GENERALIZATION"].status == "BLOCKED_BY_DATA"
+
+
+def test_registered_batteries_do_not_activate_cross_battery_readiness() -> None:
+    payload = build_extension_readiness(
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        battery_count=12,
+        eligible_cohort_battery_count=1,
+        eligible_cohort_id=None,
+        timebase_status="PROVISIONAL",
+        independent_soh_states=0,
+        temperature_valid_count=0,
+        temperature_range_c=None,
+        model_beats_dummy=None,
+        has_independent_validation=False,
+    )
+
+    boundary = next(
+        item for item in payload.boundaries if item.code == "CROSS_BATTERY_GENERALIZATION"
+    )
+    assert boundary.status == "BLOCKED_BY_DATA"
+    assert "registered batteries are not sufficient evidence" in boundary.reason
+
+
+def test_valid_harmonized_cohort_is_the_only_readiness_evidence() -> None:
+    payload = build_extension_readiness(
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        battery_count=1,
+        eligible_cohort_battery_count=3,
+        eligible_cohort_id="COHORT::abc",
+        timebase_status="PROVISIONAL",
+        independent_soh_states=0,
+        temperature_valid_count=0,
+        temperature_range_c=None,
+        model_beats_dummy=None,
+        has_independent_validation=False,
+    )
+
+    boundary = next(
+        item for item in payload.boundaries if item.code == "CROSS_BATTERY_GENERALIZATION"
+    )
+    assert boundary.status == "PARTIALLY_READY"
+    assert boundary.can_resolve_with_current_data is True

@@ -1,7 +1,7 @@
 """BRW-020 split engine: feasibility, group assignment, leakage audit.
 
-Groups are atomic: a cycle group is never split across roles within a fold,
-and the target column never influences assignment.
+Groups are atomic: a group is never split across roles within a fold, and the
+target column never influences assignment.
 """
 
 from __future__ import annotations
@@ -188,6 +188,7 @@ def leakage_audit(
     # yields identical roles (structural proof; target excluded from spec/id)
     return {
         "frame_random_split": frame_random,
+        "group_overlap": overlap,
         "cycle_overlap": overlap,
         "target_used_for_assignment": False,
         "group_column": spec.group_column,

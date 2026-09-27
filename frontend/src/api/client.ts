@@ -136,6 +136,50 @@ export interface ResultRecord {
   pooled_rows_usage: string;
 }
 
+export interface CohortDatasetRecord {
+  cohort_id: string;
+  cohort_dataset_id: string;
+  status: string;
+  battery_count: number;
+  row_count: number;
+  predictor_columns: string[];
+  target_column: string;
+  source_datasets: { source_dataset_id: string; battery_id: string; experiment_id: string }[];
+  limitations?: string[];
+}
+
+export interface SourceDatasetRecord {
+  dataset_id: string;
+  dataset_family: string;
+  dataset_status: string;
+  battery_id: string;
+  experiment_id: string;
+  target_column: string;
+  target_method_version: string;
+  soc_label_temporality: string | null;
+  predictor_columns: string[];
+  feature_definitions: { name: string; version: string; unit: string; definition_signature: string }[];
+  eligible_rows: number;
+}
+
+export interface CohortLOBOEvaluation {
+  evaluation_id: string;
+  evaluation_scope: string;
+  battery_count: number;
+  fold_count: number;
+  macro_by_strategy: Record<string, { macro_MAE: number | null; macro_RMSE: number | null; aggregation: string }>;
+  pooled_row_diagnostic_by_strategy: Record<string, { MAE: number | null }>;
+  battery_results: { strategy: string; battery_id: string; fold: string; overall: { MAE: number | null }; row_count: number }[];
+  limitations: string[];
+  provenance?: {
+    cohort_id: string;
+    cohort_dataset_id: string;
+    source_datasets: { source_dataset_id: string; battery_id: string; experiment_id: string }[];
+    harmonization_policy_id: string;
+    harmonization_method_version: string;
+  };
+}
+
 export interface EvidenceEntry {
   evidence_type: string;
   evidence_ref: string;
@@ -930,6 +974,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope
 }
 
 export const client = {
+  listDatasets: () => request<SourceDatasetRecord[]>("/datasets"),
+  createCohortDataset: (body: Record<string, unknown>) =>
+    request<CohortDatasetRecord>("/cohort-datasets", { method: "POST", body: JSON.stringify(body) }),
+  listCohortDatasets: () => request<CohortDatasetRecord[]>("/cohort-datasets"),
+  runCohortLOBO: (cohortDatasetId: string, strategies = ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE"]) =>
+    request<CohortLOBOEvaluation>(`/cohort-datasets/${encodeURIComponent(cohortDatasetId)}/lobo-evaluations`, {
+      method: "POST", body: JSON.stringify({ strategies }),
+    }),
   listParameters: (batteryId: string, experimentId: string) =>
     request<{ parameter_set_id: string; effective: Record<string, unknown> }[]>(`/experiments/${batteryId}/${experimentId}/parameters`),
   createParameters: (batteryId: string, experimentId: string, body: { values: Record<string, { value: number; unit: string }>; source: string; verified: boolean }) =>
@@ -1510,7 +1562,13 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/feature-analyses" },
   { method: "GET", path: "/feature-analyses/{analysis_id}" },
   { method: "POST", path: "/datasets" },
+  { method: "GET", path: "/datasets" },
   { method: "GET", path: "/datasets/{dataset_id}" },
+  { method: "POST", path: "/cohort-datasets" },
+  { method: "GET", path: "/cohort-datasets" },
+  { method: "GET", path: "/cohort-datasets/{cohort_dataset_id}" },
+  { method: "POST", path: "/cohort-datasets/{cohort_dataset_id}/lobo-evaluations" },
+  { method: "GET", path: "/cohort-lobo-evaluations/{evaluation_id}" },
   { method: "POST", path: "/splits" },
   { method: "GET", path: "/splits/{split_id}" },
   { method: "POST", path: "/models/baseline-runs" },

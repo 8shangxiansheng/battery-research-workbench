@@ -96,6 +96,230 @@
         "title": "BoundaryReadiness",
         "type": "object"
       },
+      "CohortDatasetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cohort_id": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:@-]+$",
+            "title": "Cohort Id",
+            "type": "string"
+          },
+          "contract_version": {
+            "const": "cohort-dataset/1.0",
+            "default": "cohort-dataset/1.0",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "feature_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/CohortFeatureMapping"
+            },
+            "minItems": 1,
+            "title": "Feature Mappings",
+            "type": "array"
+          },
+          "group_column": {
+            "const": "battery_id",
+            "default": "battery_id",
+            "title": "Group Column",
+            "type": "string"
+          },
+          "harmonization_method_version": {
+            "minLength": 1,
+            "title": "Harmonization Method Version",
+            "type": "string"
+          },
+          "harmonization_policy_id": {
+            "minLength": 1,
+            "title": "Harmonization Policy Id",
+            "type": "string"
+          },
+          "source_datasets": {
+            "items": {
+              "$ref": "#/components/schemas/CohortSourceDataset"
+            },
+            "minItems": 2,
+            "title": "Source Datasets",
+            "type": "array"
+          },
+          "target_mapping": {
+            "$ref": "#/components/schemas/CohortTargetMapping"
+          },
+          "unit_mapping": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CohortUnitMapping"
+            },
+            "title": "Unit Mapping",
+            "type": "object"
+          }
+        },
+        "required": [
+          "cohort_id",
+          "source_datasets",
+          "target_mapping",
+          "feature_mappings",
+          "unit_mapping",
+          "harmonization_method_version",
+          "harmonization_policy_id",
+          "evidence_refs"
+        ],
+        "title": "CohortDatasetRequest",
+        "type": "object"
+      },
+      "CohortFeatureMapping": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_feature_id": {
+            "minLength": 1,
+            "title": "Canonical Feature Id",
+            "type": "string"
+          },
+          "method_version": {
+            "minLength": 1,
+            "title": "Method Version",
+            "type": "string"
+          },
+          "source_feature_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "minProperties": 2,
+            "title": "Source Feature Ids",
+            "type": "object"
+          }
+        },
+        "required": [
+          "canonical_feature_id",
+          "source_feature_ids",
+          "method_version"
+        ],
+        "title": "CohortFeatureMapping",
+        "type": "object"
+      },
+      "CohortLOBORequest": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "cohort-lobo-evaluation/1.0",
+            "default": "cohort-lobo-evaluation/1.0",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "random_state": {
+            "default": 42,
+            "title": "Random State",
+            "type": "integer"
+          },
+          "strategies": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Strategies",
+            "type": "array"
+          }
+        },
+        "title": "CohortLOBORequest",
+        "type": "object"
+      },
+      "CohortSourceDataset": {
+        "additionalProperties": false,
+        "description": "Manifest identity for a source dataset; filesystem paths are server-owned.",
+        "properties": {
+          "battery_id": {
+            "minLength": 1,
+            "title": "Battery Id",
+            "type": "string"
+          },
+          "experiment_id": {
+            "minLength": 1,
+            "title": "Experiment Id",
+            "type": "string"
+          },
+          "source_dataset_id": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:@-]+$",
+            "title": "Source Dataset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_dataset_id",
+          "battery_id",
+          "experiment_id"
+        ],
+        "title": "CohortSourceDataset",
+        "type": "object"
+      },
+      "CohortTargetMapping": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_target_id": {
+            "minLength": 1,
+            "title": "Canonical Target Id",
+            "type": "string"
+          },
+          "method_version": {
+            "minLength": 1,
+            "title": "Method Version",
+            "type": "string"
+          },
+          "source_target_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "minProperties": 2,
+            "title": "Source Target Ids",
+            "type": "object"
+          },
+          "unit": {
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_target_id",
+          "source_target_ids",
+          "unit",
+          "method_version"
+        ],
+        "title": "CohortTargetMapping",
+        "type": "object"
+      },
+      "CohortUnitMapping": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_unit": {
+            "minLength": 1,
+            "title": "Canonical Unit",
+            "type": "string"
+          },
+          "source_units": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "minProperties": 2,
+            "title": "Source Units",
+            "type": "object"
+          }
+        },
+        "required": [
+          "source_units",
+          "canonical_unit"
+        ],
+        "title": "CohortUnitMapping",
+        "type": "object"
+      },
       "ErrorEnvelope": {
         "properties": {
           "error": {
@@ -437,7 +661,240 @@
         ]
       }
     },
+    "/api/v1/cohort-datasets": {
+      "get": {
+        "operationId": "list_cohort_datasets_api_v1_cohort_datasets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Cohort Datasets Api V1 Cohort Datasets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Cohort Datasets",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      },
+      "post": {
+        "operationId": "create_cohort_dataset_api_v1_cohort_datasets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CohortDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Cohort Dataset Api V1 Cohort Datasets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Cohort Dataset",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/cohort-datasets/{cohort_dataset_id}": {
+      "get": {
+        "operationId": "get_cohort_dataset_api_v1_cohort_datasets__cohort_dataset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cohort_dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Cohort Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Cohort Dataset Api V1 Cohort Datasets  Cohort Dataset Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Cohort Dataset",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/cohort-datasets/{cohort_dataset_id}/lobo-evaluations": {
+      "post": {
+        "operationId": "create_cohort_lobo_evaluation_api_v1_cohort_datasets__cohort_dataset_id__lobo_evaluations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cohort_dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Cohort Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CohortLOBORequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Cohort Lobo Evaluation Api V1 Cohort Datasets  Cohort Dataset Id  Lobo Evaluations Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Cohort Lobo Evaluation",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      }
+    },
+    "/api/v1/cohort-lobo-evaluations/{evaluation_id}": {
+      "get": {
+        "operationId": "get_cohort_lobo_evaluation_api_v1_cohort_lobo_evaluations__evaluation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "evaluation_id",
+            "required": true,
+            "schema": {
+              "title": "Evaluation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Cohort Lobo Evaluation Api V1 Cohort Lobo Evaluations  Evaluation Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Cohort Lobo Evaluation",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      }
+    },
     "/api/v1/datasets": {
+      "get": {
+        "operationId": "list_datasets_api_v1_datasets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Datasets Api V1 Datasets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Datasets",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      },
       "post": {
         "operationId": "create_dataset_api_v1_datasets_post",
         "requestBody": {

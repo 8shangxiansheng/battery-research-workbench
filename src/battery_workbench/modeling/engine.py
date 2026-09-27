@@ -218,3 +218,41 @@ def macro_average(fold_metrics: list[dict[str, Any]]) -> dict[str, Any]:
     out["fold_count"] = len(fold_metrics)
     out["aggregation"] = "MACRO_MEAN_OF_FOLD_METRICS"
     return out
+
+
+def macro_average_by_battery(battery_metrics: list[dict[str, Any]]) -> dict[str, Any]:
+    """Equal-weight aggregate of one held-out metric record per battery.
+
+    This helper intentionally accepts already-computed battery-level metrics;
+    row counts do not weight the primary macro result. Pooled-row diagnostics
+    remain a separate calculation and must not be substituted for this value.
+    """
+    if not battery_metrics:
+        raise ValueError("at least one held-out metric record is required")
+
+    battery_ids: list[str] = []
+    for item in battery_metrics:
+        battery_id = item.get("battery_id")
+        if not isinstance(battery_id, str) or not battery_id.strip():
+            raise ValueError("every metric record must include a non-empty battery_id")
+        battery_ids.append(battery_id.strip())
+        if not isinstance(item.get("overall"), dict):
+            raise TypeError("every battery must have an overall metric record")
+
+    if len(set(battery_ids)) != len(battery_ids):
+        raise ValueError("macro aggregation requires one metric record per battery")
+
+    keys = ("MAE", "RMSE", "R2", "MedianAE", "MaxAE")
+    result: dict[str, Any] = {}
+    for key in keys:
+        values = [
+            item["overall"][key]
+            for item in battery_metrics
+            if isinstance(item["overall"].get(key), (int, float))
+            and not isinstance(item["overall"].get(key), bool)
+        ]
+        result[f"macro_{key}"] = float(np.mean(values)) if values else None
+    result["battery_count"] = len(battery_ids)
+    result["fold_count"] = len(battery_metrics)
+    result["aggregation"] = "MACRO_MEAN_OF_BATTERY_METRICS"
+    return result

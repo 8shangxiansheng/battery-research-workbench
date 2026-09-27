@@ -16,6 +16,7 @@ const clientMock = {
   getResults: vi.fn(), getWorkflowContext: vi.fn(), listSplits: vi.fn(),
   listSplitFolds: vi.fn(), createSplit: vi.fn(), dryRun: vi.fn(), startRun: vi.fn(),
   getArtifact: vi.fn(), createDataset: vi.fn(),
+  listCohortDatasets: vi.fn(), runCohortLOBO: vi.fn(), listDatasets: vi.fn(), createCohortDataset: vi.fn(),
 };
 vi.mock("../src/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/api/client")>()),
@@ -32,7 +33,11 @@ function wrap(node: React.ReactNode, route = "/runs", pattern = route) {
   return render(<QueryClientProvider client={qc}><RouterProvider router={router} /></QueryClientProvider>);
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  clientMock.listCohortDatasets.mockResolvedValue({ data: [], meta: {} });
+  clientMock.listDatasets.mockResolvedValue({ data: [], meta: {} });
+});
 
 describe("RunsPage user actions", () => {
   const fsAction = {
@@ -132,6 +137,72 @@ describe("Models-page launcher", () => {
     wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
     expect(await screen.findByTestId("launcher-waiting-run")).toBeInTheDocument();
     expect(screen.getByTestId("launcher-start-run")).toBeDisabled();
+  });
+
+  it("keeps cross-battery blocked without an eligible cohort", async () => {
+    setupWf(true);
+    wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
+    expect(await screen.findByTestId("cohort-lobo-blocked")).toHaveTextContent("跨电池泛化仍为阻断状态");
+    expect(screen.queryByTestId("run-cohort-lobo")).not.toBeInTheDocument();
+  });
+
+  it("runs LOBO only for a verified cohort containing the current experiment", async () => {
+    setupWf(true);
+    clientMock.listCohortDatasets.mockResolvedValue({ data: [{
+      cohort_id: "COHORT::fixture", cohort_dataset_id: "COHORT::version", status: "READY_FOR_BATTERY_SPLIT",
+      battery_count: 3, row_count: 12, predictor_columns: ["p2p"], target_column: "reference_soc_percent",
+      source_datasets: [{ source_dataset_id: "DS::A", battery_id: "CELL_001", experiment_id: "EXP_001" }],
+    }], meta: {} });
+    clientMock.runCohortLOBO.mockResolvedValue({ data: {
+      evaluation_id: "LOBO::fixture", evaluation_scope: "CROSS_BATTERY_LOBO_LIMITED_EVALUATION",
+      battery_count: 3, fold_count: 3,
+      macro_by_strategy: { DUMMY_MEAN: { macro_MAE: 22.1, macro_RMSE: 25, aggregation: "MACRO_MEAN_OF_BATTERY_METRICS" } },
+      pooled_row_diagnostic_by_strategy: { DUMMY_MEAN: { MAE: 20.4 } },
+      battery_results: [{ strategy: "DUMMY_MEAN", battery_id: "CELL_B", fold: "fold2", overall: { MAE: 22.1 }, row_count: 4 }],
+      provenance: { cohort_id: "COHORT::fixture", cohort_dataset_id: "COHORT::version", source_datasets: [{ source_dataset_id: "DS::A", battery_id: "CELL_A", experiment_id: "EXP_A" }], harmonization_policy_id: "POLICY::v1", harmonization_method_version: "exact-match/1.0" },
+      limitations: [],
+    }, meta: {} });
+    wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("run-cohort-lobo"));
+    await waitFor(() => expect(clientMock.runCohortLOBO).toHaveBeenCalledWith("COHORT::version"));
+    expect(await screen.findByTestId("cohort-lobo-result")).toHaveTextContent("22.1");
+    expect(screen.getByTestId("cohort-lobo-result")).toHaveTextContent("CELL_B");
+    expect(screen.getByTestId("cohort-lobo-result")).toHaveTextContent("Pooled-row diagnostic");
+  });
+
+  it("builds a cohort only after explicit source, feature, policy, and evidence selection", async () => {
+    setupWf(true);
+    clientMock.listDatasets.mockResolvedValue({ data: [
+      { dataset_id: "DS::A", dataset_family: "SOC", dataset_status: "READY_FOR_SPLIT", battery_id: "CELL_A", experiment_id: "EXP_A",
+        target_column: "soc_reference_percent", target_method_version: "soc-formula/1.0", soc_label_temporality: "RETROSPECTIVE_REFERENCE",
+        predictor_columns: ["p2p"], feature_definitions: [{ name: "p2p", version: "0.1.0", unit: "a.u.", definition_signature: "sig::p2p" }], eligible_rows: 10 },
+      { dataset_id: "DS::B", dataset_family: "SOC", dataset_status: "READY_FOR_SPLIT", battery_id: "CELL_B", experiment_id: "EXP_B",
+        target_column: "soc_reference_percent", target_method_version: "soc-formula/1.0", soc_label_temporality: "RETROSPECTIVE_REFERENCE",
+        predictor_columns: ["p2p"], feature_definitions: [{ name: "p2p", version: "0.1.0", unit: "a.u.", definition_signature: "sig::p2p" }], eligible_rows: 12 },
+    ], meta: {} });
+    clientMock.createCohortDataset.mockResolvedValue({ data: {
+      cohort_id: "COHORT::CELL_A-CELL_B", cohort_dataset_id: "COHORT::version", status: "READY_FOR_BATTERY_SPLIT",
+      battery_count: 2, row_count: 22, predictor_columns: ["p2p"], target_column: "reference_soc_percent",
+      source_datasets: [],
+    }, meta: {} });
+    wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("cohort-source-CELL_A"));
+    await user.click(screen.getByTestId("cohort-source-CELL_B"));
+    await user.click(screen.getByTestId("cohort-feature-p2p"));
+    expect(screen.getByTestId("create-cohort")).toBeDisabled();
+    await user.click(screen.getByText("队列策略与证据引用（必填）"));
+    await user.type(screen.getByLabelText("Harmonization policy ID"), "POLICY::verified");
+    await user.type(screen.getByLabelText(/Evidence references/), "SOP::review");
+    await waitFor(() => expect(screen.getByTestId("create-cohort")).toBeEnabled());
+    await user.click(screen.getByTestId("create-cohort"));
+    await waitFor(() => expect(clientMock.createCohortDataset).toHaveBeenCalledWith(expect.objectContaining({
+      target_mapping: expect.objectContaining({ method_version: "soc-formula/1.0", unit: "percent" }),
+      feature_mappings: [{ canonical_feature_id: "p2p", source_feature_ids: { "DS::A": "p2p", "DS::B": "p2p" }, method_version: "0.1.0" }],
+      harmonization_policy_id: "POLICY::verified", evidence_refs: ["SOP::review"],
+    })));
+    expect(await screen.findByTestId("cohort-created")).toHaveTextContent("2 块电池");
   });
 });
 

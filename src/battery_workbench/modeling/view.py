@@ -45,6 +45,7 @@ def build_fold_training_view(
     fold: str,
     features: list[str],
     target: str,
+    group_column: str = "cycle_group_id",
 ) -> FoldTrainingView:
     fold_assign = assignments[assignments["fold"] == fold]
     train_ids = set(fold_assign[fold_assign["role"] == "TRAIN"]["measurement_event_id"])
@@ -84,8 +85,8 @@ def build_fold_training_view(
         x_train=x_train,
         y_train=y_train,
         x_held_out=x_held,
-        train_group_ids=sorted(train[fold_assign_col(dataset)].astype(str).unique()),
-        held_out_group_ids=sorted(held[fold_assign_col(dataset)].astype(str).unique()),
+        train_group_ids=sorted(train[group_column].astype(str).unique()),
+        held_out_group_ids=sorted(held[group_column].astype(str).unique()),
         train_measurement_event_ids=train["measurement_event_id"].index,
         held_out_measurement_event_ids=held["measurement_event_id"].index,
         train_row_count=len(x_train),
@@ -98,4 +99,5 @@ def part_name(part: pd.DataFrame) -> str:  # pragma: no cover - helper
 
 
 def fold_assign_col(dataset: pd.DataFrame) -> str:
+    """Legacy helper retained for callers that use the within-battery path."""
     return "cycle_group_id"

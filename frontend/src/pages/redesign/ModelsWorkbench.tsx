@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { getCoreRowModel, getSortedRowModel, useReactTable, flexRender, type ColumnDef, type SortingState } from "@tanstack/react-table";
-import { client, type ResultRecord } from "../../api/client";
+import { client, type ResultRecord, type SourceDatasetRecord } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from "../../components/ui/table";
@@ -56,6 +56,180 @@ export function modelingRunRequest(
     },
     modeling: { strategies: FIXED_BASELINE_SUITE, random_state: 42 },
   };
+}
+
+function CohortLOBOPanel({ batteryId, experimentId }: { batteryId: string; experimentId: string }) {
+  const qc = useQueryClient();
+  const cohorts = useQuery({
+    queryKey: ["cohort-datasets"],
+    queryFn: () => client.listCohortDatasets(),
+  });
+  const eligible = (cohorts.data?.data ?? []).find((item) =>
+    item.status === "READY_FOR_BATTERY_SPLIT" && item.battery_count >= 2 &&
+    item.source_datasets.some((source) => source.battery_id === batteryId && source.experiment_id === experimentId),
+  );
+  const evaluate = useMutation({
+    mutationFn: () => client.runCohortLOBO(eligible!.cohort_dataset_id),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["cohort-datasets"] }); },
+  });
+  const result = evaluate.data?.data;
+  return <section className="panel !p-5 mt-6" data-testid="cohort-lobo-panel">
+    <h3 className="text-base font-medium">跨电池验证 / Battery-level LOBO</h3>
+    <p className="text-sm muted mt-1">独立队列入口。只使用通过来源、标签与特征映射校验的 harmonized cohort；Dummy/固定基线，不做调参。</p>
+    {cohorts.isLoading && <p className="text-sm mt-3" role="status">正在检查可用队列…</p>}
+    {cohorts.error && <p className="text-sm mt-3 text-[#9b782e]" role="alert">队列状态暂时无法读取。<button className="underline ml-1" onClick={() => void cohorts.refetch()}>重试</button></p>}
+    {!cohorts.isLoading && !cohorts.error && !eligible && <p className="notice text-sm mt-3" data-testid="cohort-lobo-blocked">
+      尚无包含当前实验且至少有 2 块独立电池的已验证队列；跨电池泛化仍为阻断状态。登记电池数或 CELL_001 自身循环数不构成该证据。
+    </p>}
+    {eligible && <div className="mt-3 flex items-center gap-3 flex-wrap">
+      <Badge variant="secondary">队列就绪 · {eligible.battery_count} 块电池 · {eligible.row_count} 条事件</Badge>
+      <Button size="sm" data-testid="run-cohort-lobo" disabled={evaluate.isPending}
+        onClick={() => evaluate.mutate()}>{evaluate.isPending ? "LOBO 评估中…" : "运行固定基线 LOBO"}</Button>
+      {evaluate.error && <span className="text-sm text-[#9b782e]" role="alert">评估未完成：{(evaluate.error as Error).message}</span>}
+    </div>}
+    {result && <div className="mt-4" data-testid="cohort-lobo-result">
+      <p className="text-sm font-medium">LOBO 有限评估 · {result.battery_count} 块留出电池 · 等权宏观 MAE（%）</p>
+      <div className="flex flex-wrap gap-3 mt-2">{Object.entries(result.macro_by_strategy).map(([strategy, metrics]) =>
+        <span className="badge" key={strategy}>{displayName(strategy)}：{numberText(metrics.macro_MAE)}</span>)}
+      </div>
+      <div className="panel !p-0 overflow-hidden mt-4"><Table><TableHeader><TableRow>
+        <TableHead>模型</TableHead><TableHead>留出电池</TableHead><TableHead>Fold</TableHead><TableHead>事件行数</TableHead><TableHead>MAE（%）</TableHead>
+      </TableRow></TableHeader><TableBody>{result.battery_results.map((row) => <TableRow key={`${row.strategy}-${row.battery_id}`}>
+        <TableCell>{displayName(row.strategy)}</TableCell><TableCell>{row.battery_id}</TableCell><TableCell>{row.fold}</TableCell><TableCell>{row.row_count}</TableCell><TableCell>{numberText(row.overall.MAE)}</TableCell>
+      </TableRow>)}</TableBody></Table></div>
+      <p className="text-xs muted mt-2">Pooled-row diagnostic MAE：{numberText(result.pooled_row_diagnostic_by_strategy.DUMMY_MEAN?.MAE)}。池化行仅作诊断，不替代按电池等权结果；合成验证不代表真实跨电池泛化。</p>
+      {result.provenance && <details className="mt-3 text-xs muted"><summary>来源与 harmonization provenance</summary>
+        <p className="mt-2">Policy：{result.provenance.harmonization_policy_id} · 方法：{result.provenance.harmonization_method_version}</p>
+        <ul>{result.provenance.source_datasets.map((source) => <li key={source.source_dataset_id}>{source.battery_id} / {source.experiment_id}</li>)}</ul>
+      </details>}
+    </div>}
+  </section>;
+}
+
+function CohortBuilderPanel() {
+  const qc = useQueryClient();
+  const datasets = useQuery({ queryKey: ["datasets"], queryFn: () => client.listDatasets() });
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [featureIds, setFeatureIds] = useState<string[]>([]);
+  const [cohortId, setCohortId] = useState("");
+  const [policyId, setPolicyId] = useState("");
+  const [evidenceText, setEvidenceText] = useState("");
+  const sources = datasets.data?.data ?? [];
+  const selected = selectedIds.map((id) => sources.find((source) => source.dataset_id === id)).filter((source): source is SourceDatasetRecord => !!source);
+  const sameLabelMethod = selected.length >= 2 && new Set(selected.map((source) => source.target_method_version)).size === 1
+    && new Set(selected.map((source) => source.soc_label_temporality)).size === 1;
+  const features = useMemo(() => {
+    if (selected.length < 2) return [];
+    const first = selected[0]!;
+    return first.feature_definitions.filter((definition) =>
+      first.predictor_columns.includes(definition.name) && definition.unit && definition.version &&
+      selected.every((source) => source.predictor_columns.includes(definition.name) &&
+        source.feature_definitions.some((item) => item.name === definition.name && item.unit === definition.unit &&
+          item.version === definition.version && item.definition_signature === definition.definition_signature)),
+    );
+  }, [selected]);
+  const defaultCohortId = `COHORT::${selected.map((item) => item.battery_id.replace(/[^A-Za-z0-9_-]/g, "-")).sort().join("-")}`;
+  const evidenceRefs = evidenceText.split(",").map((value) => value.trim()).filter(Boolean);
+  const create = useMutation({
+    mutationFn: () => {
+      const sourceTargetIds = Object.fromEntries(selected.map((source) => [source.dataset_id, source.target_column]));
+      const featureMappings = featureIds.map((featureId) => ({
+        canonical_feature_id: featureId,
+        source_feature_ids: Object.fromEntries(selected.map((source) => [source.dataset_id, featureId])),
+        method_version: features.find((feature) => feature.name === featureId)!.version,
+      }));
+      const unitMapping = Object.fromEntries(featureIds.map((featureId) => {
+        const definition = features.find((feature) => feature.name === featureId)!;
+        return [featureId, {
+          source_units: Object.fromEntries(selected.map((source) => [source.dataset_id, definition.unit])),
+          canonical_unit: definition.unit,
+        }];
+      }));
+      return client.createCohortDataset({
+        cohort_id: cohortId.trim() || defaultCohortId,
+        source_datasets: selected.map(({ dataset_id, battery_id, experiment_id }) => ({
+          source_dataset_id: dataset_id, battery_id, experiment_id,
+        })),
+        target_mapping: {
+          canonical_target_id: "reference_soc_percent",
+          source_target_ids: sourceTargetIds,
+          unit: "percent",
+          method_version: selected[0]!.target_method_version,
+        },
+        feature_mappings: featureMappings,
+        unit_mapping: unitMapping,
+        harmonization_method_version: "exact-definition-match/1.0",
+        harmonization_policy_id: policyId.trim(),
+        evidence_refs: evidenceRefs,
+        group_column: "battery_id",
+      });
+    },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["cohort-datasets"] }); },
+  });
+  const validSources = sources.filter((source) => source.dataset_family === "SOC" &&
+    ["READY_FOR_SPLIT", "READY_WITH_LIMITATIONS"].includes(source.dataset_status) &&
+    source.target_column === "soc_reference_percent" && source.target_method_version && source.soc_label_temporality);
+  const uniqueBatteries = new Set(selected.map((source) => source.battery_id)).size === selected.length;
+  const canCreate = selected.length >= 2 && uniqueBatteries && sameLabelMethod && featureIds.length > 0 &&
+    !!policyId.trim() && evidenceRefs.length > 0 && !!(cohortId.trim() || defaultCohortId);
+  const toggleSource = (source: SourceDatasetRecord) => {
+    setSelectedIds((prior) => prior.includes(source.dataset_id)
+      ? prior.filter((id) => id !== source.dataset_id)
+      : [...prior, source.dataset_id]);
+    setFeatureIds([]);
+    create.reset();
+  };
+  const toggleFeature = (featureId: string) => setFeatureIds((prior) =>
+    prior.includes(featureId) ? prior.filter((item) => item !== featureId) : [...prior, featureId],
+  );
+
+  return <section className="panel !p-5 mt-6" data-testid="cohort-builder-panel">
+    <h3 className="text-base font-medium">建立跨电池队列 / Build harmonized cohort</h3>
+    <p className="text-sm muted mt-1">选择已有、manifest-backed SOC datasets。这里仅提交明示的身份/定义映射；单位不转换，服务端会再次验证来源与 checksum。</p>
+    {datasets.isLoading && <p className="text-sm mt-3" role="status">正在检查 SOC 数据集…</p>}
+    {datasets.error && <p className="text-sm mt-3 text-[#9b782e]" role="alert">数据集目录读取失败。<button className="underline ml-1" onClick={() => void datasets.refetch()}>重试</button></p>}
+    {!datasets.isLoading && !datasets.error && validSources.length === 0 && <p className="notice text-sm mt-3" data-testid="cohort-builder-empty">
+      暂无可用于队列构建的 SOC 数据集；先完成各电池的数据集构建。注册电池或合成测试不会变成真实验证证据。
+    </p>}
+    {validSources.length > 0 && <>
+      <fieldset className="mt-4">
+        <legend className="text-sm font-medium">选择至少 2 块不同电池的 source datasets</legend>
+        <div className="grid gap-2 mt-2 md:grid-cols-2">{validSources.map((source) => <label key={source.dataset_id} className="flex items-start gap-2 rounded-md border p-3 text-sm">
+          <input type="checkbox" data-testid={`cohort-source-${source.battery_id}`} checked={selectedIds.includes(source.dataset_id)} onChange={() => toggleSource(source)} />
+          <span><strong>{source.battery_id}</strong> · {source.experiment_id}<span className="block muted">SOC · {source.eligible_rows} rows · {source.predictor_columns.length} predictors</span></span>
+        </label>)}</div>
+      </fieldset>
+      {selected.length >= 2 && <>
+        {!uniqueBatteries && <p className="text-sm text-[#9b782e] mt-3" role="alert">每个外层 LOBO fold 必须代表一块独立电池；请移除重复 battery。</p>}
+        {!sameLabelMethod && <p className="text-sm text-[#9b782e] mt-3" role="alert">所选 source 的 SOC 公式版本或标签时间语义不同，不能合并。</p>}
+        <fieldset className="mt-4">
+          <legend className="text-sm font-medium">精确定义一致的候选特征</legend>
+          <div className="flex flex-wrap gap-3 mt-2">{features.map((feature) => <label key={feature.name} className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" data-testid={`cohort-feature-${feature.name}`} checked={featureIds.includes(feature.name)} onChange={() => toggleFeature(feature.name)} />
+            {feature.name} <span className="muted">{feature.unit} · v{feature.version}</span>
+          </label>)}</div>
+          {features.length === 0 && <p className="text-sm muted mt-2">所选数据集没有可验证的共同 predictor definitions。</p>}
+        </fieldset>
+        <details className="mt-4"><summary>队列策略与证据引用（必填）</summary>
+          <label className="block text-sm mt-3">Cohort label
+            <input className="input mt-1 w-full" value={cohortId || defaultCohortId} onChange={(event) => setCohortId(event.target.value)} />
+          </label>
+          <label className="block text-sm mt-3">Harmonization policy ID
+            <input className="input mt-1 w-full" value={policyId} onChange={(event) => setPolicyId(event.target.value)} placeholder="例如 POLICY::soc-reference-v1" />
+          </label>
+          <label className="block text-sm mt-3">Evidence references（逗号分隔）
+            <input className="input mt-1 w-full" value={evidenceText} onChange={(event) => setEvidenceText(event.target.value)} placeholder="记录 SOP / 定义评审 / 实验依据" />
+          </label>
+        </details>
+        <Button className="mt-4" data-testid="create-cohort" disabled={!canCreate || create.isPending}
+          onClick={() => create.mutate()}>{create.isPending ? "验证并生成中…" : "验证映射并生成不可变 cohort"}</Button>
+        {create.error && <p className="text-sm text-[#9b782e] mt-2" role="alert">队列未创建：{(create.error as Error).message}</p>}
+        {create.data && <p className="notice text-sm mt-3" role="status" data-testid="cohort-created">
+          队列已验证 · {create.data.data.battery_count} 块电池 · {create.data.data.row_count} 条事件。来源变更后需要新版本；可在下方启动固定基线 LOBO。
+        </p>}
+      </>}
+    </>}
+  </section>;
 }
 /**
  * Dataset → modeling handoff (official orchestrator path only):
@@ -129,6 +303,8 @@ export function ModelsWorkbench() {
   return <><PageHeader eyebrow="先看证据，再谈性能" title="SOC 建模" description="有没有模型跑赢简单基线？" actions={<Button variant="outline" asChild><Link to={`/experiments/${batteryId}/${experimentId}/report`}>Open report<ArrowRight/></Link></Button>}/>
     {wf.data && <StaleBanner freshness={wf.data.artifact_freshness} stepKey="MODELS" />}
     <ModelingLauncher batteryId={batteryId} experimentId={experimentId} wf={wf.data} />
+    <CohortBuilderPanel />
+    <CohortLOBOPanel batteryId={batteryId} experimentId={experimentId} />
     {!macro.length ? <EmptyState title="还没有模型评估" to={`/experiments/${batteryId}/${experimentId}/analysis`}>请先构建数据集和分组划分。特征选择请保留在训练组内。</EmptyState> : <>
       <Badge variant="secondary">评估完成 · 有限范围</Badge><div className="finding"><h2>{beats===false?"当前没有任何模型跑赢 Dummy 基准。":beats===true?"有模型在本次评估中跑赢了 Dummy。":"暂无可比的 Dummy 基线。"}</h2><p className="muted mt-4 max-w-2xl">{beats===false?"当前特征尚未展现出预测优势。这是科学结论，不是处理故障。":"该对比不能证明跨电池泛化或生产可用性。"}</p></div>
       {dummy && <p className="mb-7 text-sm"><span className="muted">Dummy 均值 · 宏观 MAE</span><strong className="text-2xl ml-4 tabular-nums">{numberText(dummy.value)}<span className="text-sm muted ml-1">%</span></strong></p>}

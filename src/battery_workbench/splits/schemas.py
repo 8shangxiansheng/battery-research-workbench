@@ -70,6 +70,8 @@ class SplitSpec(BaseModel):
             self.require_roles = ["TRAIN", "VALIDATION"]
         if self.split_unit == "CYCLE" and self.group_column != "cycle_group_id":
             raise ValueError("CYCLE split unit requires group_column=cycle_group_id")
+        if self.split_unit == "BATTERY" and self.group_column != "battery_id":
+            raise ValueError("BATTERY split unit requires group_column=battery_id")
         if self.strategy == SplitStrategy.K_FOLD_GROUPED and (self.k is None or self.k < 2):
             raise ValueError("K_FOLD_GROUPED requires k >= 2")
         if self.strategy == SplitStrategy.GROUP_HOLDOUT and not self.explicit_holdout_groups:

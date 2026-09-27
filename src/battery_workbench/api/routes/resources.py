@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query, Request
 
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
+from battery_workbench.api.future_contracts import CohortDatasetRequest, CohortLOBORequest
 from battery_workbench.api.service import validate_id
 from battery_workbench.features.definitions_v2 import (
     FORMULA_POLICY_VERSION,
@@ -102,7 +103,9 @@ def submit_sampling_parameter(
     return {"data": data, "meta": {}}
 
 
-@router.post("/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume")
+@router.post(
+    "/experiments/{battery_id}/{experiment_id}/sampling-parameter-submission/{submission_id}/retry-resume"
+)
 def retry_submission_resume(
     request: Request, battery_id: str, experiment_id: str, submission_id: str
 ) -> dict[str, Any]:
@@ -110,9 +113,7 @@ def retry_submission_resume(
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     validate_id(submission_id, "submission_id")
-    data = get_service(request).retry_submission_resume(
-        battery_id, experiment_id, submission_id
-    )
+    data = get_service(request).retry_submission_resume(battery_id, experiment_id, submission_id)
     return {"data": data, "meta": {}}
 
 
@@ -181,10 +182,54 @@ def create_dataset(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     return {"data": get_service(request).create_dataset(body), "meta": {}}
 
 
+@router.get("/datasets")
+def list_datasets(request: Request) -> dict[str, Any]:
+    return {"data": get_service(request).list_datasets(), "meta": {}}
+
+
 @router.get("/datasets/{dataset_id}")
 def get_dataset(request: Request, dataset_id: str) -> dict[str, Any]:
     validate_id(dataset_id, "dataset_id")
     return {"data": get_service(request).get_artifact(dataset_id), "meta": {}}
+
+
+# ---------- immutable harmonized cohorts (battery-level evaluation input) ----------
+@router.post("/cohort-datasets")
+def create_cohort_dataset(request: Request, body: CohortDatasetRequest) -> dict[str, Any]:
+    return {
+        "data": get_service(request).create_cohort_dataset(body.model_dump(mode="json")),
+        "meta": {},
+    }
+
+
+@router.get("/cohort-datasets")
+def list_cohort_datasets(request: Request) -> dict[str, Any]:
+    return {"data": get_service(request).list_cohort_datasets(), "meta": {}}
+
+
+@router.get("/cohort-datasets/{cohort_dataset_id}")
+def get_cohort_dataset(request: Request, cohort_dataset_id: str) -> dict[str, Any]:
+    validate_id(cohort_dataset_id, "cohort_dataset_id")
+    return {"data": get_service(request).get_artifact(cohort_dataset_id), "meta": {}}
+
+
+@router.post("/cohort-datasets/{cohort_dataset_id}/lobo-evaluations")
+def create_cohort_lobo_evaluation(
+    request: Request, cohort_dataset_id: str, body: CohortLOBORequest
+) -> dict[str, Any]:
+    validate_id(cohort_dataset_id, "cohort_dataset_id")
+    return {
+        "data": get_service(request).run_cohort_lobo(
+            cohort_dataset_id, body.model_dump(mode="json")
+        ),
+        "meta": {},
+    }
+
+
+@router.get("/cohort-lobo-evaluations/{evaluation_id}")
+def get_cohort_lobo_evaluation(request: Request, evaluation_id: str) -> dict[str, Any]:
+    validate_id(evaluation_id, "evaluation_id")
+    return {"data": get_service(request).get_cohort_lobo_evaluation(evaluation_id), "meta": {}}
 
 
 # ---------- splits ----------

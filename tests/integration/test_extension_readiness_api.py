@@ -18,12 +18,12 @@ def test_extension_readiness_is_read_only_and_honest(tmp_path: Path) -> None:
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["battery_id"] == "CELL_001"
-    assert data["future_contracts"]["cohort_dataset"]["enabled"] is False
+    assert data["future_contracts"]["cohort_dataset"]["enabled"] is True
     assert data["future_contracts"]["tuning_study"]["enabled"] is False
     assert all("requirements" in boundary for boundary in data["boundaries"])
 
 
-def test_future_write_endpoints_are_not_published(tmp_path: Path) -> None:
+def test_only_cohort_dataset_endpoint_is_published_from_future_contracts(tmp_path: Path) -> None:
     app = create_app(
         raw_root=REPO / "data/raw",
         processed_root=REPO / "data/processed",
@@ -31,7 +31,7 @@ def test_future_write_endpoints_are_not_published(tmp_path: Path) -> None:
     )
     paths = app.openapi()["paths"]
     assert "/api/v1/tuning-studies" not in paths
-    assert "/api/v1/cohort-datasets" not in paths
+    assert "/api/v1/cohort-datasets" in paths
     assert "/api/v1/timebase-validations" not in paths
 
 
