@@ -16,6 +16,7 @@ FROM python:3.13-slim AS runtime
 WORKDIR /srv/brw
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY configs ./configs
 COPY --from=ui /build/dist /srv/brw/frontend/dist
 RUN pip install --no-cache-dir .
 

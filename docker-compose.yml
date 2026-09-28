@@ -3,15 +3,15 @@ services:
     build: .
     image: brw-workbench
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${BRW_BIND_ADDR:-127.0.0.1}:${BRW_PORT:-8000}:8000"
     volumes:
-      # the repo's data tree: raw (read by contract) + processed/artifacts
-      # (written by runs). For a clean-room deployment, mount raw read-only:
-      #   - type: bind
-      #     source: ./data/raw
-      #     target: /srv/brw/data/raw
-      #     read_only: true
-      - ./data:/srv/brw/data
+      - type: bind
+        source: ./data/raw
+        target: /srv/brw/data/raw
+        read_only: ${BRW_RAW_READ_ONLY:-false}
+      - ./data/processed:/srv/brw/data/processed
+      - ./data/artifacts:/srv/brw/data/artifacts
+    user: "${BRW_UID:-10001}:${BRW_GID:-10001}"
     restart: unless-stopped
 
   # dev-only: the parser/SQL layer can target this; not required to serve the UI
@@ -23,7 +23,7 @@ services:
       POSTGRES_PASSWORD: brw
       POSTGRES_DB: brw
     ports:
-      - "5432:5432"
+      - "${BRW_DB_BIND_ADDR:-127.0.0.1}:${BRW_DB_PORT:-5432}:5432"
     volumes:
       - brw_postgres:/var/lib/postgresql/data
 
