@@ -2,6 +2,12 @@
 
 面向 **锂电池电学 XLSX + 超声 TXT 原始波形** 的可复现、Agent-assisted 科研工作台。
 
+## 当前使用状态
+
+工作台已有实验导入、Overview、Waveform、Analysis、Models 和 Report 等用户流程。第一次使用请先阅读[使用指南](docs/USER_GUIDE.md)；它说明 Docker / Windows 部署、实验导入、分析步骤及当前科学限制。本文其余内容主要记录数据架构、开发和部署细节。
+
+当前 CELL_001 / EXP_001 是单电池、两循环样例；时间基准仍需在界面核实是否为 provisional，Reference SOC 是回顾性参考标签，温度通道缺失，SOH 独立状态数量有限。模型与报告是否可运行取决于当前数据集和 grouped split 状态；不要把样例结果表述为跨电池泛化或超参数调优结论。
+
 V1.1 已将核心数据模型升级为：
 
 ```text
@@ -84,7 +90,9 @@ src/battery_workbench/ml/
 src/battery_workbench/agent/
 ```
 
-## 当前开发顺序
+## 初始开发顺序（历史路线图）
+
+以下顺序记录项目最初的数据地基建设计划，不代表当前尚未实现的模块清单。当前用户操作方式见[使用指南](docs/USER_GUIDE.md)，历史任务的交付记录见 `docs/reviews/` 与 `docs/release/`。
 
 1. BRW-003 Electrical Parser
 2. BRW-004 Electrical QA
@@ -205,6 +213,7 @@ sudo chown -R "${BRW_UID:-10001}:${BRW_GID:-10001}" data/raw data/processed data
 
 ## Key documents
 
+- [User Guide（使用指南）](docs/USER_GUIDE.md)
 - `docs/development-plan.md`
 - `docs/tech-stack.md`
 - `docs/data_contract/electrical_xlsx.md`
