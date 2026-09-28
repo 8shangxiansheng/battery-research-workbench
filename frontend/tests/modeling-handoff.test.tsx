@@ -15,7 +15,8 @@ const clientMock = {
   submitUserAction: vi.fn(), resumeRun: vi.fn(),
   getResults: vi.fn(), getWorkflowContext: vi.fn(), listSplits: vi.fn(),
   listSplitFolds: vi.fn(), createSplit: vi.fn(), dryRun: vi.fn(), startRun: vi.fn(),
-  getArtifact: vi.fn(), createDataset: vi.fn(),
+  getArtifact: vi.fn(), createDataset: vi.fn(), listReports: vi.fn(), getLimitations: vi.fn(), createReport: vi.fn(),
+  getFeatureCorrelations: vi.fn(), getReport: vi.fn(),
   listCohortDatasets: vi.fn(), runCohortLOBO: vi.fn(), listDatasets: vi.fn(), createCohortDataset: vi.fn(),
 };
 vi.mock("../src/api/client", async (importOriginal) => ({
@@ -25,6 +26,7 @@ vi.mock("../src/api/client", async (importOriginal) => ({
 
 const { RunsPage } = await import("../src/pages/RunsPage");
 const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
+const { ReportWorkbench } = await import("../src/pages/redesign/ReportWorkbench");
 const { DatasetBuildButtons } = await import("../src/components/workbench/DatasetXYPreview");
 
 function wrap(node: React.ReactNode, route = "/runs", pattern = route) {
@@ -130,6 +132,46 @@ describe("Models-page launcher", () => {
     await user.click(await screen.findByTestId("launcher-create-split"));
     await waitFor(() => expect(clientMock.createSplit).toHaveBeenCalledWith({
       battery_id: "CELL_001", experiment_id: "EXP_001", dataset_id: "DS::d1" }));
+  });
+
+  it("labels non-current dataset results as historical and excludes them from the current comparison", async () => {
+    setupWf(false);
+    clientMock.getWorkflowContext.mockResolvedValue({ data: {
+      schema_version: "1", battery_id: "CELL_001", experiment_id: "EXP_001", current_step: "DATASET",
+      step_statuses: { DATASET: "COMPLETE", MODELS: "BLOCKED" }, artifact_freshness: { models: "STALE" }, typed_actions: [],
+      steps: { DATASET: { status: "COMPLETE", committed: { dataset_id: "DS::current", selected_features: ["tof_us"] } } },
+    }, meta: {} });
+    clientMock.getResults.mockResolvedValue({ data: [{
+      result_id: "R::old-dummy", result_type: "MODEL_COMPARISON", strategy: "DUMMY_MEAN",
+      value: 30.72, units: "percent", scope: "experiment", dataset_id: "DS::old", split_id: "SPLIT::old",
+    }], meta: {} } as never);
+    wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
+    expect(await screen.findByTestId("historical-model-results")).toHaveTextContent("DS::old");
+    expect(screen.getByTestId("historical-model-results")).toHaveTextContent("历史");
+    expect(screen.getByText("当前数据集尚无模型评估")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-comparison-current")).not.toBeInTheDocument();
+  });
+
+  it("marks an old report snapshot and prevents generation without current-dataset model results", async () => {
+    setupWf(false);
+    clientMock.getWorkflowContext.mockResolvedValue({ data: {
+      schema_version: "1", battery_id: "CELL_001", experiment_id: "EXP_001", current_step: "DATASET",
+      step_statuses: { DATASET: "COMPLETE", MODELS: "BLOCKED", REPORT: "BLOCKED" },
+      artifact_freshness: { report: "STALE", models: "STALE" }, typed_actions: [],
+      steps: { DATASET: { status: "COMPLETE", committed: { dataset_id: "DS::current", selected_features: ["tof_us"] } } },
+    }, meta: {} });
+    clientMock.getResults.mockResolvedValue({ data: [{
+      result_id: "R::old-dummy", result_type: "MODEL_COMPARISON", strategy: "DUMMY_MEAN",
+      value: 30.72, units: "percent", scope: "experiment", dataset_id: "DS::old", split_id: "SPLIT::old",
+    }], meta: {} } as never);
+    clientMock.listReports.mockResolvedValue({ data: [{ report_id: "REPORT::old", generated_at: "2025-01-01", scientific_findings: ["Old finding"] }], meta: {} });
+    clientMock.getLimitations.mockResolvedValue({ data: { limitations: [] }, meta: {} });
+    clientMock.getFeatureCorrelations.mockResolvedValue({ data: { soc: [], temperature: { status: "TEMPERATURE_UNAVAILABLE" }, soh: { status: "NOT_READY_INSUFFICIENT_SOH_STATES" }, soh_cycle_summary: [] }, meta: {} });
+    clientMock.getArtifact.mockResolvedValue({ data: { fields: { selected_features: ["tof_us"] } }, meta: {} });
+    wrap(<ReportWorkbench />, "/experiments/CELL_001/EXP_001/report", "/experiments/:batteryId/:experimentId/report");
+    expect(await screen.findByTestId("report-snapshot-stale")).toHaveTextContent("历史快照");
+    expect(screen.getByTestId("report-current-models-missing")).toHaveTextContent("DS::current");
+    expect(screen.getByRole("button", { name: /生成报告/ })).toBeDisabled();
   });
 
   it("blocks starting while a run waits for user confirmation", async () => {

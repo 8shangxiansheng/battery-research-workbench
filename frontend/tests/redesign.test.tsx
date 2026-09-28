@@ -15,6 +15,7 @@ import { describe, it, vi } from "vitest";
 
 const clientMock = {
   getWorkspaceSummary: vi.fn(),
+  getWorkflowContext: vi.fn(),
   getDataQuality: vi.fn(),
   getStatus: vi.fn(),
   getResults: vi.fn(),
@@ -141,6 +142,7 @@ describe("OverviewPage（§8）", () => {
 describe("ModelsWorkbench（§18）", () => {
   it("leads with the scientific question, Dummy highlighted", async () => {
     clientMock.getResults.mockResolvedValue({ data: demoResults, meta: {} });
+    clientMock.getWorkflowContext.mockResolvedValue({ data: { steps: { DATASET: { committed: { dataset_id: "DS::x" } } }, artifact_freshness: {}, recommended_next_action: null } });
     const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
     renderPage(<ModelsWorkbench />);
     await waitFor(() => {
@@ -150,6 +152,7 @@ describe("ModelsWorkbench（§18）", () => {
   });
   it("no tuning controls anywhere", async () => {
     clientMock.getResults.mockResolvedValue({ data: demoResults, meta: {} });
+    clientMock.getWorkflowContext.mockResolvedValue({ data: { steps: { DATASET: { committed: { dataset_id: "DS::x" } } }, artifact_freshness: {}, recommended_next_action: null } });
     const { ModelsWorkbench } = await import("../src/pages/redesign/ModelsWorkbench");
     renderPage(<ModelsWorkbench />);
     await waitFor(() => screen.getByText(/当前没有任何模型跑赢 Dummy 基准/));

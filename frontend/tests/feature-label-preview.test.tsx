@@ -190,6 +190,9 @@ describe("Feature–Label Table Preview（BRW-025R-FE-R2 P14–P35）", () => {
   });
 
   it("P23 行 provenance drawer 全链", async () => {
+    vi.spyOn(client, "listExperimentAssets").mockResolvedValue({
+      data: { assets: [{ asset_id: "E001", battery_id: "CELL_001", experiment_id: "EXP_001", modality: "electrical", relative_path: "batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx", parser_name: "custom_excel", parser_version: "0.1.0" }] }, meta: {},
+    } as never);
     const user = await runPreview();
     await user.click(screen.getAllByTestId(/^fl-row-/)[0]!);
     const drawer = await screen.findByTestId("feature-label-row-provenance");
@@ -197,6 +200,7 @@ describe("Feature–Label Table Preview（BRW-025R-FE-R2 P14–P35）", () => {
     expect(drawer).toHaveTextContent("MATCHED_UNIQUE");
     expect(drawer).toHaveTextContent("2024-01-06T09:53:00");
     expect(drawer).toHaveTextContent("provisional timebase");
+    expect(await screen.findByTestId("raw-electrical-asset-path")).toHaveTextContent("batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx");
   });
 
   it("P24 HELD_OUT y 已封锁显示（EyeOff + 后端标记）", async () => {

@@ -67,7 +67,8 @@ export function WorkflowStepperV2({ statuses, activePage }: WorkflowStepperV2Pro
         const status = statuses[s.key] ?? "NOT_STARTED";
         const Icon = STATUS_ICONS[status];
         const color = STATUS_COLORS[status];
-        const isActive = activePage === WF_STEP_ROUTES[s.key];
+        const routePath = WF_STEP_ROUTES[s.key]?.split("?")[0];
+        const isActive = activePage === routePath && status === "CURRENT";
         const isClickable = status !== "BLOCKED" && status !== "NOT_STARTED";
 
         return (

@@ -14,7 +14,8 @@ import { FeatureLabelTablePreview, TARGET_LABELS } from "../../components/workbe
 import { FeatureRankingTable } from "../../components/workbench/FeatureTargetWorkbench";
 import { DatasetBuildButtons } from "../../components/workbench/DatasetXYPreview";
 import { useDraftGuard } from "../../hooks/useDraftGuard";
-import { useInvalidateWorkflow } from "../../hooks/useWorkflowContext";
+import { useInvalidateWorkflow, useWorkflowContext } from "../../hooks/useWorkflowContext";
+import { deriveAnalysisDraft } from "../../lib/workflow-draft";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 
@@ -30,6 +31,7 @@ const STEP_KEYS: WorkflowStepKey[] = ["target", "alignment", "features", "relati
 export function AnalysisWorkbench() {
   const { batteryId = "", experimentId = "" } = useParams();
   const invalidateWorkflow = useInvalidateWorkflow();
+  const workflow = useWorkflowContext(batteryId, experimentId);
   // workflow state — target switch invalidates target-dependent artifacts only
   // step is mirrored to ?step= so refresh/deep-link keep the user's position
   const [searchParams, setSearchParams] = useSearchParams();
@@ -37,6 +39,10 @@ export function AnalysisWorkbench() {
     const s = searchParams.get("step") as WorkflowStepKey | null;
     return s && STEP_KEYS.includes(s) ? s : "target";
   });
+  useEffect(() => {
+    const requested = searchParams.get("step") as WorkflowStepKey | null;
+    if (requested && STEP_KEYS.includes(requested)) setStepState(requested);
+  }, [searchParams]);
   function setStep(s: WorkflowStepKey) {
     setStepState(s);
     setSearchParams(prev => { const n = new URLSearchParams(prev); n.set("step", s); return n; }, { replace: true });
@@ -46,6 +52,8 @@ export function AnalysisWorkbench() {
   const [mode, setMode] = useState<"EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE">("EXPLORATORY_FULL_DATA");
   const [selectionSource, setSelectionSource] = useState<string | null>(null);
   const [built, setBuilt] = useState<"exploratory" | "mlsafe" | null>(null);
+  const hydratedRef = useRef(false);
+  const userEditedRef = useRef(false);
 
   // Draft guard: track committed snapshot; mark dirty when draft diverges
   const committedRef = useRef({ targetId: null as string | null, features: [] as string[], mode: "EXPLORATORY_FULL_DATA" as "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE" });
@@ -53,6 +61,21 @@ export function AnalysisWorkbench() {
     useCallback(() => { committedRef.current = { targetId, features: [...features], mode }; }, [targetId, features, mode]),
     useCallback(() => { setTargetId(committedRef.current.targetId); setFeatures([...committedRef.current.features]); setMode(committedRef.current.mode); setBuilt(null); }, []),
   );
+  useEffect(() => {
+    if (!workflow.data || hydratedRef.current) return;
+    hydratedRef.current = true;
+    if (userEditedRef.current) return;
+    const restored = deriveAnalysisDraft(workflow.data);
+    committedRef.current = { ...restored, features: [...restored.features] };
+    setTargetId(restored.targetId);
+    setFeatures([...restored.features]);
+    setMode(restored.mode);
+  }, [workflow.data]);
+  useEffect(() => {
+    if (targetId || !workflow.data) return;
+    const restored = deriveAnalysisDraft(workflow.data);
+    if (restored.targetId) setTargetId(restored.targetId);
+  }, [targetId, workflow.data]);
   useEffect(() => {
     const c = committedRef.current;
     const dirty = targetId !== c.targetId || mode !== c.mode || features.length !== c.features.length || features.some((f, i) => f !== c.features[i]);
@@ -118,18 +141,25 @@ export function AnalysisWorkbench() {
 
   function selectTarget(next: string) {
     if (next === targetId) return;
+    userEditedRef.current = true;
     // Target switch: reuse sync/features (kept in state), invalidate
     // target-dependent artifacts (target-specific query keys + draft)
     setTargetId(next);
     setBuilt(null);
   }
   function toggleFeature(code: string) {
+    userEditedRef.current = true;
     setFeatures(prev => prev.includes(code) ? prev.filter(f => f !== code) : [...prev, code]);
     setBuilt(null);
+  }
+  function setSelectionMode(next: "EXPLORATORY_FULL_DATA" | "TRAIN_ONLY_ML_SAFE") {
+    userEditedRef.current = true;
+    setMode(next);
   }
   // BRW-021R2 §14: ranking selection feeds the SAME draft feature list —
   // no re-ticking on another page; Select never builds/trains.
   function applyRankingSelection(codes: string[], source: string) {
+    userEditedRef.current = true;
     setFeatures(codes);
     setSelectionSource(source);
     setBuilt(null);
@@ -194,10 +224,10 @@ export function AnalysisWorkbench() {
       <fieldset className="mt-4"><legend className="text-sm font-medium mb-2">Mode / 模式</legend>
         <div className="flex flex-wrap gap-3">
           <label className={`feature-card !p-3 cursor-pointer ${mode === "EXPLORATORY_FULL_DATA" ? "!border-primary" : ""}`}>
-            <input type="radio" name="sel-mode" className="mr-2 accent-[#385c66]" checked={mode === "EXPLORATORY_FULL_DATA"} onChange={() => setMode("EXPLORATORY_FULL_DATA")} data-testid="mode-exploratory" />
+            <input type="radio" name="sel-mode" className="mr-2 accent-[#385c66]" checked={mode === "EXPLORATORY_FULL_DATA"} onChange={() => setSelectionMode("EXPLORATORY_FULL_DATA")} data-testid="mode-exploratory" />
             Explore / 探索 — 全部 eligible 数据，EXPLORATORY，非 ML-safe</label>
           <label className={`feature-card !p-3 cursor-pointer ${mode === "TRAIN_ONLY_ML_SAFE" ? "!border-primary" : ""}`}>
-            <input type="radio" name="sel-mode" className="mr-2 accent-[#385c66]" checked={mode === "TRAIN_ONLY_ML_SAFE"} onChange={() => setMode("TRAIN_ONLY_ML_SAFE")} data-testid="mode-mlsafe" />
+            <input type="radio" name="sel-mode" className="mr-2 accent-[#385c66]" checked={mode === "TRAIN_ONLY_ML_SAFE"} onChange={() => setSelectionMode("TRAIN_ONLY_ML_SAFE")} data-testid="mode-mlsafe" />
             Build for Modeling / 用于建模 — Grouped Split → TRAIN-only 分析 → 锁定特征 → held-out 评估</label>
         </div>
       </fieldset>
@@ -240,7 +270,7 @@ export function AnalysisWorkbench() {
 
     {step === "dataset" && <section data-testid="step-dataset">
       <h2 className="text-xl">Dataset / 数据集</h2>
-      <p className="muted text-sm mt-1">Predictors (X) = 所选超声特征；Target (y) = {targetId ? TARGET_LABELS[targetId] : "—"}。先预览 X/y，再选择构建方式。</p>
+      <p className="muted text-sm mt-1">Predictors (X) = 所选超声特征（{features.length}）；Target (y) = {targetId ? TARGET_LABELS[targetId] : "—"}。先预览 X/y，再选择构建方式。</p>
       {preview.isLoading && <LoadingState />}
       {preview.error && <ErrorState error={preview.error} retry={() => void preview.refetch()} />}
       {summary && <div className="notice mt-4" data-testid="dataset-xy-inline">

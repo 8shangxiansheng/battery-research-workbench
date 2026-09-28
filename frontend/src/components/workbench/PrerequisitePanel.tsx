@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 import { ArrowRight, Lock } from "lucide-react";
 import type { WorkflowContextPayload } from "../../api/client";
 import { Button } from "../ui/button";
+import { recoveryActionFor } from "../../lib/workflow-recovery";
 
 export interface PrerequisitePanelProps {
   stepKey: string;
@@ -18,8 +19,10 @@ export interface PrerequisitePanelProps {
   experimentId: string;
 }
 
-export function PrerequisitePanel({ stepKey, stepStatus, stepDetail, recommended }: PrerequisitePanelProps) {
+export function PrerequisitePanel({ stepKey, stepStatus, stepDetail, recommended, batteryId, experimentId }: PrerequisitePanelProps) {
   const blocking = stepDetail?.blocking;
+  const blockingRecovery = recoveryActionFor(batteryId, experimentId, blocking?.required_action);
+  const recovery = blockingRecovery ?? (recommended ? { label: recommended.label, route: recommended.route } : null);
   return (
     <div
       className="panel !p-6 text-center max-w-lg mx-auto mt-12"
@@ -39,10 +42,10 @@ export function PrerequisitePanel({ stepKey, stepStatus, stepDetail, recommended
       {blocking?.scientific_reason && (
         <p className="text-xs text-muted mb-4">{blocking.scientific_reason}</p>
       )}
-      {recommended && (
+      {recovery && (
         <Button asChild className="mt-2">
-          <Link to={recommended.route} data-testid="prerequisite-next-action">
-            {recommended.label}
+          <Link to={recovery.route} data-testid="prerequisite-next-action">
+            {recovery.label}
             <ArrowRight size={16} className="ml-2" />
           </Link>
         </Button>

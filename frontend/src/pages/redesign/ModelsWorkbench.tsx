@@ -12,6 +12,7 @@ import { SelectedFeaturesPanel } from "../../components/workbench/SelectedFeatur
 import { displayName, modelComparison, numberText } from "../../lib/presentation";
 import { StaleBanner } from "./WorkbenchShell";
 import { useWorkflowContext } from "../../hooks/useWorkflowContext";
+import { partitionResultsByDataset } from "../../lib/result-freshness";
 
 function ComparisonTable({rows}:{rows:ResultRecord[]}) {
   const [sorting,setSorting]=useState<SortingState>([]);
@@ -297,19 +298,34 @@ export function ModelsWorkbench() {
   const {batteryId="",experimentId=""}=useParams();
   const wf = useWorkflowContext(batteryId, experimentId);
   const results=useQuery({queryKey:["results",batteryId,experimentId],queryFn:()=>client.getResults(batteryId,experimentId)});
-  if(results.isLoading)return <LoadingState/>;if(results.error)return <ErrorState error={results.error} retry={()=>void results.refetch()}/>;
-  const rows=results.data?.data??[];const {macro,dummy,beats}=modelComparison(rows);
+  if(results.isLoading || wf.isLoading)return <LoadingState/>;
+  if(results.error)return <ErrorState error={results.error} retry={()=>void results.refetch()}/>;
+  if(wf.error && !wf.data)return <ErrorState error={wf.error} retry={()=>void wf.refetch()}/>;
+  const committed = wf.data?.steps.DATASET?.committed as { dataset_id?: string } | undefined;
+  const currentDatasetId = committed?.dataset_id ?? null;
+  const partition = partitionResultsByDataset(results.data?.data ?? [], currentDatasetId);
+  const rows=partition.current;const {macro,dummy,beats}=modelComparison(rows);
+  const historicalComparison=modelComparison(partition.historical).macro;
   const datasetIds=[...new Set(rows.map(r=>r.dataset_id).filter((d): d is string => !!d))];
   return <><PageHeader eyebrow="先看证据，再谈性能" title="SOC 建模" description="有没有模型跑赢简单基线？" actions={<Button variant="outline" asChild><Link to={`/experiments/${batteryId}/${experimentId}/report`}>Open report<ArrowRight/></Link></Button>}/>
     {wf.data && <StaleBanner freshness={wf.data.artifact_freshness} stepKey="MODELS" />}
     <ModelingLauncher batteryId={batteryId} experimentId={experimentId} wf={wf.data} />
     <CohortBuilderPanel />
     <CohortLOBOPanel batteryId={batteryId} experimentId={experimentId} />
-    {!macro.length ? <EmptyState title="还没有模型评估" to={`/experiments/${batteryId}/${experimentId}/analysis`}>请先构建数据集和分组划分。特征选择请保留在训练组内。</EmptyState> : <>
+    {!macro.length ? <EmptyState title="当前数据集尚无模型评估" to={`/experiments/${batteryId}/${experimentId}/analysis?step=selection`} action="复核分组划分与特征选择">
+      当前数据集 <code>{currentDatasetId ?? "尚未提交"}</code> 没有匹配的模型结果。历史结果不会被用于当前结论；先确认 grouped split，再启动固定基线运行。
+    </EmptyState> : <>
       <Badge variant="secondary">评估完成 · 有限范围</Badge><div className="finding"><h2>{beats===false?"当前没有任何模型跑赢 Dummy 基准。":beats===true?"有模型在本次评估中跑赢了 Dummy。":"暂无可比的 Dummy 基线。"}</h2><p className="muted mt-4 max-w-2xl">{beats===false?"当前特征尚未展现出预测优势。这是科学结论，不是处理故障。":"该对比不能证明跨电池泛化或生产可用性。"}</p></div>
       {dummy && <p className="mb-7 text-sm"><span className="muted">Dummy 均值 · 宏观 MAE</span><strong className="text-2xl ml-4 tabular-nums">{numberText(dummy.value)}<span className="text-sm muted ml-1">%</span></strong></p>}
-      <section className="panel !p-0 overflow-hidden"><div className="p-5 border-b"><h3>Model comparison</h3><p className="text-xs muted mt-1">Lower MAE is better. Values are reported by the scientific service.</p></div><ComparisonTable rows={macro}/></section>
+      <section className="panel !p-0 overflow-hidden" data-testid="model-comparison-current"><div className="p-5 border-b"><h3>Model comparison · current dataset</h3><p className="text-xs muted mt-1">Lower MAE is better. Values are reported by the scientific service.</p></div><ComparisonTable rows={macro}/></section>
       <SelectedFeaturesPanel datasetId={datasetIds[0]} />
       <details className="mt-5"><summary>Advanced evaluation details</summary><Table><TableHeader><TableRow><TableHead>模型</TableHead><TableHead>指标</TableHead><TableHead>折</TableHead><TableHead>数值</TableHead><TableHead>证据</TableHead></TableRow></TableHeader><TableBody>{rows.filter(r=>r.result_type==="MODEL_METRIC").map(r=><TableRow key={r.result_id}><TableCell>{displayName(r.strategy??"")}</TableCell><TableCell>{r.name}</TableCell><TableCell>{r.fold_index??"—"}</TableCell><TableCell>{numberText(r.value)} {r.units}</TableCell><TableCell>{displayName(r.evidence_type)}</TableCell></TableRow>)}</TableBody></Table><p className="muted text-sm mt-3">OOB 与方向性指标仅在后端提供时显示。此处不计算池化行指标。</p></details>
-    </>}<ScopeNote/></>;
+    </>}
+    {partition.historical.length > 0 && <section className="panel !p-5 mt-6" data-testid="historical-model-results" role="status">
+      <div className="flex items-center gap-2"><Badge variant="outline">历史 / Stale</Badge><h3>旧数据集模型结果</h3></div>
+      <p className="text-sm muted mt-2">这些结果来自非当前数据集，不能支撑当前模型结论或新报告。重新构建对应 split 与模型后，结果会按 dataset ID 自动归入当前评估。</p>
+      <p className="text-xs font-mono mt-2">旧 dataset IDs：{[...new Set(partition.historical.map(row => row.dataset_id ?? "unscoped"))].join(" · ")}</p>
+      {historicalComparison.length > 0 && <details className="mt-3"><summary>查看历史指标（不参与当前结论）</summary><div className="mt-3"><ComparisonTable rows={historicalComparison}/></div></details>}
+    </section>}
+    <ScopeNote/></>;
 }

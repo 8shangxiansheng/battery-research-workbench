@@ -115,7 +115,7 @@ export const WF_STEP_ROUTES: Record<string, string> = {
   FEATURES: "analysis",
   PREVIEW: "analysis",
   DATASET: "analysis",
-  SPLIT: "advanced/dataset-split",
+  SPLIT: "analysis?step=selection",
   MODELS: "models",
   REPORT: "report",
 };

@@ -1,7 +1,7 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Eye, EyeOff, Info, RefreshCw } from "lucide-react";
-import { client, type FeatureLabelPreviewRow, type FeatureLabelPreviewResponse, type FeatureMetaEntry } from "../../api/client";
+import { client, type ExperimentDataAsset, type FeatureLabelPreviewRow, type FeatureLabelPreviewResponse, type FeatureMetaEntry } from "../../api/client";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../ui/dialog";
@@ -9,6 +9,7 @@ import { Input } from "../ui/input";
 import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from "../ui/table";
 import { LoadingState, ErrorState } from "./shared";
 import { numberText } from "../../lib/presentation";
+import { electricalAssetForRow } from "../../lib/asset-provenance";
 
 export const FEATURE_LABELS: Record<string, string> = {
   SWA: "SWA / 表面波幅值", BOTTOM_AMP: "Bottom-wave Amplitude / 底波幅值",
@@ -87,8 +88,9 @@ export function FeatureColumnDrawer({ feature, meta, tof, onClose }: {
   </Dialog>;
 }
 
-export function FeatureLabelRowDrawer({ row, targetId, features, onClose }: {
-  row: FeatureLabelPreviewRow | null; targetId: string; features: string[]; onClose: () => void;
+export function FeatureLabelRowDrawer({ row, targetId, features, rawAsset, assetLoading, assetError, onClose }: {
+  row: FeatureLabelPreviewRow | null; targetId: string; features: string[];
+  rawAsset: ExperimentDataAsset | null; assetLoading: boolean; assetError: boolean; onClose: () => void;
 }) {
   return <Dialog open={!!row} onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent>
@@ -102,6 +104,15 @@ export function FeatureLabelRowDrawer({ row, targetId, features, onClose }: {
         <dt className="muted">Electrical locator</dt><dd className="text-xs font-mono">{row.electrical_record_locator ?? "null（ambiguous — 未选择）"}</dd>
         <dt className="muted">Electrical 行/时间戳</dt><dd className="text-xs font-mono">{row.electrical_row_index ?? "—"} · {row.electrical_timestamp ?? "—"}</dd>
         <dt className="muted">Electrical asset</dt><dd className="text-xs">{row.electrical_asset_id ?? "null"}</dd>
+        <dt className="muted">Raw source file / 原始文件</dt><dd className="text-xs break-all">{assetLoading
+          ? <span role="status">正在从 DataAsset manifest 定位…</span>
+          : assetError
+            ? <span role="alert">DataAsset manifest 暂时不可读取，原始文件路径未验证。</span>
+            : rawAsset
+              ? <code data-testid="raw-electrical-asset-path">{rawAsset.relative_path}</code>
+              : <span data-testid="raw-electrical-asset-missing">manifest 中未找到匹配的 electrical DataAsset。</span>}</dd>
+        {rawAsset?.parser_name && <><dt className="muted">Raw parser</dt><dd className="text-xs font-mono">{rawAsset.parser_name}{rawAsset.parser_version ? ` v${rawAsset.parser_version}` : ""}</dd></>}
+        <dt className="muted">Raw checksum</dt><dd className="text-xs font-mono">{rawAsset?.sha256 ?? "manifest 未提供 SHA256；路径与 DataAsset ID 可用于定位。"}</dd>
         <dt className="muted">Match status</dt><dd className="text-xs font-mono">{row.match_status ?? "—"}</dd>
         <dt className="muted">Sync error / 同步误差</dt><dd className="tabular-nums text-xs">{numberText(row.sync_error_s, 4)} s（provisional timebase）</dd>
         <dt className="muted">Target / 目标值</dt>
@@ -132,6 +143,14 @@ export function FeatureLabelTablePreview({ batteryId, experimentId, targetId, fe
   const [stateFilter, setStateFilter] = useState<string>("ALL");
   const [search, setSearch] = useState("");
   const [sortDesc, setSortDesc] = useState<boolean | null>(null);
+  const assets = useQuery({
+    queryKey: ["experiment-assets", batteryId, experimentId],
+    queryFn: () => client.listExperimentAssets(batteryId, experimentId),
+    enabled: !!openRow?.electrical_asset_id,
+  });
+  const rawAsset = openRow
+    ? electricalAssetForRow(openRow, batteryId, experimentId, assets.data?.data.assets ?? [])
+    : null;
   const preview = useMutation({
     mutationFn: () => client.postFeatureLabelPreview(batteryId, experimentId, {
       target_id: targetId, features, split_id: splitId || undefined, fold_index: foldIndex || undefined,
@@ -274,7 +293,8 @@ export function FeatureLabelTablePreview({ batteryId, experimentId, targetId, fe
         </table>}
       </div>}
 
-      <FeatureLabelRowDrawer row={openRow} targetId={d.target_id} features={d.features} onClose={() => setOpenRow(null)} />
+      <FeatureLabelRowDrawer row={openRow} targetId={d.target_id} features={d.features}
+        rawAsset={rawAsset} assetLoading={assets.isLoading} assetError={!!assets.error} onClose={() => setOpenRow(null)} />
       <FeatureColumnDrawer feature={columnDetail} meta={meta} tof={d.tof_provenance} onClose={() => setColumnDetail(null)} />
     </>}
   </div>;

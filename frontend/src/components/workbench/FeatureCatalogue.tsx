@@ -43,7 +43,7 @@ export function FeatureDetailDialog({ feature, onClose }: { feature: FeatureDefi
 
 export function FeatureCatalogue({ selected, onToggle, availableNames = [] }: {
   selected: string[];
-  onToggle: (code: string) => void;
+  onToggle: (code: string, checked: boolean) => void;
   availableNames?: string[];
 }) {
   const catalogue = useQuery({ queryKey: ["feature-definitions"], queryFn: () => client.listFeatureDefinitions() });
@@ -85,10 +85,10 @@ export function FeatureCatalogue({ selected, onToggle, availableNames = [] }: {
       <div className="grid md:grid-cols-3 gap-3">
         {items.map(f => <div key={f.code} className="feature-card" data-testid={`catalogue-${f.code}`}>
           <div className="flex items-start gap-3">
-            <Checkbox aria-label={`Select ${f.display_name_en}`} checked={selected.includes(resolvedName(f))}
-              onCheckedChange={() => onToggle(resolvedName(f))} data-testid={`select-${f.code}`} />
+            <Checkbox id={`select-${f.code}`} aria-label={`Select ${f.display_name_en}`} checked={selected.includes(resolvedName(f))}
+              onCheckedChange={checked => onToggle(resolvedName(f), checked === true)} data-testid={`select-${f.code}`} />
             <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-medium truncate">{f.display_name_en} / {f.display_name_zh}</h3>
+              <label htmlFor={`select-${f.code}`} className="text-sm font-medium truncate cursor-pointer block">{f.display_name_en} / {f.display_name_zh}</label>
               <p className="text-xs muted mt-1 truncate">{f.code} · {f.units}</p>
             </div>
           </div>

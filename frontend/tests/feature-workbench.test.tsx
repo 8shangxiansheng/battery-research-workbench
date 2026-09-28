@@ -8,7 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, it, vi, beforeEach } from "vitest";
+import { describe, it, vi, beforeEach, expect } from "vitest";
+import { useState } from "react";
 
 const clientMock = {
   listFeatureDefinitions: vi.fn(),
@@ -68,6 +69,26 @@ beforeEach(() => {
 });
 
 describe("FeatureCatalogue（需求 1-4）", () => {
+  it("鼠标点击目录复选框会把选择状态传回受控目录", async () => {
+    clientMock.listFeatureDefinitions.mockResolvedValue({
+      data: { catalogue: [td("TDM", { display_name_en: "Mean", display_name_zh: "均值", family: "TD" })], formula_source_id: "S", formula_policy_version: "P" },
+      meta: {},
+    });
+    function ControlledCatalogue() {
+      const [selected, setSelected] = useState<string[]>([]);
+      return <div><FeatureCatalogue selected={selected} onToggle={(code, next) => setSelected(current => next ? [...current, code] : current.filter(item => item !== code))} />
+        <output data-testid="selected-codes">{selected.join(",")}</output></div>;
+    }
+    const user = userEvent.setup();
+    const { FeatureCatalogue } = await import("../src/components/workbench/FeatureCatalogue");
+    renderPage(<ControlledCatalogue />);
+    const checkbox = await screen.findByRole("checkbox", { name: "Select Mean" });
+    await user.click(checkbox);
+    await waitFor(() => {
+      expect(checkbox).toBeChecked();
+      expect(screen.getByTestId("selected-codes")).toHaveTextContent("TDM");
+    });
+  });
   it("consumes /feature-definitions API — no hardcoded catalogue", async () => {
     clientMock.listFeatureDefinitions.mockResolvedValue({
       data: { catalogue: catalogueFixture, formula_source_id: "USER_MATLAB_TIME_FREQUENCY_FEATURE_FORMULAS_V1", formula_policy_version: "MATLAB_ALIGNED_FEATURE_FORMULAS_V1" },

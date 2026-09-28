@@ -735,6 +735,20 @@ export interface FeatureLabelPreviewRow {
   fold?: string | null;
 }
 
+/** Manifest-backed source identity for one experiment DataAsset. */
+export interface ExperimentDataAsset {
+  asset_id: string;
+  battery_id?: string;
+  experiment_id: string;
+  modality: string;
+  relative_path: string;
+  file_start_time?: string | null;
+  file_end_time?: string | null;
+  parser_name?: string | null;
+  parser_version?: string | null;
+  sha256?: string | null;
+}
+
 export interface FeatureMetaEntry {
   label_en: string;
   label_zh: string;
@@ -1220,7 +1234,7 @@ export const client = {
   cancelIntakeSession: (sessionId: string) =>
     request<IntakeSessionDetail>(`/intake-sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: JSON.stringify({}) }),
   listExperimentAssets: (batteryId: string, experimentId: string) =>
-    request<{ assets: Record<string, unknown>[] }>(`/experiments/${batteryId}/${experimentId}/assets`),
+    request<{ assets: ExperimentDataAsset[] }>(`/experiments/${batteryId}/${experimentId}/assets`),
   getIntakeHistory: (batteryId: string, experimentId: string) =>
     request<{ history: Record<string, unknown>[] }>(`/experiments/${batteryId}/${experimentId}/intake-history`),
 
@@ -1509,7 +1523,7 @@ export interface WorkflowContextPayload {
   step_statuses: Record<string, string>;
   steps: Record<string, {
     status: string;
-    committed?: Record<string, unknown>;
+    committed?: Record<string, unknown> | null;
     blocking?: {
       blocking_code: string;
       blocking_message: string;
