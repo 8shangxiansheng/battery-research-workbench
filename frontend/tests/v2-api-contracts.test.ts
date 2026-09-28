@@ -7,16 +7,18 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
-const PORT = 8993;
-const api = `http://127.0.0.1:${PORT}/api/v1`;
+let api = "";
 let proc: ChildProcess | null = null;
 let available = false;
 let sandboxRoot = "";
 
 beforeAll(async () => {
+  const port = await reserveEphemeralPort();
+  api = `http://127.0.0.1:${port}/api/v1`;
   // sandbox workspace: NEVER the real data/ directory (§40 input integrity)
   sandboxRoot = mkdtempSync(join(tmpdir(), "brw-v2-test-"));
   const raw = join(sandboxRoot, "raw");
@@ -39,7 +41,7 @@ beforeAll(async () => {
   const repoRoot = resolve(new URL(import.meta.url).pathname, "../../..");
   proc = spawn(
     `${repoRoot}/.venv/bin/uvicorn`,
-    ["battery_workbench.api.serve_sandbox:app", "--port", String(PORT)],
+    ["battery_workbench.api.serve_sandbox:app", "--host", "127.0.0.1", "--port", String(port)],
     {
       cwd: repoRoot,
       stdio: "ignore",
@@ -61,8 +63,41 @@ beforeAll(async () => {
       await new Promise((r) => setTimeout(r, 250));
     }
   }
+  if (!available) {
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      if (!proc || proc.exitCode !== null) {
+        resolveExit(proc?.exitCode ?? null);
+        return;
+      }
+      proc.once("exit", (code) => resolveExit(code));
+      setTimeout(() => resolveExit(null), 1000).unref();
+    });
+    proc?.kill();
+    throw new Error(`Sandbox uvicorn failed to become ready on port ${port} (exit=${exitCode ?? "still running"})`);
+  }
 });
-afterAll(() => proc?.kill());
+afterAll(async () => {
+  if (!proc || proc.exitCode !== null) return;
+  const stopped = new Promise<void>((resolveStop) => proc?.once("exit", () => resolveStop()));
+  proc.kill();
+  await stopped;
+});
+
+async function reserveEphemeralPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Could not allocate an ephemeral TCP port for sandbox uvicorn");
+  }
+  const { port } = address;
+  await new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+  return port;
+}
 
 async function get(path: string): Promise<Record<string, unknown>> {
   const r = await fetch(`${api}${path}`);
