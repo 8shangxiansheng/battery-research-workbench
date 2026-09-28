@@ -101,6 +101,42 @@ def test_two_unique_source_datasets_on_distinct_batteries_are_accepted() -> None
 
 
 @pytest.mark.parametrize(
+    "reserved_feature_id",
+    [
+        "measurement_event_id",
+        "source_measurement_event_id",
+        "battery_id",
+        "experiment_id",
+        "source_dataset_id",
+        "reference_soc_percent",
+    ],
+)
+def test_cohort_request_rejects_feature_ids_that_shadow_identity_or_target_columns(
+    reserved_feature_id: str,
+) -> None:
+    payload = _valid_request()
+    payload["feature_mappings"] = [
+        {
+            "canonical_feature_id": reserved_feature_id,
+            "source_feature_ids": {
+                "DATASET::A::1": "peak_to_peak_v",
+                "DATASET::B::1": "peak_to_peak_v",
+            },
+            "method_version": "0.1.0",
+        }
+    ]
+    payload["unit_mapping"] = {
+        reserved_feature_id: {
+            "source_units": {"DATASET::A::1": "V", "DATASET::B::1": "V"},
+            "canonical_unit": "V",
+        }
+    }
+
+    with pytest.raises(ValidationError, match="cannot replace cohort identity or target"):
+        CohortDatasetRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
     "sources",
     [
         [
@@ -241,6 +277,26 @@ def test_builder_rejects_same_name_version_unit_with_different_formula() -> None
 
     with pytest.raises(CohortMaterializationError, match="not semantically equivalent"):
         build_cohort_frame(request, sources)
+
+
+def test_builder_defensively_rejects_identity_column_overwrite() -> None:
+    request = CohortDatasetRequest.model_validate(_valid_request())
+    unsafe_mapping = request.feature_mappings[0].model_copy(
+        update={"canonical_feature_id": "battery_id"}
+    )
+    unsafe_request = request.model_copy(
+        update={
+            "feature_mappings": [unsafe_mapping],
+            "unit_mapping": {"battery_id": request.unit_mapping["ultrasound_peak_to_peak"]},
+        }
+    )
+    sources = {
+        "DATASET::A::1": _source_payload("DATASET::A::1", "BATTERY::A", "EVENT::A", [1.0, 2.0]),
+        "DATASET::B::1": _source_payload("DATASET::B::1", "BATTERY::B", "EVENT::B", [3.0, 4.0]),
+    }
+
+    with pytest.raises(CohortMaterializationError, match="cannot replace cohort identity or target"):
+        build_cohort_frame(unsafe_request, sources)
 
 
 def test_builder_namespaces_repeated_source_event_ids_by_battery() -> None:

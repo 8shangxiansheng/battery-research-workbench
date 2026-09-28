@@ -6,6 +6,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+COHORT_RESERVED_COLUMNS = frozenset(
+    {
+        "measurement_event_id",
+        "source_measurement_event_id",
+        "battery_id",
+        "experiment_id",
+        "source_dataset_id",
+    }
+)
+
 
 class CohortSourceDataset(BaseModel):
     """Manifest identity for a source dataset; filesystem paths are server-owned."""
@@ -81,6 +91,14 @@ class CohortDatasetRequest(BaseModel):
         feature_ids = [mapping.canonical_feature_id for mapping in self.feature_mappings]
         if len(set(feature_ids)) != len(feature_ids):
             raise ValueError("canonical feature ids must be unique")
+        reserved_feature_ids = COHORT_RESERVED_COLUMNS | {
+            self.target_mapping.canonical_target_id
+        }
+        collisions = sorted(set(feature_ids) & reserved_feature_ids)
+        if collisions:
+            raise ValueError(
+                f"canonical feature ids cannot replace cohort identity or target columns: {collisions}"
+            )
         if set(self.unit_mapping) != set(feature_ids):
             raise ValueError("unit mapping must cover every canonical feature exactly once")
         for mapping in self.feature_mappings:

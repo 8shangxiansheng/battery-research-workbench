@@ -9,7 +9,10 @@ from typing import Any
 
 import pandas as pd
 
-from battery_workbench.datasets.cohort_schemas import CohortDatasetRequest
+from battery_workbench.datasets.cohort_schemas import (
+    COHORT_RESERVED_COLUMNS,
+    CohortDatasetRequest,
+)
 
 
 class CohortMaterializationError(ValueError):
@@ -190,6 +193,16 @@ def build_cohort_frame(
     sources: dict[str, tuple[dict[str, Any], pd.DataFrame]],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Validate source metadata and combine rows using only declared mappings."""
+    reserved_columns = COHORT_RESERVED_COLUMNS | {request.target_mapping.canonical_target_id}
+    collisions = sorted(
+        mapping.canonical_feature_id
+        for mapping in request.feature_mappings
+        if mapping.canonical_feature_id in reserved_columns
+    )
+    if collisions:
+        raise CohortMaterializationError(
+            f"canonical feature ids cannot replace cohort identity or target columns: {collisions}"
+        )
     if set(sources) != {source.source_dataset_id for source in request.source_datasets}:
         raise CohortMaterializationError("resolved source set differs from request")
     target_methods: set[tuple[str, str | None]] = set()
