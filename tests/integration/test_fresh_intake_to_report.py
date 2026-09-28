@@ -13,13 +13,14 @@ from battery_workbench.api.app import create_app
 REPO = Path(__file__).resolve().parents[2]
 ELECTRICAL = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
 ULTRASOUND = (
-    REPO
-    / "data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
+    REPO / "data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
 )
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not ELECTRICAL.is_file() or not ULTRASOUND.is_file(), reason="real inputs absent")
+@pytest.mark.skipif(
+    not ELECTRICAL.is_file() or not ULTRASOUND.is_file(), reason="real inputs absent"
+)
 def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     processed = tmp_path / "processed"
@@ -63,9 +64,7 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
         )
         assert response.status_code == 200, response.text
     assert client.post(f"/api/v1/intake-sessions/{session['session_id']}/detect").status_code == 200
-    validation = client.post(
-        f"/api/v1/intake-sessions/{session['session_id']}/validate"
-    )
+    validation = client.post(f"/api/v1/intake-sessions/{session['session_id']}/validate")
     assert validation.status_code == 200 and validation.json()["data"]["overall_passed"]
     assert client.post(f"/api/v1/intake-sessions/{session['session_id']}/commit").status_code == 200
 
@@ -94,6 +93,18 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
     assert sampling.status_code == 200, sampling.text
     assert sampling.json()["data"]["save_status"] in {"SAVED", "REPLAYED"}
 
+    gate = client.post(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/gate-calibration",
+        json={
+            "confirmed_by": "integration-test",
+            "calibration_basis": "PREDECLARED_PROTOCOL_GATE",
+            "gate_bounds": {"SWA_SURFACE_GATE": {"start": 80, "end": 230}},
+            "confirmed_at": "fresh-e2e-gate-v1",
+        },
+    )
+    assert gate.status_code == 200, gate.text
+    gate_calibration_id = gate.json()["data"]["gate_calibration_id"]
+
     dataset = client.post(
         "/api/v1/runs",
         json={
@@ -107,6 +118,15 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
     assert dataset.status_code == 200, dataset.text
     dataset_data = dataset.json()["data"]
     assert dataset_data["status"] == "SUCCEEDED", json.dumps(dataset_data, default=str)
+    dataset_manifests = list(
+        (processed / "datasets" / battery_id / experiment_id).rglob("dataset_manifest.json")
+    )
+    assert dataset_manifests
+    assert any(
+        json.loads(path.read_text(encoding="utf-8")).get("gate_calibration_id")
+        == gate_calibration_id
+        for path in dataset_manifests
+    )
 
     model_request = {
         "profile": "FULL_PRE_MODEL",

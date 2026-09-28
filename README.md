@@ -188,6 +188,8 @@ docker compose up --build -d
 # 打开 http://127.0.0.1:8000/ （前端构建已烤入镜像，同源调 /api/v1）
 ```
 
+容器 Python runtime 依赖由根目录 `uv.lock` 固定，Docker build 使用 `uv sync --frozen`，并安装 `ml` extra 以启用 Models 功能；修改 `pyproject.toml` 的依赖后，先运行 `uv lock` 并将锁文件一并提交。锁文件覆盖 uv 解析的 Python/platform markers，CI 配置会检查 `linux/amd64` 与 `linux/arm64` 镜像构建。
+
 Compose 默认只监听本机回环地址；需配置 `BRW_PORT` 可改主机端口。由于 API 当前没有认证，**不要直接将 `BRW_BIND_ADDR` 设为 `0.0.0.0` 暴露到不可信网络**；远程使用请置于具备认证与 TLS 的反向代理之后。
 
 Compose 将 `data/raw`、`data/processed` 和 `data/artifacts` 分目录挂载。raw 默认可写是为了支持 UI 新建实验/导入原始资产；导入流程只新增源文件和 manifest，不应覆盖已有原始文件。对于只需分析既有数据的部署，可设置 `BRW_RAW_READ_ONLY=true`，但此时 UI 导入功能不可用。Linux 用户需确保挂载目录可由容器 UID/GID（默认 `10001:10001`）写入；例如：

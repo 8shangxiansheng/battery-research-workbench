@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,15 @@ import numpy as np
 PREDEFINED_PHYSICAL_CODES = frozenset(
     {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "ATTEN_MEAN", "ATTEN_ENERGY", "BPS"}
 )
+FEATURE_GATE_TEMPLATES: dict[str, tuple[str, ...]] = {
+    "BOTTOM_AMP": ("BOTTOM_AMPLITUDE_GATE",),
+    "SWA": ("SWA_SURFACE_GATE",),
+    "TOF_XCORR": ("TOF_SURFACE_REFERENCE_GATE", "TOF_BOTTOM_GATE"),
+    "ATTEN_MAX": ("ATTENUATION_BOTTOM_GATE",),
+    "ATTEN_MEAN": ("ATTENUATION_BOTTOM_GATE",),
+    "ATTEN_ENERGY": ("ATTENUATION_BOTTOM_GATE",),
+    "BPS": ("BPS_BOTTOM_GATE",),
+}
 
 ALIAS_TO_RAW: dict[str, str] = {
     "amplitude_a_u": "waveform_abs_peak_a_u",
@@ -43,7 +53,12 @@ def load_waveform_frames(store: Path, frames_meta: object) -> np.ndarray:
     return np.asarray(rows, dtype=np.float64)
 
 
-def selected_feature_series(frames: np.ndarray, features: list[str]) -> dict[str, np.ndarray]:
+def selected_feature_series(
+    frames: np.ndarray,
+    features: list[str],
+    *,
+    gate_bounds: Mapping[str, tuple[int, int]] | None = None,
+) -> dict[str, np.ndarray]:
     """Compute requested catalogue, physical, and raw feature series."""
     from battery_workbench.features.envelope import compute_envelope_features
     from battery_workbench.features.matlab_features import (
@@ -68,13 +83,13 @@ def selected_feature_series(frames: np.ndarray, features: list[str]) -> dict[str
     requested = set(features)
     out: dict[str, np.ndarray] = {}
     physical = {
-        "BOTTOM_AMP": lambda: bottom_wave_amplitude(frames)["raw"],
-        "SWA": lambda: surface_wave_amplitude(frames)["raw"],
-        "TOF_XCORR": lambda: surface_bottom_xcorr_tof(frames)["tof_samples"],
-        "ATTEN_MAX": lambda: bottom_attenuation_explicit(frames)["amp_max"],
-        "ATTEN_MEAN": lambda: bottom_attenuation_explicit(frames)["amp_mean"],
-        "ATTEN_ENERGY": lambda: bottom_attenuation_explicit(frames)["amp_energy"],
-        "BPS": lambda: bottom_wave_phase_shift(frames)["raw_radian"],
+        "BOTTOM_AMP": lambda: bottom_wave_amplitude(frames, gate_bounds)["raw"],
+        "SWA": lambda: surface_wave_amplitude(frames, gate_bounds)["raw"],
+        "TOF_XCORR": lambda: surface_bottom_xcorr_tof(frames, gate_bounds)["tof_samples"],
+        "ATTEN_MAX": lambda: bottom_attenuation_explicit(frames, gate_bounds=gate_bounds)["amp_max"],
+        "ATTEN_MEAN": lambda: bottom_attenuation_explicit(frames, gate_bounds=gate_bounds)["amp_mean"],
+        "ATTEN_ENERGY": lambda: bottom_attenuation_explicit(frames, gate_bounds=gate_bounds)["amp_energy"],
+        "BPS": lambda: bottom_wave_phase_shift(frames, gate_bounds)["raw_radian"],
     }
     for code in sorted(requested & PREDEFINED_PHYSICAL_CODES):
         out[code] = np.asarray(physical[code](), dtype=np.float64)

@@ -268,3 +268,19 @@ def test_analysis_slice_provenance_t46() -> None:
     assert report.label_set_id == "LB::test"
     assert report.parameter_set_id == "PS::test"
     assert report.parameter_dependency == "INFORMATIONAL"
+
+
+def test_frozen_gate_calibration_is_part_of_dataset_identity() -> None:
+    common = {
+        "feature_set_id": "FS::A",
+        "label_set_id": "LB::A",
+        "parameter_set_id": "PS::A",
+        "target_name": "soc_reference_percent",
+        "config": _config(),
+        "feature_checksum": "c1",
+        "label_checksum": "c2",
+        "selected_features": ["SWA"],
+    }
+    first = build_dataset_id(**common, gate_calibration_id="GC::one")
+    second = build_dataset_id(**common, gate_calibration_id="GC::two")
+    assert first != second

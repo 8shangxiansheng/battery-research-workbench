@@ -79,6 +79,7 @@ def build_soc_dataset(
     feature_set_path: Path | None = None,
     label_set_path: Path | None = None,
     selected_features: list[str] | None = None,
+    gate_calibration_id: str | None = None,
 ) -> tuple[DatasetReport, pd.DataFrame]:
     """Build the SOC dataset family.
 
@@ -149,6 +150,7 @@ def build_soc_dataset(
         feature_checksum=feature_checksum,
         label_checksum=label_checksum,
         selected_features=selected_features,
+        gate_calibration_id=gate_calibration_id,
     )
 
     eligible_soc = eligible_df[target].dropna()
@@ -172,6 +174,7 @@ def build_soc_dataset(
         label_set_id=label_set_id,
         parameter_set_id=parameter_set_id,
         parameter_dependency=config.parameter_dependency,
+        gate_calibration_id=gate_calibration_id,
         input_feature_rows=len(features),
         input_label_rows=len(event_labels),
         joined_rows=len(joined),
@@ -224,6 +227,7 @@ def build_soh_dataset(
     feature_set_path: Path | None = None,
     label_set_path: Path | None = None,
     selected_features: list[str] | None = None,
+    gate_calibration_id: str | None = None,
 ) -> tuple[DatasetReport, pd.DataFrame]:
     """Build the SOH_CAPACITY dataset family."""
     from battery_workbench.datasets.ids import build_dataset_id
@@ -297,6 +301,7 @@ def build_soh_dataset(
         feature_checksum=feature_checksum,
         label_checksum=label_checksum,
         selected_features=selected_features,
+        gate_calibration_id=gate_calibration_id,
     )
 
     cycle_count = int(eligible_df["cycle_group_id"].nunique()) if len(eligible_df) else 0
@@ -317,6 +322,7 @@ def build_soh_dataset(
         label_set_id=label_set_id,
         parameter_set_id=parameter_set_id,
         parameter_dependency=config.parameter_dependency,
+        gate_calibration_id=gate_calibration_id,
         input_feature_rows=len(features),
         input_label_rows=len(event_labels),
         joined_rows=len(joined),

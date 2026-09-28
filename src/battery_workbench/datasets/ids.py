@@ -17,6 +17,7 @@ def build_dataset_id(
     feature_checksum: str,
     label_checksum: str,
     selected_features: list[str] | None = None,
+    gate_calibration_id: str | None = None,
 ) -> str:
     """Build the deterministic ``DS::<hash>`` dataset id.
 
@@ -24,19 +25,23 @@ def build_dataset_id(
     ``selected_features`` (V2) participates in the hash when explicitly given;
     passing ``None`` reproduces the legacy BRW-016 id byte-for-byte.
     """
+    identity = {
+        "feature_set_id": feature_set_id,
+        "feature_checksum": feature_checksum,
+        "label_set_id": label_set_id,
+        "label_checksum": label_checksum,
+        "parameter_set_id": parameter_set_id,
+        "target_name": target_name,
+        "predictor_policy": config.predictor_policy,
+        "role_schema_version": config.role_schema_version,
+        "leakage_policy_version": config.leakage_policy_version,
+        "selected_features": selected_features,
+    }
+    # Preserve all legacy ids when no experiment gate record participates.
+    if gate_calibration_id:
+        identity["gate_calibration_id"] = gate_calibration_id
     canonical = json.dumps(
-        {
-            "feature_set_id": feature_set_id,
-            "feature_checksum": feature_checksum,
-            "label_set_id": label_set_id,
-            "label_checksum": label_checksum,
-            "parameter_set_id": parameter_set_id,
-            "target_name": target_name,
-            "predictor_policy": config.predictor_policy,
-            "role_schema_version": config.role_schema_version,
-            "leakage_policy_version": config.leakage_policy_version,
-            "selected_features": selected_features,
-        },
+        identity,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

@@ -490,6 +490,22 @@ def resolve_gate_calibration(
     }
 
 
+def resolved_gate_bounds(
+    battery_id: str, experiment_id: str, processed_root: Path
+) -> tuple[str | None, dict[str, tuple[int, int]]]:
+    """Return the active frozen generic calibration identity and Python bounds."""
+    record = resolve_gate_calibration(battery_id, experiment_id, processed_root)
+    if record is None:
+        return None, {}
+    bounds: dict[str, tuple[int, int]] = {}
+    for template_id, pair in (record.get("gate_bounds") or {}).items():
+        bounds[str(template_id)] = (
+            int(pair["start"]),
+            int(pair["end_exclusive"]),
+        )
+    return str(record.get("gate_calibration_id") or "") or None, bounds
+
+
 def resolve_tof_gate_calibration(
     battery_id: str, experiment_id: str, processed_root: Path
 ) -> dict[str, Any]:

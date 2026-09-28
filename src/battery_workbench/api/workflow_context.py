@@ -299,20 +299,35 @@ def _split_latest(
     return _read_json(latest) if latest else None
 
 
-def _models_for_split(
-    processed_root: Path, b: str, e: str, dataset_id: str | None
+def _models_for_experiment(
+    processed_root: Path, b: str, e: str
 ) -> list[dict[str, Any]]:
-    """Model manifests for the committed dataset (across all its splits)."""
+    """All model manifests for freshness comparison; no model artifacts are changed."""
     root = processed_root / "models" / b / e
     if not root.is_dir():
         return []
     out: list[dict[str, Any]] = []
     for m in root.rglob("model_manifest.json"):
-        data = _read_json(m) or {}
-        if dataset_id and data.get("dataset_id") != dataset_id:
-            continue
-        out.append(data)
+        out.append(_read_json(m) or {})
     return out
+
+
+def _models_for_split(
+    processed_root: Path, b: str, e: str, dataset_id: str | None
+) -> list[dict[str, Any]]:
+    """Model manifests for the committed dataset (across all its splits)."""
+    models = _models_for_experiment(processed_root, b, e)
+    if dataset_id is None:
+        return models
+    return [model for model in models if model.get("dataset_id") == dataset_id]
+
+
+def _report_dataset_id(report: dict[str, Any] | None) -> str | None:
+    if report is None:
+        return None
+    canonical = (report.get("experiment_record") or {}).get("latest_canonical_artifacts") or {}
+    value = canonical.get("dataset_id")
+    return value if isinstance(value, str) and value else None
 
 
 def _report_latest(processed_root: Path, b: str, e: str) -> dict[str, Any] | None:
@@ -397,9 +412,25 @@ def build_workflow_context(
     assistant = _assistant_state(processed_root, b, e)
 
     dataset_freshness = _freshness_of_dataset(dm)
-    # §23 stale chain: definitions/TOF change → dataset legacy → models/report stale
-    model_freshness = "MISSING" if not models else ("STALE" if dataset_freshness in {"STALE", "LEGACY"} else "CURRENT")
-    report_freshness = "MISSING" if report is None else ("STALE" if model_freshness in {"STALE", "LEGACY"} else "CURRENT")
+    all_models = _models_for_experiment(processed_root, b, e)
+    # §23 stale chain: upstream dataset changes invalidate downstream models.
+    # Historic metrics are not "missing" when they exist; they are stale relative
+    # to the newly committed dataset and must not satisfy the current workflow.
+    if not models:
+        model_freshness = "STALE" if all_models and dataset_id else "MISSING"
+    else:
+        model_freshness = "STALE" if dataset_freshness in {"STALE", "LEGACY"} else "CURRENT"
+    if report is None:
+        report_freshness = "MISSING"
+    elif model_freshness in {"STALE", "LEGACY", "MISSING"} or (
+        _report_dataset_id(report) is not None
+        and _report_dataset_id(report) != dataset_id
+    ):
+        report_freshness = "STALE"
+    elif _report_dataset_id(report) is None:
+        report_freshness = "LEGACY"
+    else:
+        report_freshness = "CURRENT"
 
     # ---------- per-step statuses ----------
     steps: dict[str, dict[str, Any]] = {}
@@ -561,7 +592,18 @@ def build_workflow_context(
             },
         }
 
-    if not models:
+    if not split_ready:
+        steps["REPORT"] = {
+            "status": "BLOCKED",
+            "committed": None,
+            "blocking": _block(
+                "VALID_SPLIT_REQUIRED",
+                "当前数据集尚无可用 grouped split",
+                "CREATE_SPLIT",
+                "报告中的模型证据必须来自当前已提交数据集的合法 grouped split",
+            ),
+        }
+    elif not models:
         steps["REPORT"] = {
             "status": "BLOCKED",
             "committed": None,
@@ -577,6 +619,17 @@ def build_workflow_context(
             "blocking": _block(
                 "REPORT_MISSING", "未生成报告", "OPEN_REPORT",
                 "所有前置已满足，可生成研究报告",
+            ),
+        }
+    elif report_freshness in {"STALE", "LEGACY", "SUPERSEDED"}:
+        steps["REPORT"] = {
+            "status": "STALE",
+            "committed": {"report_id": report.get("report_id")},
+            "blocking": _block(
+                "REPORT_STALE",
+                "现有报告基于旧数据集或旧模型结果",
+                "OPEN_REPORT",
+                "重新生成报告以绑定当前数据集和模型证据",
             ),
         }
     else:

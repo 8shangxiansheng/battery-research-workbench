@@ -234,7 +234,7 @@ describe("W13/W17 — Deep-link prerequisite panel", () => {
     expect(screen.getByTestId("prerequisite-panel")).toBeInTheDocument();
     expect(screen.getByText("前置条件未满足 / Prerequisites not met")).toBeInTheDocument();
     expect(screen.getByText("数据集未物化")).toBeInTheDocument();
-    expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/analysis");
+    expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/analysis?step=dataset");
   });
 });
 
@@ -298,9 +298,9 @@ describe("W01 — Route table completeness", () => {
     }
   });
 
-  it("SPLIT maps to advanced/dataset-split (not broken /advanced/splits)", async () => {
+  it("SPLIT maps to the primary Analysis selection step", async () => {
     const { WF_STEP_ROUTES } = await import("../src/hooks/useWorkflowContext");
-    expect(WF_STEP_ROUTES.SPLIT).toBe("advanced/dataset-split");
+    expect(WF_STEP_ROUTES.SPLIT).toBe("analysis?step=selection");
   });
 });
 
@@ -477,7 +477,7 @@ describe("W12 — Deep link shows prerequisite panel (not 404)", () => {
     );
     expect(screen.getByText("需要先建立分组划分")).toBeInTheDocument();
     expect(screen.getByText("ML 建模必须基于分组划分以避免数据泄漏")).toBeInTheDocument();
-    expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/advanced/dataset-split");
+    expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/analysis?step=selection");
   });
 });
 
@@ -721,7 +721,7 @@ describe("W27 — stepRoute produces correct routes", () => {
     expect(stepRoute("CELL_001", "EXP_001", "FEATURES")).toBe("/experiments/CELL_001/EXP_001/analysis");
     expect(stepRoute("CELL_001", "EXP_001", "PREVIEW")).toBe("/experiments/CELL_001/EXP_001/analysis");
     expect(stepRoute("CELL_001", "EXP_001", "DATASET")).toBe("/experiments/CELL_001/EXP_001/analysis");
-    expect(stepRoute("CELL_001", "EXP_001", "SPLIT")).toBe("/experiments/CELL_001/EXP_001/advanced/dataset-split");
+    expect(stepRoute("CELL_001", "EXP_001", "SPLIT")).toBe("/experiments/CELL_001/EXP_001/analysis?step=selection");
     expect(stepRoute("CELL_001", "EXP_001", "MODELS")).toBe("/experiments/CELL_001/EXP_001/models");
     expect(stepRoute("CELL_001", "EXP_001", "REPORT")).toBe("/experiments/CELL_001/EXP_001/report");
   });
@@ -808,11 +808,22 @@ describe("W30 — pageToStep mapping correctness", () => {
     expect(analysisSteps[0]![0]).toBe("TARGET");
   });
 
-  it("dataset-split maps to SPLIT step", async () => {
+  it("SPLIT recovery maps to the primary workflow selection step", async () => {
     const { WF_STEP_ROUTES } = await import("../src/hooks/useWorkflowContext");
-    const splitStep = Object.entries(WF_STEP_ROUTES).find(([, route]) => route === "advanced/dataset-split");
-    expect(splitStep).toBeDefined();
-    expect(splitStep![0]).toBe("SPLIT");
+    expect(WF_STEP_ROUTES.SPLIT).toBe("analysis?step=selection");
+  });
+});
+
+describe("Prerequisite recovery uses the blocking action", () => {
+  it("report blocked by missing current-model results routes to Models, not the global split action", async () => {
+    const { PrerequisitePanel } = await import("../src/components/workbench/PrerequisitePanel");
+    renderWithWorkflow(<PrerequisitePanel
+      stepKey="REPORT" stepStatus="BLOCKED"
+      stepDetail={{ status: "BLOCKED", blocking: { blocking_code: "MODELS_MISSING", blocking_message: "当前数据集尚无模型结果", required_action: "TRAIN_MODELS", scientific_reason: "模型结果必须对应当前已提交数据集" } }}
+      recommended={{ action_id: "CREATE_SPLIT", step: "SPLIT", label: "建立分组划分", route: "/experiments/CELL_001/EXP_001/advanced/dataset-split" }}
+      batteryId="CELL_001" experimentId="EXP_001" />);
+    expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/models");
+    expect(screen.getByTestId("prerequisite-next-action")).toHaveTextContent("前往模型");
   });
 });
 

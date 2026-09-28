@@ -54,7 +54,19 @@ def _sandbox(tmp_path: Path) -> Path:
     ):
         src = PROCESSED / rel
         if src.exists():
-            (sandbox / rel).symlink_to(src)
+            if rel == "datasets":
+                # Keep the workflow-context contract tests deterministic even
+                # after interactive acceptance creates newer local datasets.
+                # These are the stable RC1 materialized fixture identities.
+                dst = sandbox / rel / B / E / "SOC"
+                for dataset_id in ("DS::83013a61b316f3489093b358", "DS::6a3142e5186fc684964ff09e"):
+                    fixture = src / B / E / "SOC" / dataset_id
+                    if fixture.is_dir():
+                        (dst / dataset_id).parent.mkdir(parents=True, exist_ok=True)
+                        import shutil
+                        shutil.copytree(fixture, dst / dataset_id)
+            else:
+                (sandbox / rel).symlink_to(src)
     return sandbox
 
 
@@ -71,13 +83,17 @@ def _legacy_chain_sandbox(tmp_path: Path, exclude: tuple[str, ...]) -> Path:
     sandbox = _sandbox(tmp_path)
     for rel in ("datasets", "models", "splits"):
         link = sandbox / rel
-        real = link.resolve()
-        link.unlink()
-        dst = sandbox / rel
+        real = link.resolve() if link.is_symlink() else link
         def _ign(root: str, names: list[str]) -> set[str]:
             drop = {n for n in names if any(x in str(Path(root) / n) for x in exclude)}
             return drop
-        shutil.copytree(real, dst, ignore=_ign)
+        filtered = sandbox / f"{rel}-filtered"
+        shutil.copytree(real, filtered, ignore=_ign)
+        if link.is_symlink():
+            link.unlink()
+        else:
+            shutil.rmtree(link)
+        filtered.rename(link)
     art = sandbox / "artifacts"
     art_real = art.resolve()
     art.unlink()
@@ -270,6 +286,46 @@ class TestWorkflowContextContract:
         assert d["steps"]["SPLIT"]["status"] == "LIMITED"
         assert d["steps"]["MODELS"]["status"] == "BLOCKED"
         assert d["steps"]["MODELS"]["blocking"]["blocking_code"] == "VALID_SPLIT_REQUIRED"
+
+    def test_historical_models_and_report_are_stale_for_new_dataset(self, tmp_path: Path) -> None:
+        """Historical metrics must not satisfy the latest dataset's workflow gate."""
+        import pandas as pd
+
+        sandbox = tmp_path / "processed"
+        event_dir = sandbox / "multimodal" / B / E
+        label_dir = sandbox / "labels" / B / E
+        dataset_dir = sandbox / "datasets" / B / E / "SOC" / "DS::AUDIT-CURRENT"
+        old_model_dir = sandbox / "models" / B / E / "DS::OLD" / "SPLIT::OLD" / "MODEL::OLD"
+        report_dir = sandbox / "artifacts" / B / E / "reports" / "REPORT::OLD"
+        for directory in (event_dir, label_dir, dataset_dir, old_model_dir, report_dir):
+            directory.mkdir(parents=True)
+        pd.DataFrame([{"measurement_event_id": "ME::1", "analysis_eligible": True, "match_status": "MATCHED_UNIQUE"}]).to_parquet(
+            event_dir / "measurement_events.parquet", index=False
+        )
+        pd.DataFrame([{"measurement_event_id": "ME::1", "soc_reference_percent": 50.0}]).to_parquet(
+            label_dir / "event_labels.parquet", index=False
+        )
+        (dataset_dir / "dataset_manifest.json").write_text(json.dumps({
+            "dataset_id": "DS::AUDIT-CURRENT", "dataset_status": "READY_WITH_LIMITATIONS",
+            "target_name": "soc_reference_percent", "selected_features": ["tof_us"],
+        }), encoding="utf-8")
+        (old_model_dir / "model_manifest.json").write_text(json.dumps({
+            "model_id": "MODEL::OLD", "dataset_id": "DS::OLD", "split_id": "SPLIT::OLD",
+        }), encoding="utf-8")
+        (report_dir / "scientific_report.json").write_text(json.dumps({
+            "report_id": "REPORT::OLD",
+            "experiment_record": {"latest_canonical_artifacts": {"dataset_id": "DS::OLD"}},
+        }), encoding="utf-8")
+
+        d = build_workflow_context(sandbox, B, E)
+
+        assert d["steps"]["DATASET"]["committed"]["dataset_id"] == "DS::AUDIT-CURRENT"
+        assert d["steps"]["SPLIT"]["status"] == "NOT_STARTED"
+        assert d["steps"]["MODELS"]["status"] == "BLOCKED"
+        assert d["steps"]["MODELS"]["blocking"]["required_action"] == "CREATE_SPLIT"
+        assert d["artifact_freshness"]["models"] == "STALE"
+        assert d["artifact_freshness"]["report"] == "STALE"
+        assert d["steps"]["REPORT"]["blocking"]["required_action"] == "CREATE_SPLIT"
 
     def test_w26_typed_navigation(self, tmp_path: Path) -> None:
         d = build_workflow_context(_sandbox(tmp_path), B, E)

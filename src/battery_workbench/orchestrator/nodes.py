@@ -13,7 +13,10 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
-from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
+from battery_workbench.features.gate_calibration import (
+    resolve_tof_gate_calibration,
+    resolved_gate_bounds,
+)
 from battery_workbench.orchestrator.resolver import (
     ArtifactIdentity,
     ArtifactRequirements,
@@ -917,7 +920,11 @@ class CanonicalTofNode(WorkflowNode):
                     action_type="MISSING_SAMPLING_RATE",
                     message="请输入采样频率（Hz/kHz/MHz；后端以 Hz 存储；绝不猜测）",
                     required_fields=[
-                        {"field": "ultrasound.sampling_rate_hz", "unit": "Hz", "example": 50000000.0}
+                        {
+                            "field": "ultrasound.sampling_rate_hz",
+                            "unit": "Hz",
+                            "example": 50000000.0,
+                        }
                     ],
                     scientific_reason=(
                         "Canonical envelope-peak TOF needs a VERIFIED sampling rate "
@@ -990,13 +997,17 @@ class CanonicalTofNode(WorkflowNode):
         # resolved identity goes into the artifact (provenance, no silent fallback)
         cal = resolve_tof_gate_calibration(b, e, Path(ctx.processed_root))
         surface_binding = TOFGateBinding(
-            role="surface", gate_id=cal["surface_gate_id"], matlab_range="",
+            role="surface",
+            gate_id=cal["surface_gate_id"],
+            matlab_range="",
             python_start=cal["surface_start"],
             python_end_exclusive=cal["surface_end_exclusive"],
             length_samples=cal["surface_end_exclusive"] - cal["surface_start"],
         )
         bottom_binding = TOFGateBinding(
-            role="bottom", gate_id=cal["bottom_gate_id"], matlab_range="",
+            role="bottom",
+            gate_id=cal["bottom_gate_id"],
+            matlab_range="",
             python_start=cal["bottom_start"],
             python_end_exclusive=cal["bottom_end_exclusive"],
             length_samples=cal["bottom_end_exclusive"] - cal["bottom_start"],
@@ -1031,16 +1042,20 @@ class CanonicalTofNode(WorkflowNode):
                 "status_counts": table["tof_status"].value_counts().to_dict(),
                 "canonical_tof_valid": len(valid),
                 "tof_samples_stats": (
-                    {"min": float(valid.tof_samples.min()),
-                     "median": float(valid.tof_samples.median()),
-                     "max": float(valid.tof_samples.max())}
+                    {
+                        "min": float(valid.tof_samples.min()),
+                        "median": float(valid.tof_samples.median()),
+                        "max": float(valid.tof_samples.max()),
+                    }
                     if len(valid)
                     else None
                 ),
                 "tof_us_stats": (
-                    {"min": float(valid.tof_us.min()),
-                     "median": float(valid.tof_us.median()),
-                     "max": float(valid.tof_us.max())}
+                    {
+                        "min": float(valid.tof_us.min()),
+                        "median": float(valid.tof_us.median()),
+                        "max": float(valid.tof_us.max()),
+                    }
                     if len(valid)
                     else None
                 ),
@@ -1058,12 +1073,12 @@ class CanonicalTofNode(WorkflowNode):
             "row_count": len(table),
             "canonical_tof_valid": len(valid),
         }
-        (out_dir / "canonical_tof_manifest.json").write_text(
-            json.dumps(manifest, indent=2) + "\n"
+        (out_dir / "canonical_tof_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        limitations = (
+            []
+            if (fs_verified and len(valid))
+            else ["canonical tof_us stays null until fs is verified in the Parameter Registry"]
         )
-        limitations = [] if (fs_verified and len(valid)) else [
-            "canonical tof_us stays null until fs is verified in the Parameter Registry"
-        ]
         return {
             "artifact_id": "",
             "path": str(out_dir),
@@ -1308,6 +1323,46 @@ class FeatureLabelAnalysisNode(WorkflowNode):
 class DatasetNode(WorkflowNode):
     node_type = "DATASET"
 
+    def _gate_calibration(
+        self, plan, processed_root: Path
+    ) -> tuple[str | None, dict[str, tuple[int, int]]]:
+        from battery_workbench.features.selected_series import FEATURE_GATE_TEMPLATES
+
+        selected = set(plan.features.get("selected_features") or [])
+        if not selected.intersection(FEATURE_GATE_TEMPLATES):
+            return None, {}
+        return resolved_gate_bounds(
+            plan.project.battery_id,
+            plan.project.experiment_id,
+            Path(processed_root),
+        )
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        calibration_id, _bounds = self._gate_calibration(plan, Path(processed_root))
+        if not calibration_id:
+            return super().resolve_existing_output(plan, inputs, processed_root)
+        req = self.requirements(plan, inputs)
+        req.extra_match["gate_calibration_id"] = calibration_id
+        ref = find_existing_artifact(
+            Path(processed_root),
+            requirements=req,
+            artifact_id=self.pinned_artifact_id(plan),
+        )
+        if ref is not None:
+            from battery_workbench.orchestrator.resolver import verify_manifest_provenance
+
+            manifest = _load_json(Path(ref.manifest_path)) or {}
+            ok, reason = verify_manifest_provenance(
+                manifest, Path(ref.manifest_path), processed_root=Path(processed_root)
+            )
+            if not ok:
+                return None, reason
+            return ref, ref.reuse_reason
+        return (
+            None,
+            "frozen gate calibration changed or dataset manifest is missing gate provenance",
+        )
+
     def requirements(self, plan, inputs):
         return ArtifactRequirements(
             artifact_type="DATASET",
@@ -1348,7 +1403,15 @@ class DatasetNode(WorkflowNode):
         features_ref = inputs["ULTRASOUND_FEATURES"]
         feature_frame = pd.read_parquet(Path(features_ref.path) / "ultrasound_features.parquet")
         selected = list(plan.features.get("selected_features") or [])
-        missing = [code for code in selected if code != "tof_us" and code not in feature_frame]
+        from battery_workbench.features.selected_series import FEATURE_GATE_TEMPLATES
+
+        gate_calibration_id, gate_bounds = self._gate_calibration(plan, Path(ctx.processed_root))
+        gated_selected = set(selected).intersection(FEATURE_GATE_TEMPLATES)
+        missing = [
+            code
+            for code in selected
+            if code != "tof_us" and (code not in feature_frame or code in gated_selected)
+        ]
         if missing:
             from battery_workbench.features.selected_series import (
                 load_waveform_frames,
@@ -1365,7 +1428,7 @@ class DatasetNode(WorkflowNode):
                     "waveform frame count does not match ultrasound feature rows: "
                     f"{len(frames)} != {len(feature_frame)}"
                 )
-            computed = selected_feature_series(frames, missing)
+            computed = selected_feature_series(frames, missing, gate_bounds=gate_bounds)
             unresolved = [code for code in missing if code not in computed]
             if unresolved:
                 raise ValueError(f"selected features cannot be materialized: {unresolved}")
@@ -1376,8 +1439,7 @@ class DatasetNode(WorkflowNode):
         tof_provenance: dict[str, Any] = {}
         if "tof_us" in selected:
             ct_path = (
-                Path(ctx.processed_root)
-                / "features_physical" / b / e / "canonical_tof.parquet"
+                Path(ctx.processed_root) / "features_physical" / b / e / "canonical_tof.parquet"
             )
             if not ct_path.is_file():
                 raise FileNotFoundError(
@@ -1418,6 +1480,7 @@ class DatasetNode(WorkflowNode):
                 feature_set_path=Path(features_ref.path) / "ultrasound_features.parquet",
                 label_set_path=labels_dir / "event_labels.parquet",
                 selected_features=selected or None,
+                gate_calibration_id=gate_calibration_id,
             )
         else:
             report, df = build_soh_dataset(
@@ -1432,6 +1495,7 @@ class DatasetNode(WorkflowNode):
                 feature_set_path=Path(features_ref.path) / "ultrasound_features.parquet",
                 label_set_path=labels_dir / "event_labels.parquet",
                 selected_features=selected or None,
+                gate_calibration_id=gate_calibration_id,
             )
         payload = write_dataset_payload(
             report=report,
@@ -1832,8 +1896,10 @@ class SocModelingNode(WorkflowNode):
         manifest = _load_json(Path(ref.manifest_path)) or {}
         covered = set(manifest.get("confirmed_fold_selections") or {})
         current = _confirmed_fold_fingerprint(
-            processed_root, plan,
-            str(manifest.get("dataset_id") or ""), str(manifest.get("split_id") or ""),
+            processed_root,
+            plan,
+            str(manifest.get("dataset_id") or ""),
+            str(manifest.get("split_id") or ""),
         )
         if not current.issubset(covered):
             missing = sorted(current - covered)
@@ -1868,9 +1934,16 @@ class SocModelingNode(WorkflowNode):
         strategies = list(
             modeling_cfg.get(
                 "strategies",
-                ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
-                 "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION",
-                 "K_NEAREST_NEIGHBORS", "RANDOM_FOREST", "GRADIENT_BOOSTING"],
+                [
+                    "DUMMY_MEAN",
+                    "LINEAR_REGRESSION",
+                    "RIDGE",
+                    "SUPPORT_VECTOR_REGRESSION",
+                    "GAUSSIAN_PROCESS_REGRESSION",
+                    "K_NEAREST_NEIGHBORS",
+                    "RANDOM_FOREST",
+                    "GRADIENT_BOOSTING",
+                ],
             )
         )
         random_state = modeling_cfg.get("random_state", 42)
@@ -2072,9 +2145,12 @@ class SocModelingNode(WorkflowNode):
 
         import hashlib
 
-        model_set_id = "MODELSET::" + hashlib.sha256(
-            f"{plan.project.battery_id}:{plan.project.experiment_id}:{dataset_id}:{split_id}".encode()
-        ).hexdigest()[:24]
+        model_set_id = (
+            "MODELSET::"
+            + hashlib.sha256(
+                f"{plan.project.battery_id}:{plan.project.experiment_id}:{dataset_id}:{split_id}".encode()
+            ).hexdigest()[:24]
+        )
         return {
             "artifact_id": model_set_id,
             "path": str(

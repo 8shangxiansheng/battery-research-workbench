@@ -33,6 +33,7 @@ from battery_workbench.features.gate_calibration import (
     CALIBRATION_POLICY_ID,
     GateBoundPair,
     GateCalibrationRecord,
+    resolved_gate_bounds,
     select_calibration_frames,
 )
 from battery_workbench.features.physical_v2 import (
@@ -40,6 +41,7 @@ from battery_workbench.features.physical_v2 import (
     bottom_wave_amplitude,
     bottom_wave_phase_shift,
     get_gate_template,
+    resolve_gate_bounds,
     surface_bottom_xcorr_tof,
     surface_wave_amplitude,
 )
@@ -47,6 +49,7 @@ from battery_workbench.features.selected_series import (
     ALIAS_TO_RAW as _ALIAS_TO_RAW,
 )
 from battery_workbench.features.selected_series import (
+    FEATURE_GATE_TEMPLATES,
     load_waveform_frames,
     selected_feature_series,
 )
@@ -63,9 +66,7 @@ router = APIRouter(tags=["feature-workbench"])
 
 def _load_frames(request: Request, battery_id: str, experiment_id: str) -> np.ndarray:
     service = get_service(request)
-    store = (
-        service.processed_root / "ultrasound" / battery_id / experiment_id / "waveforms.zarr"
-    )
+    store = service.processed_root / "ultrasound" / battery_id / experiment_id / "waveforms.zarr"
     frames_meta = (
         service.processed_root / "ultrasound" / battery_id / experiment_id / "frames.parquet"
     )
@@ -74,10 +75,38 @@ def _load_frames(request: Request, battery_id: str, experiment_id: str) -> np.nd
     return load_waveform_frames(store, frames_meta)
 
 
+def _experiment_gate_context(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    """Resolve the persisted generic gate calibration for this experiment."""
+    service = get_service(request)
+    calibration_id, bounds = resolved_gate_bounds(battery_id, experiment_id, service.processed_root)
+    return {"gate_calibration_id": calibration_id, "gate_bounds": bounds}
+
+
+def _validate_experiment_gate_context(context: dict[str, Any], frames: np.ndarray) -> None:
+    """Reject corrupt or stale persisted bounds before feature calculations."""
+    for template_id in context["gate_bounds"]:
+        try:
+            resolve_gate_bounds(
+                template_id,
+                context["gate_bounds"],
+                sample_count=int(frames.shape[1]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                f"invalid frozen gate calibration for {template_id}: {exc}",
+            ) from exc
+
+
 def _load_events_labels(request: Request, battery_id: str, experiment_id: str):
     service = get_service(request)
     events_path = (
-        service.processed_root / "multimodal" / battery_id / experiment_id
+        service.processed_root
+        / "multimodal"
+        / battery_id
+        / experiment_id
         / "measurement_events.parquet"
     )
     labels_path = (
@@ -124,10 +153,16 @@ def _correlation_rows(
                 measurement_event_id=str(r.measurement_event_id),
                 battery_id=battery_id,
                 experiment_id=experiment_id,
-                cycle=int(r.cycle_index_raw) if r.cycle_index_raw is not None and not pd_isna(r.cycle_index_raw) else -1,
-                step=int(r.step_index_raw) if getattr(r, "step_index_raw", None) is not None and not pd_isna(r.step_index_raw) else -1,
+                cycle=int(r.cycle_index_raw)
+                if r.cycle_index_raw is not None and not pd_isna(r.cycle_index_raw)
+                else -1,
+                step=int(r.step_index_raw)
+                if getattr(r, "step_index_raw", None) is not None and not pd_isna(r.step_index_raw)
+                else -1,
                 state=_STATE_MAP.get(str(getattr(r, "step_type", "")), "rest"),
-                timestamp_s=float(r.elapsed_time_s) if not pd_isna(getattr(r, "elapsed_time_s", float("nan"))) else 0.0,
+                timestamp_s=float(r.elapsed_time_s)
+                if not pd_isna(getattr(r, "elapsed_time_s", float("nan")))
+                else 0.0,
                 feature_code=feature_code,
                 # NaN series values are missing, not data — keep the
                 # correlation input finite so n_valid/n_missing stay honest.
@@ -163,26 +198,30 @@ def physical_features(
 ) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    gate_context = _experiment_gate_context(request, battery_id, experiment_id)
+    bounds = gate_context["gate_bounds"]
     frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    _validate_experiment_gate_context(gate_context, frames)
 
-    bottom = bottom_wave_amplitude(frames)
-    swa = surface_wave_amplitude(frames)
-    tof = surface_bottom_xcorr_tof(frames)
-    atten = bottom_attenuation_explicit(frames)
-    bps = bottom_wave_phase_shift(frames)
+    bottom = bottom_wave_amplitude(frames, bounds)
+    swa = surface_wave_amplitude(frames, bounds)
+    tof = surface_bottom_xcorr_tof(frames, bounds)
+    atten = bottom_attenuation_explicit(frames, gate_bounds=bounds)
+    bps = bottom_wave_phase_shift(frames, bounds)
 
     # canonical envelope-peak TOF block — read from the materialized artifact
     canonical_tof_block: dict[str, Any] | None = None
     ct_path = (
         get_service(request).processed_root
-        / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
+        / "features_physical"
+        / battery_id
+        / experiment_id
+        / "canonical_tof.parquet"
     )
     if ct_path.is_file():
         import pandas as ct_pd
 
-        ct = ct_pd.read_parquet(
-            ct_path, columns=["frame_index_raw", "tof_us", "tof_status"]
-        )
+        ct = ct_pd.read_parquet(ct_path, columns=["frame_index_raw", "tof_us", "tof_status"])
         valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
         canonical_tof_block = {
             "feature_code": "tof_us",
@@ -192,8 +231,7 @@ def physical_features(
             "display_name_zh": "规范包络峰TOF（表面→底波）",
             "unit": "µs",
             "values": [
-                float(valid_map[i]) if i in valid_map.index else None
-                for i in range(len(frames))
+                float(valid_map[i]) if i in valid_map.index else None for i in range(len(frames))
             ],
             "artifact_read_only": True,
         }
@@ -267,6 +305,7 @@ def physical_features(
         },
         "meta": {
             "source_formula_id": "USER_MATLAB_GATE_LOCAL_PHYSICAL_FEATURES_V1",
+            "gate_calibration_id": gate_context["gate_calibration_id"],
             "note": "computed by deterministic backend modules; frontend never recomputes",
         },
     }
@@ -287,10 +326,13 @@ def feature_correlations(
     validate_id(experiment_id, "experiment_id")
     from battery_workbench.features.physical_v2 import bottom_wave_amplitude
 
+    gate_context = _experiment_gate_context(request, battery_id, experiment_id)
+    bounds = gate_context["gate_bounds"]
     frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    _validate_experiment_gate_context(gate_context, frames)
     series_map: dict[str, np.ndarray] = {
-        "SWA": surface_wave_amplitude(frames)["raw"],
-        "BOTTOM_AMP": bottom_wave_amplitude(frames)["raw"],
+        "SWA": surface_wave_amplitude(frames, bounds)["raw"],
+        "BOTTOM_AMP": bottom_wave_amplitude(frames, bounds)["raw"],
     }
     if feature_code not in series_map:
         raise APIError(
@@ -298,7 +340,11 @@ def feature_correlations(
             f"unknown feature_code {feature_code}; available: {sorted(series_map)}",
         )
     rows = _correlation_rows(
-        request, battery_id, experiment_id, series_map[feature_code], feature_code,
+        request,
+        battery_id,
+        experiment_id,
+        series_map[feature_code],
+        feature_code,
         max_frames=len(frames),
     )
 
@@ -307,19 +353,28 @@ def feature_correlations(
         for scope in ("overall", "charge", "discharge", "rest"):
             scoped = rows if scope == "overall" else [r for r in rows if r.state == scope]
             r = correlate_feature_state(
-                scoped, state_variable="reference_soc_percent", method=method,
+                scoped,
+                state_variable="reference_soc_percent",
+                method=method,
                 analysis_id=f"api:{feature_code}:{method}:{scope}",
-                feature_code=feature_code, scope=scope,
+                feature_code=feature_code,
+                scope=scope,
             )
             soc_suite.append(r.model_dump())
 
     temp = correlate_feature_state(
-        rows, state_variable="temperature_c", method="pearson",
-        analysis_id=f"api:{feature_code}:temp", feature_code=feature_code,
+        rows,
+        state_variable="temperature_c",
+        method="pearson",
+        analysis_id=f"api:{feature_code}:temp",
+        feature_code=feature_code,
     ).model_dump()
     soh = correlate_feature_state(
-        rows, state_variable="soh_percent", method="pearson",
-        analysis_id=f"api:{feature_code}:soh", feature_code=feature_code,
+        rows,
+        state_variable="soh_percent",
+        method="pearson",
+        analysis_id=f"api:{feature_code}:soh",
+        feature_code=feature_code,
     ).model_dump()
     return {
         "data": {
@@ -332,6 +387,7 @@ def feature_correlations(
         },
         "meta": {
             "policy": "FEATURE_STATE_CORRELATION_POLICY_V1",
+            "gate_calibration_id": gate_context["gate_calibration_id"],
             "note": "correlations computed by backend module on the event grain; "
             "no naive p-values; frontend never recomputes",
         },
@@ -342,13 +398,15 @@ def feature_correlations(
 
 
 def _calibration_diagnostics(
-    frames: np.ndarray, template_id: str
+    frames: np.ndarray,
+    template_id: str,
+    gate_bounds: dict[str, tuple[int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-frame diagnostics: peak containment + edge hits inside the gate."""
-    t = get_gate_template(template_id)
     diagnostics = []
     for i, frame in enumerate(frames):
-        gate = frame[t.python_start : t.python_end_exclusive]
+        start, end = resolve_gate_bounds(template_id, gate_bounds, sample_count=int(frame.shape[0]))
+        gate = frame[start:end]
         env = np.abs(hilbert(gate))
         peak = int(np.argmax(env))
         # peak packet containment: fraction of envelope energy within the
@@ -358,7 +416,7 @@ def _calibration_diagnostics(
         diagnostics.append(
             {
                 "frame_index": i,
-                "peak_sample_in_gate": t.python_start + peak,
+                "peak_sample_in_gate": start + peak,
                 "peak_containment_fraction": round(containment, 4),
                 "edge_hit": bool(peak < 2 or peak > len(gate) - 3),
             }
@@ -366,9 +424,7 @@ def _calibration_diagnostics(
     return diagnostics
 
 
-def _tof_gate_diagnostics(
-    frames: np.ndarray, start: int, end_exclusive: int
-) -> dict[str, Any]:
+def _tof_gate_diagnostics(frames: np.ndarray, start: int, end_exclusive: int) -> dict[str, Any]:
     """Envelope-peak diagnostics for one TOF gate over calibration frames."""
     peaks_global: list[int] = []
     peaks_local: list[int] = []
@@ -383,7 +439,7 @@ def _tof_gate_diagnostics(
         peaks_local.append(local)
         peaks_global.append(start + local)
         amps.append(float(env[local]))
-        central = env[int(width * 0.1): int(width * 0.9)]
+        central = env[int(width * 0.1) : int(width * 0.9)]
         containments.append(round(float(np.sum(central**2) / max(np.sum(env**2), 1e-12)), 4))
         if local < 2 or local > width - 3:
             edge_hits += 1
@@ -433,13 +489,16 @@ def gate_calibration(
     frames = _load_frames(request, battery_id, experiment_id)
     frame_ids = select_calibration_frames(frames.shape[0], n_frames=n_frames)
     calibration_frames = frames[[int(i) for i in frame_ids]]
-    templates = [t.model_dump() for t in (
-        get_gate_template("SWA_SURFACE_GATE"),
-        get_gate_template("BOTTOM_AMPLITUDE_GATE"),
-        get_gate_template("TOF_SURFACE_REFERENCE_GATE"),
-        get_gate_template("TOF_BOTTOM_GATE"),
-        get_gate_template("ATTENUATION_BOTTOM_GATE"),
-    )]
+    templates = [
+        t.model_dump()
+        for t in (
+            get_gate_template("SWA_SURFACE_GATE"),
+            get_gate_template("BOTTOM_AMPLITUDE_GATE"),
+            get_gate_template("TOF_SURFACE_REFERENCE_GATE"),
+            get_gate_template("TOF_BOTTOM_GATE"),
+            get_gate_template("ATTENUATION_BOTTOM_GATE"),
+        )
+    ]
     # BRW-018R2: TOF surface/bottom gate peak diagnostics over the same
     # target-blind calibration frames (A-scan + envelope + per-gate peaks).
     from battery_workbench.features.gate_calibration import (
@@ -459,9 +518,7 @@ def gate_calibration(
             if pair:
                 entry["python_start"] = int(pair["start"])
                 entry["python_end_exclusive"] = int(pair["end_exclusive"])
-                entry["length_samples"] = (
-                    int(pair["end_exclusive"]) - int(pair["start"])
-                )
+                entry["length_samples"] = int(pair["end_exclusive"]) - int(pair["start"])
                 entry["bounds_source"] = "EXPERIMENT_FROZEN"
     tof_cal = resolve_tof_gate_calibration(
         battery_id, experiment_id, service_for_resolve.processed_root
@@ -474,12 +531,23 @@ def gate_calibration(
             calibration_frames, int(tof_cal["bottom_start"]), int(tof_cal["bottom_end_exclusive"])
         ),
     }
+    swa_bounds = None
+    if generic_cal and "SWA_SURFACE_GATE" in (generic_cal["gate_bounds"] or {}):
+        pair = generic_cal["gate_bounds"]["SWA_SURFACE_GATE"]
+        swa_bounds = {
+            "SWA_SURFACE_GATE": (
+                int(pair["start"]),
+                int(pair["end_exclusive"]),
+            )
+        }
     return {
         "data": {
             "calibration_frame_ids": frame_ids,
             "frames": _frame_envelopes(frames, frame_ids),
             "gate_templates": templates,
-            "diagnostics": _calibration_diagnostics(calibration_frames, "SWA_SURFACE_GATE"),
+            "diagnostics": _calibration_diagnostics(
+                calibration_frames, "SWA_SURFACE_GATE", swa_bounds
+            ),
             "tof_calibration": tof_cal | {"fallback_identity": SOURCE_TEMPLATE_FROZEN},
             "tof_gate_diagnostics": tof_diagnostics,
             "recommendation": "review peak containment and edge hits, then confirm",
@@ -508,7 +576,8 @@ def freeze_gate_calibration(
             "target-informed calibration basis is forbidden",
         )
     service = get_service(request)
-    n_total = _load_frames(request, battery_id, experiment_id).shape[0]
+    all_frames = _load_frames(request, battery_id, experiment_id)
+    n_total = all_frames.shape[0]
     frame_ids = select_calibration_frames(n_total)
 
     # user-adjusted template bounds persisted with the freeze (empty = source
@@ -532,20 +601,17 @@ def freeze_gate_calibration(
                 ErrorCode.VALIDATION_ERROR,
                 "each gate bound must be {start, end} integers",
             ) from exc
-        if start < 0 or end <= start:
+        if start < 0 or end <= start or end > all_frames.shape[1]:
             raise APIError(
                 ErrorCode.VALIDATION_ERROR,
-                f"invalid bounds for {template.gate_template_id}: require 0<=start<end",
+                f"invalid bounds for {template.gate_template_id}: "
+                f"require 0<=start<end<={all_frames.shape[1]}",
             )
-        gate_bounds[template.gate_template_id] = GateBoundPair(
-            start=start, end_exclusive=end
-        )
+        gate_bounds[template.gate_template_id] = GateBoundPair(start=start, end_exclusive=end)
     bounds_key = ",".join(
         f"{k}:{v.start}:{v.end_exclusive}" for k, v in sorted(gate_bounds.items())
     )
-    fingerprint = (
-        f"{battery_id}|{experiment_id}|{sorted(frame_ids)}|{basis}|{bounds_key}"
-    )
+    fingerprint = f"{battery_id}|{experiment_id}|{sorted(frame_ids)}|{basis}|{bounds_key}"
     calibration_id = "GC::" + hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
 
     record = GateCalibrationRecord(
@@ -564,9 +630,7 @@ def freeze_gate_calibration(
         confirmed_by=confirmed_by,
     ).freeze(confirmed_at=str(body.get("confirmed_at", "")))
 
-    out_dir = (
-        service.processed_root / "gate_calibrations" / battery_id / experiment_id
-    )
+    out_dir = service.processed_root / "gate_calibrations" / battery_id / experiment_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{calibration_id}.json"
     reused = out_path.is_file()
@@ -576,7 +640,8 @@ def freeze_gate_calibration(
             encoding="utf-8",
         )
     return {
-        "data": record.model_dump(mode="json") | {"reuse_status": "REUSED" if reused else "CREATED"},
+        "data": record.model_dump(mode="json")
+        | {"reuse_status": "REUSED" if reused else "CREATED"},
         "meta": {},
     }
 
@@ -701,17 +766,31 @@ def freeze_tof_gate_calibration(
             bottom_end_sample_exclusive=b_end,
             surface_diagnostics=TOFPeakDiagnostics(
                 gate_id=str(body.get("surface_gate_id", "TOF_SURFACE_PEAK_GATE")),
-                **{k: surface_diag[k] for k in (
-                    "peak_global_indices", "peak_local_indices",
-                    "peak_amplitudes_a_u", "peak_containment_fractions",
-                    "edge_hit_count", "spread_samples")},
+                **{
+                    k: surface_diag[k]
+                    for k in (
+                        "peak_global_indices",
+                        "peak_local_indices",
+                        "peak_amplitudes_a_u",
+                        "peak_containment_fractions",
+                        "edge_hit_count",
+                        "spread_samples",
+                    )
+                },
             ),
             bottom_diagnostics=TOFPeakDiagnostics(
                 gate_id=str(body.get("bottom_gate_id", "TOF_BOTTOM_PEAK_GATE")),
-                **{k: bottom_diag[k] for k in (
-                    "peak_global_indices", "peak_local_indices",
-                    "peak_amplitudes_a_u", "peak_containment_fractions",
-                    "edge_hit_count", "spread_samples")},
+                **{
+                    k: bottom_diag[k]
+                    for k in (
+                        "peak_global_indices",
+                        "peak_local_indices",
+                        "peak_amplitudes_a_u",
+                        "peak_containment_fractions",
+                        "edge_hit_count",
+                        "spread_samples",
+                    )
+                },
             ),
             version=version,
             prior_gate_calibration_id=(
@@ -749,9 +828,7 @@ def freeze_tof_gate_calibration(
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/splits")
-def list_splits(
-    request: Request, battery_id: str, experiment_id: str
-) -> dict[str, Any]:
+def list_splits(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     service = get_service(request)
@@ -783,7 +860,9 @@ def list_split_folds(
     validate_id(experiment_id, "experiment_id")
     validate_id(split_id, "split_id")
     root = get_service(request).processed_root / "splits" / battery_id / experiment_id
-    sa_file = next(root.rglob(f"{split_id}/split_assignments.parquet"), None) if root.is_dir() else None
+    sa_file = (
+        next(root.rglob(f"{split_id}/split_assignments.parquet"), None) if root.is_dir() else None
+    )
     if sa_file is None:
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, f"no split assignments for {split_id}")
     import pandas as fold_pd
@@ -792,11 +871,13 @@ def list_split_folds(
     folds = []
     for fold in sorted(sa["fold"].astype(str).unique()):
         sub = sa[sa["fold"].astype(str) == fold]
-        folds.append({
-            "fold": str(fold),
-            "train_rows": int((sub["role"] == "TRAIN").sum()),
-            "held_out_rows": int((sub["role"] != "TRAIN").sum()),
-        })
+        folds.append(
+            {
+                "fold": str(fold),
+                "train_rows": int((sub["role"] == "TRAIN").sum()),
+                "held_out_rows": int((sub["role"] != "TRAIN").sum()),
+            }
+        )
     manifest = next(root.rglob(f"{split_id}/split_manifest.json"), None)
     strategy = None
     if manifest is not None:
@@ -811,9 +892,7 @@ def list_split_folds(
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/feature-analyses")
-def list_feature_analyses(
-    request: Request, battery_id: str, experiment_id: str
-) -> dict[str, Any]:
+def list_feature_analyses(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     service = get_service(request)
@@ -874,9 +953,7 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
     voltage = joined.get("voltage_v")
     current = joined.get("current_a")
     soh_states = int(soh.dropna().nunique()) if soh is not None else 0
-    temp_range = (
-        float(temp.max() - temp.min()) if temp is not None and temp.notna().any() else 0.0
-    )
+    temp_range = float(temp.max() - temp.min()) if temp is not None and temp.notna().any() else 0.0
 
     def _range(s: Any) -> list[float] | None:
         if s is None or not s.notna().any():
@@ -885,7 +962,8 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
 
     soc_methods = (
         {str(k): int(v) for k, v in soc_method.value_counts().items()}
-        if soc_method is not None else {}
+        if soc_method is not None
+        else {}
     )
     targets = [
         {
@@ -896,9 +974,11 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "source": "Electrical XLSX via label engine (retrospective segment-normalized reference)",
             "source_detail": {
                 "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED": soc_methods.get(
-                    "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED", 0),
+                    "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED", 0
+                ),
                 "REST_PROPAGATED_FROM_PREVIOUS_VALID_REFERENCE": soc_methods.get(
-                    "REST_PROPAGATED_FROM_PREVIOUS_VALID_REFERENCE", 0),
+                    "REST_PROPAGATED_FROM_PREVIOUS_VALID_REFERENCE", 0
+                ),
             },
             "coverage": {"valid": _count("soc_reference_percent"), "total": n},
             "range": _range(soc),
@@ -915,9 +995,11 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "source": "Electrical record temperature channel",
             "coverage": {"valid": _count("temperature_c"), "total": n},
             "range": _range(temp),
-            "readiness": "UNAVAILABLE" if _count("temperature_c") == 0
+            "readiness": "UNAVAILABLE"
+            if _count("temperature_c") == 0
             else ("INSUFFICIENT_VARIATION" if temp_range < 2.0 else "READY"),
-            "limitation": "no temperature channel in this experiment" if _count("temperature_c") == 0
+            "limitation": "no temperature channel in this experiment"
+            if _count("temperature_c") == 0
             else None,
             "unit": "celsius",
         },
@@ -927,8 +1009,11 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "display_name_zh": "健康状态",
             "semantic_type": "DERIVED_HEALTH_STATE",
             "source": "Cycle-level capacity reference labels",
-            "coverage": {"valid": _count("soh_capacity_reference_percent"), "total": n,
-                         "independent_states": soh_states},
+            "coverage": {
+                "valid": _count("soh_capacity_reference_percent"),
+                "total": n,
+                "independent_states": soh_states,
+            },
             "range": _range(soh),
             "readiness": "NOT_READY" if soh_states < 3 else "READY",
             "limitation": f"only {soh_states} independent SOH states; frame rows are pseudoreplicated",
@@ -976,13 +1061,22 @@ def alignment_summary(request: Request, battery_id: str, experiment_id: str) -> 
     eligible = int(joined["analysis_eligible"].sum())
 
     def _valid(col: str) -> int:
-        return int(joined.loc[joined["analysis_eligible"], col].notna().sum()) if col in joined.columns else 0
+        return (
+            int(joined.loc[joined["analysis_eligible"], col].notna().sum())
+            if col in joined.columns
+            else 0
+        )
 
     manifest_path = (
-        get_service(request).processed_root / "synchronization" / battery_id / experiment_id
+        get_service(request).processed_root
+        / "synchronization"
+        / battery_id
+        / experiment_id
         / "synchronization_manifest.json"
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    )
     max_sync_error = None
     if "sync_error_s" in joined.columns and joined["sync_error_s"].notna().any():
         max_sync_error = float(joined["sync_error_s"].abs().max())
@@ -1026,13 +1120,18 @@ def alignment_exclusions(request: Request, battery_id: str, experiment_id: str) 
     groups: list[dict[str, Any]] = []
     for reason, pred in _EXCLUSION_REASONS.items():
         mask = pred(joined)
-        groups.append({
-            "reason": reason,
-            "count": int(mask.sum()),
-            "measurement_event_ids": joined.loc[mask, "measurement_event_id"].tolist(),
-        })
+        groups.append(
+            {
+                "reason": reason,
+                "count": int(mask.sum()),
+                "measurement_event_ids": joined.loc[mask, "measurement_event_id"].tolist(),
+            }
+        )
     groups.append({"reason": "TARGET_MISSING", "count": 0, "measurement_event_ids": []})
-    return {"data": {"exclusions": groups}, "meta": {"note": "ambiguous/unmatched rows never auto-select an electrical record"}}
+    return {
+        "data": {"exclusions": groups},
+        "meta": {"note": "ambiguous/unmatched rows never auto-select an electrical record"},
+    }
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/alignment-samples")
@@ -1061,34 +1160,61 @@ def alignment_samples(
         rows = joined[~joined["match_status"].isin(["MATCHED_UNIQUE", "MATCHED_AMBIGUOUS"])]
     else:
         rows = joined
-    rows = rows.iloc[cursor: cursor + limit]
+    rows = rows.iloc[cursor : cursor + limit]
     items = []
     for _, r in rows.iterrows():
         unique = r["match_status"] == "MATCHED_UNIQUE"
-        items.append({
-            "measurement_event_id": str(r["measurement_event_id"]),
-            "frame_index_raw": None if row_pd.isna(r["frame_index_raw"]) else int(r["frame_index_raw"]),
-            "ultrasound_timestamp": str(r["provisional_absolute_timestamp"]) if row_pd.notna(r["provisional_absolute_timestamp"]) else None,
-            "electrical_asset_id": str(r["electrical_asset_id"]) if unique and row_pd.notna(r["electrical_asset_id"]) else None,
-            "electrical_record_locator": str(r["electrical_record_locator"]) if unique and row_pd.notna(r["electrical_record_locator"]) else None,
-            "electrical_timestamp": str(r["electrical_timestamp"]) if unique and row_pd.notna(r["electrical_timestamp"]) else None,
-            "match_status": str(r["match_status"]),
-            "sync_ambiguous": bool(r["sync_ambiguous"]),
-            "sync_error_s": float(r["sync_error_s"]) if row_pd.notna(r["sync_error_s"]) else None,
-            "within_tolerance": bool(r["within_tolerance"]) if row_pd.notna(r["within_tolerance"]) else None,
-            "analysis_eligible": bool(r["analysis_eligible"]),
-            "targets": {
-                "reference_soc_percent": None if row_pd.isna(r.get("soc_reference_percent")) else float(r["soc_reference_percent"]),
-                "temperature_c": None if row_pd.isna(r.get("temperature_c")) else float(r["temperature_c"]),
-                "soh_capacity_reference_percent": None if row_pd.isna(r.get("soh_capacity_reference_percent")) else float(r["soh_capacity_reference_percent"]),
-                "voltage_v": None if row_pd.isna(r["voltage_v"]) else float(r["voltage_v"]),
-                "current_a": None if row_pd.isna(r["current_a"]) else float(r["current_a"]),
-            },
-        })
-    total = int(len(joined) if filter == "all" else (joined[joined["analysis_eligible"]].shape[0] if filter == "eligible" else len(rows)))
-    return {"data": {"samples": items, "total": total}, "meta": {"filter": filter, "cursor": cursor, "limit": limit}}
-
-
+        items.append(
+            {
+                "measurement_event_id": str(r["measurement_event_id"]),
+                "frame_index_raw": None
+                if row_pd.isna(r["frame_index_raw"])
+                else int(r["frame_index_raw"]),
+                "ultrasound_timestamp": str(r["provisional_absolute_timestamp"])
+                if row_pd.notna(r["provisional_absolute_timestamp"])
+                else None,
+                "electrical_asset_id": str(r["electrical_asset_id"])
+                if unique and row_pd.notna(r["electrical_asset_id"])
+                else None,
+                "electrical_record_locator": str(r["electrical_record_locator"])
+                if unique and row_pd.notna(r["electrical_record_locator"])
+                else None,
+                "electrical_timestamp": str(r["electrical_timestamp"])
+                if unique and row_pd.notna(r["electrical_timestamp"])
+                else None,
+                "match_status": str(r["match_status"]),
+                "sync_ambiguous": bool(r["sync_ambiguous"]),
+                "sync_error_s": float(r["sync_error_s"])
+                if row_pd.notna(r["sync_error_s"])
+                else None,
+                "within_tolerance": bool(r["within_tolerance"])
+                if row_pd.notna(r["within_tolerance"])
+                else None,
+                "analysis_eligible": bool(r["analysis_eligible"]),
+                "targets": {
+                    "reference_soc_percent": None
+                    if row_pd.isna(r.get("soc_reference_percent"))
+                    else float(r["soc_reference_percent"]),
+                    "temperature_c": None
+                    if row_pd.isna(r.get("temperature_c"))
+                    else float(r["temperature_c"]),
+                    "soh_capacity_reference_percent": None
+                    if row_pd.isna(r.get("soh_capacity_reference_percent"))
+                    else float(r["soh_capacity_reference_percent"]),
+                    "voltage_v": None if row_pd.isna(r["voltage_v"]) else float(r["voltage_v"]),
+                    "current_a": None if row_pd.isna(r["current_a"]) else float(r["current_a"]),
+                },
+            }
+        )
+    total = int(
+        len(joined)
+        if filter == "all"
+        else (joined[joined["analysis_eligible"]].shape[0] if filter == "eligible" else len(rows))
+    )
+    return {
+        "data": {"samples": items, "total": total},
+        "meta": {"filter": filter, "cursor": cursor, "limit": limit},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1103,11 +1229,20 @@ def alignment_samples(
 # ---------------------------------------------------------------------------
 
 _PREDEFINED_PHYSICAL_CODES = (
-    "BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTEN_MAX", "ATTEN_MEAN", "ATTEN_ENERGY", "BPS",
+    "BOTTOM_AMP",
+    "SWA",
+    "TOF_XCORR",
+    "ATTEN_MAX",
+    "ATTEN_MEAN",
+    "ATTEN_ENERGY",
+    "BPS",
 )
 
+
 def _catalogue_feature_series(
-    frames: np.ndarray, features: list[str]
+    frames: np.ndarray,
+    features: list[str],
+    gate_bounds: dict[str, tuple[int, int]] | None = None,
 ) -> dict[str, np.ndarray]:
     """Series per requested feature code (catalogue codes + physical codes).
 
@@ -1115,7 +1250,7 @@ def _catalogue_feature_series(
     default explicit spectral transform (no fs requirement). Only codes the
     catalogue defines are accepted; unknown codes raise NOT_FOUND upstream.
     """
-    return selected_feature_series(frames, features)
+    return selected_feature_series(frames, features, gate_bounds=gate_bounds)
 
 
 def _read_json_local(path: Path) -> dict[str, Any] | None:
@@ -1168,13 +1303,18 @@ def feature_label_preview(
         raise APIError(ErrorCode.NOT_FOUND, f"unknown target {target_id}")
     frames = _load_frames(request, battery_id, experiment_id)
     n_frames = frames.shape[0]
+    gate_context = _experiment_gate_context(request, battery_id, experiment_id)
+    gate_bounds = gate_context["gate_bounds"]
+    _validate_experiment_gate_context(gate_context, frames)
 
     # BRW-018R2 fix: catalogue-wide resolution (7 physical codes + 33 TD/FD
     # codes + raw aliases). Unknown codes still raise NOT_FOUND — but only for
     # codes the catalogue genuinely does not define.
     from battery_workbench.features.definitions_v2 import default_registry
 
-    physical_series = selected_feature_series(frames, list(_PREDEFINED_PHYSICAL_CODES))
+    physical_series = selected_feature_series(
+        frames, list(_PREDEFINED_PHYSICAL_CODES), gate_bounds=gate_bounds
+    )
     catalogue = default_registry()
     resolved_alias: dict[str, str] = {}
     unknown_features = []
@@ -1193,7 +1333,7 @@ def feature_label_preview(
         raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {unknown_features}")
 
     series_by_code: dict[str, np.ndarray] = dict(physical_series)
-    series_by_code.update(_catalogue_feature_series(frames, features))
+    series_by_code.update(_catalogue_feature_series(frames, features, gate_bounds))
 
     events, labels = _load_events_labels(request, battery_id, experiment_id)
     import pandas as join_pd
@@ -1207,16 +1347,17 @@ def feature_label_preview(
     if "tof_us" in features:
         ct_path = (
             get_service(request).processed_root
-            / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
+            / "features_physical"
+            / battery_id
+            / experiment_id
+            / "canonical_tof.parquet"
         )
         if not ct_path.is_file():
             raise APIError(
                 ErrorCode.NOT_FOUND,
                 "canonical TOF artifact not materialized — run CANONICAL_TOF_FEATURES first",
             )
-        ct = join_pd.read_parquet(
-            ct_path, columns=["frame_index_raw", "tof_us", "tof_status"]
-        )
+        ct = join_pd.read_parquet(ct_path, columns=["frame_index_raw", "tof_us", "tof_status"])
         valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
         series_by_code["tof_us"] = (
             joined["frame_index_raw"].map(valid_map).astype("float64").to_numpy()
@@ -1235,11 +1376,12 @@ def feature_label_preview(
     redaction_summary: dict[str, Any] | None = None
     if split_id:
         validate_id(split_id, "split_id")
-        sa_path = (
-            get_service(request).processed_root / "splits" / battery_id / experiment_id
+        sa_path = get_service(request).processed_root / "splits" / battery_id / experiment_id
+        sa_file = (
+            next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None)
+            if sa_path.is_dir()
+            else None
         )
-        sa_file = next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None) \
-            if sa_path.is_dir() else None
         if sa_file is None:
             raise APIError(
                 ErrorCode.NOT_FOUND,
@@ -1278,24 +1420,36 @@ def feature_label_preview(
         target_value, y_redacted = _redact(event_id, raw_target)
         row: dict[str, Any] = {
             "measurement_event_id": event_id,
-            "frame_index_raw": int(r["frame_index_raw"]) if join_pd.notna(r["frame_index_raw"]) else None,
+            "frame_index_raw": int(r["frame_index_raw"])
+            if join_pd.notna(r["frame_index_raw"])
+            else None,
             "cycle": int(r["cycle_index_raw"]) if join_pd.notna(r["cycle_index_raw"]) else None,
             "state": _STATE_MAP.get(str(r.get("step_type", "")), "rest"),
             "target": target_value,
             "values": {f: float(series_by_code[f][i]) for f in features},
             "sync_error_s": float(r["sync_error_s"]) if join_pd.notna(r["sync_error_s"]) else None,
-            "electrical_asset_id": str(r["electrical_asset_id"]) if join_pd.notna(r["electrical_asset_id"]) else None,
+            "electrical_asset_id": str(r["electrical_asset_id"])
+            if join_pd.notna(r["electrical_asset_id"])
+            else None,
             # BRW-025R-FE-R2 row provenance (frame→event→electrical locator→sync)
             "electrical_record_locator": (
-                str(r["electrical_record_locator"]) if join_pd.notna(r.get("electrical_record_locator")) else None
+                str(r["electrical_record_locator"])
+                if join_pd.notna(r.get("electrical_record_locator"))
+                else None
             ),
             "electrical_row_index": (
-                int(r["electrical_row_index"]) if join_pd.notna(r.get("electrical_row_index")) else None
+                int(r["electrical_row_index"])
+                if join_pd.notna(r.get("electrical_row_index"))
+                else None
             ),
             "electrical_timestamp": (
-                str(r["electrical_timestamp"]) if join_pd.notna(r.get("electrical_timestamp")) else None
+                str(r["electrical_timestamp"])
+                if join_pd.notna(r.get("electrical_timestamp"))
+                else None
             ),
-            "match_status": str(r["match_status"]) if join_pd.notna(r.get("match_status")) else None,
+            "match_status": str(r["match_status"])
+            if join_pd.notna(r.get("match_status"))
+            else None,
             "y_redacted": y_redacted,
         }
         if split_id:
@@ -1309,27 +1463,44 @@ def feature_label_preview(
     ambiguous_rows = []
     for i in joined.index[ambiguous_mask][:10]:
         r = joined.loc[i]
-        ambiguous_rows.append({
-            "measurement_event_id": str(r["measurement_event_id"]),
-            "frame_index_raw": int(r["frame_index_raw"]) if join_pd.notna(r["frame_index_raw"]) else None,
-            "state": _STATE_MAP.get(str(r.get("step_type", "")), "rest"),
-            "electrical_identity": None,
-            "target": None,
-            "candidate_count": int(r["candidate_record_count"]) if join_pd.notna(r.get("candidate_record_count")) else None,
-            "values": {f: float(series_by_code[f][i]) for f in features},
-            "note": "ambiguous sync — electrical identity null; target unavailable; never auto-nearest",
-        })
+        ambiguous_rows.append(
+            {
+                "measurement_event_id": str(r["measurement_event_id"]),
+                "frame_index_raw": int(r["frame_index_raw"])
+                if join_pd.notna(r["frame_index_raw"])
+                else None,
+                "state": _STATE_MAP.get(str(r.get("step_type", "")), "rest"),
+                "electrical_identity": None,
+                "target": None,
+                "candidate_count": int(r["candidate_record_count"])
+                if join_pd.notna(r.get("candidate_record_count"))
+                else None,
+                "values": {f: float(series_by_code[f][i]) for f in features},
+                "note": "ambiguous sync — electrical identity null; target unavailable; never auto-nearest",
+            }
+        )
 
     excluded_by_reason: dict[str, int] = {
         "AMBIGUOUS_SYNC": int((joined["match_status"] == "MATCHED_AMBIGUOUS").sum()),
-        "UNMATCHED_SYNC": int((~joined["match_status"].isin(["MATCHED_UNIQUE", "MATCHED_AMBIGUOUS"])).sum()),
+        "UNMATCHED_SYNC": int(
+            (~joined["match_status"].isin(["MATCHED_UNIQUE", "MATCHED_AMBIGUOUS"])).sum()
+        ),
         "TARGET_MISSING": int((joined["analysis_eligible"] & target_vals.isna()).sum()),
-        "FEATURE_MISSING": int(n - eligible_mask.sum() - int((joined["analysis_eligible"] & target_vals.isna()).sum()) - int((joined["match_status"] != "MATCHED_UNIQUE").sum())),
+        "FEATURE_MISSING": int(
+            n
+            - eligible_mask.sum()
+            - int((joined["analysis_eligible"] & target_vals.isna()).sum())
+            - int((joined["match_status"] != "MATCHED_UNIQUE").sum())
+        ),
         "ANALYSIS_INELIGIBLE": int((~joined["analysis_eligible"]).sum()),
     }
     target_meta = next(
-        (t for t in list_targets(request, battery_id, experiment_id)["data"]["targets"]
-         if t["target_id"] == target_id), {}
+        (
+            t
+            for t in list_targets(request, battery_id, experiment_id)["data"]["targets"]
+            if t["target_id"] == target_id
+        ),
+        {},
     )
 
     # ------------------------------------------------------------------
@@ -1339,11 +1510,20 @@ def feature_label_preview(
     from battery_workbench.features.gate_calibration import (
         resolve_tof_gate_calibration,
     )
+
     _catalogue = _dr()
     PHYSICAL_META: dict[str, dict[str, str]] = {
-        "BOTTOM_AMP": {"label_en": "Bottom-wave Amplitude", "label_zh": "底波幅值", "units": "a.u."},
+        "BOTTOM_AMP": {
+            "label_en": "Bottom-wave Amplitude",
+            "label_zh": "底波幅值",
+            "units": "a.u.",
+        },
         "SWA": {"label_en": "Surface Wave Amplitude", "label_zh": "表面波幅值", "units": "a.u."},
-        "TOF_XCORR": {"label_en": "XCorr TOF (legacy diagnostic)", "label_zh": "互相关 TOF（诊断）", "units": "sample"},
+        "TOF_XCORR": {
+            "label_en": "XCorr TOF (legacy diagnostic)",
+            "label_zh": "互相关 TOF（诊断）",
+            "units": "sample",
+        },
         "ATTEN_MAX": {"label_en": "Attenuation max", "label_zh": "衰减最大", "units": "a.u."},
         "ATTEN_MEAN": {"label_en": "Attenuation mean", "label_zh": "衰减平均", "units": "a.u."},
         "ATTEN_ENERGY": {"label_en": "Attenuation energy", "label_zh": "衰减能量", "units": "a.u."},
@@ -1355,16 +1535,21 @@ def feature_label_preview(
             d = _catalogue._defs[f]
             alias = d.existing_alias
             feature_meta[f] = {
-                "label_en": d.display_name_en, "label_zh": d.display_name_zh,
-                "units": d.units, "definition_status": str(d.definition_status),
+                "label_en": d.display_name_en,
+                "label_zh": d.display_name_zh,
+                "units": d.units,
+                "definition_status": str(d.definition_status),
                 "parity_status": str(d.parity_status),
                 "source": "catalogue",
                 "resolved_name": alias if (alias and alias in _ALIAS_TO_RAW) else f,
             }
         elif f in PHYSICAL_META:
-            feature_meta[f] = {**PHYSICAL_META[f],
-                               "definition_status": "DEFINED_AND_VALIDATED",
-                               "parity_status": "MATLAB_ALIGNED", "source": "physical"}
+            feature_meta[f] = {
+                **PHYSICAL_META[f],
+                "definition_status": "DEFINED_AND_VALIDATED",
+                "parity_status": "MATLAB_ALIGNED",
+                "source": "physical",
+            }
         elif f == "tof_us":
             feature_meta[f] = {
                 "label_en": "Canonical Envelope-Peak TOF",
@@ -1377,12 +1562,26 @@ def feature_label_preview(
             }
         else:  # raw alias
             feature_meta[f] = {
-                "label_en": f, "label_zh": {"waveform_mean_a_u": "波形均值", "waveform_std_a_u": "波形标准差",
-                                            "waveform_max_a_u": "波形最大", "waveform_min_a_u": "波形最小",
-                                            "waveform_p2p_a_u": "波形峰峰差"}.get(f, f),
-                "units": "a.u.", "definition_status": "DEFINED_AND_VALIDATED",
-                "parity_status": "MATLAB_ALIGNED", "source": "raw_alias",
+                "label_en": f,
+                "label_zh": {
+                    "waveform_mean_a_u": "波形均值",
+                    "waveform_std_a_u": "波形标准差",
+                    "waveform_max_a_u": "波形最大",
+                    "waveform_min_a_u": "波形最小",
+                    "waveform_p2p_a_u": "波形峰峰差",
+                }.get(f, f),
+                "units": "a.u.",
+                "definition_status": "DEFINED_AND_VALIDATED",
+                "parity_status": "MATLAB_ALIGNED",
+                "source": "raw_alias",
             }
+        gate_templates = FEATURE_GATE_TEMPLATES.get(f)
+        if gate_templates:
+            feature_meta[f]["gate_templates"] = list(gate_templates)
+            feature_meta[f]["gate_calibration_id"] = gate_context["gate_calibration_id"]
+            feature_meta[f]["gate_bounds_source"] = (
+                "EXPERIMENT_FROZEN" if gate_context["gate_calibration_id"] else "SOURCE_TEMPLATE"
+            )
 
     # TOF provenance: canonical method + current fs + GateCalibrationRecord
     service_ro = get_service(request)
@@ -1390,6 +1589,7 @@ def feature_label_preview(
     ps_dir = service_ro.processed_root / "parameters" / battery_id / experiment_id
     fs_hz, fs_verified, fs_ps = None, False, None
     from battery_workbench.features_physical.canonical_tof import effective_fs as _eff_fs
+
     for m_path in sorted(ps_dir.glob("PS::*/effective_parameters.json")):
         eff = _read_json_local(m_path)
         if not eff:
@@ -1421,10 +1621,17 @@ def feature_label_preview(
 
     # preview spec hash + materialized dataset lookup + stale TOF marker
     spec_payload = json.dumps(
-        {"battery_id": battery_id, "experiment_id": experiment_id,
-         "target": target_id, "features": sorted(features), "split_id": split_id,
-         "spec_version": "preview/1.0"},
-        sort_keys=True, separators=(",", ":"),
+        {
+            "battery_id": battery_id,
+            "experiment_id": experiment_id,
+            "target": target_id,
+            "features": sorted(features),
+            "split_id": split_id,
+            "gate_calibration_id": gate_context["gate_calibration_id"],
+            "spec_version": "preview/1.0",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
     spec_hash = "PREVIEW::" + hashlib.sha256(spec_payload.encode()).hexdigest()[:24]
     materialized: dict[str, Any] | None = None
@@ -1432,18 +1639,33 @@ def feature_label_preview(
     if family_dir.is_dir():
         for ds_dir in sorted(family_dir.glob("DS::*")):
             dm = _read_json_local(ds_dir / "dataset_manifest.json") or {}
-            if sorted(dm.get("selected_features") or []) == sorted(features) and \
-                    dm.get("target_name") == tcol:
+            if (
+                sorted(dm.get("selected_features") or []) == sorted(features)
+                and dm.get("target_name") == tcol
+            ):
                 stale_tof = "tof_method_id" not in dm
+                uses_frozen_gates = any(code in FEATURE_GATE_TEMPLATES for code in features)
+                stale_gate = (
+                    uses_frozen_gates
+                    and bool(gate_context["gate_calibration_id"])
+                    and (dm.get("gate_calibration_id") != gate_context["gate_calibration_id"])
+                )
                 materialized = {
                     "dataset_id": ds_dir.name,
                     "materialization_status": "MATERIALIZED_DATASET",
                     "stale_tof": stale_tof,
-                    "refresh_required": stale_tof,
+                    "stale_gate": stale_gate,
+                    "refresh_required": stale_tof or stale_gate,
                     "stale_note": (
-                        "dataset manifest 无 tof_method_id —— legacy TOF 数据集，"
-                        "未含 canonical 包络峰值 TOF；refresh required"
-                    ) if stale_tof else "TOF provenance present",
+                        "dataset 使用的 frozen gate calibration 与当前 calibration 不同，需重建"
+                        if stale_gate
+                        else (
+                            "dataset manifest 无 tof_method_id —— legacy TOF 数据集，"
+                            "未含 canonical 包络峰值 TOF；refresh required"
+                        )
+                        if stale_tof
+                        else "TOF and gate provenance current"
+                    ),
                     "feature_definition_version": dm.get("target_method_version"),
                 }
                 break
@@ -1455,8 +1677,8 @@ def feature_label_preview(
             "train_rows": train_n,
             "held_out_rows": held_n,
             "policy": "HELD_OUT y redacted server-side before serialization "
-                      "(target=null + y_redacted=true); evaluation materialization "
-                      "restores y via the modeling layer only",
+            "(target=null + y_redacted=true); evaluation materialization "
+            "restores y via the modeling layer only",
         }
     else:
         redaction_summary = None
@@ -1471,6 +1693,13 @@ def feature_label_preview(
             "rows": rows,
             "ambiguous_rows": ambiguous_rows,
             "tof_provenance": tof_provenance,
+            "gate_provenance": {
+                "gate_calibration_id": gate_context["gate_calibration_id"],
+                "bounds_source": "EXPERIMENT_FROZEN"
+                if gate_context["gate_calibration_id"]
+                else "SOURCE_TEMPLATE",
+                "bounds": gate_bounds,
+            },
             "preview_state": "PREVIEW_DRAFT",
             "spec_hash": spec_hash,
             "materialized_dataset": materialized,
@@ -1482,18 +1711,26 @@ def feature_label_preview(
                 "eligible_rows": int(eligible_mask.sum()),
                 "excluded_rows": int(n - eligible_mask.sum()),
                 "excluded_by_reason": excluded_by_reason,
-                "cycles": sorted(int(c) for c in join_pd.unique(joined.loc[eligible_mask, "cycle_index_raw"].dropna())),
+                "cycles": sorted(
+                    int(c)
+                    for c in join_pd.unique(joined.loc[eligible_mask, "cycle_index_raw"].dropna())
+                ),
                 "missing_values": 0,
                 "alignment_status": "PROVISIONAL_TIMEBASE_MATCHED",
             },
         },
-        "meta": {"note": "read-only preview; one row = one eligible MeasurementEvent; "
-                          "PREVIEW_DRAFT ≠ MATERIALIZED_DATASET"},
+        "meta": {
+            "note": "read-only preview; one row = one eligible MeasurementEvent; "
+            "PREVIEW_DRAFT ≠ MATERIALIZED_DATASET"
+        },
     }
 
 
-_RANK_UNAVAILABLE = {"TEMPERATURE_UNAVAILABLE", "ARTIFACT_MISSING",
-                     "NOT_READY_INSUFFICIENT_SOH_STATES"}
+_RANK_UNAVAILABLE = {
+    "TEMPERATURE_UNAVAILABLE",
+    "ARTIFACT_MISSING",
+    "NOT_READY_INSUFFICIENT_SOH_STATES",
+}
 _RANK_INSUFFICIENT = {"INSUFFICIENT_VARIATION", "INSUFFICIENT_OVERLAP", "NUMERICAL_NAN"}
 
 
@@ -1510,32 +1747,66 @@ def _rank_direction_status(
         return "UNAVAILABLE"
     if status in _RANK_INSUFFICIENT:
         return "INSUFFICIENT_VARIATION"
-    if charge is not None and discharge is not None \
-            and charge * discharge < 0 and min(abs(charge), abs(discharge)) >= 0.2:
+    if (
+        charge is not None
+        and discharge is not None
+        and charge * discharge < 0
+        and min(abs(charge), abs(discharge)) >= 0.2
+    ):
         return "DIRECTION_DEPENDENT"
-    best = max(abs(v) for v in (overall, charge, discharge) if v is not None) \
-        if any(v is not None for v in (overall, charge, discharge)) else 0.0
+    best = (
+        max(abs(v) for v in (overall, charge, discharge) if v is not None)
+        if any(v is not None for v in (overall, charge, discharge))
+        else 0.0
+    )
     if best < 0.1:
         return "WEAK_ASSOCIATION"
     return "SAME_DIRECTION"
 
 
 _RANK_PHYSICAL_META: dict[str, dict[str, str]] = {
-    "BOTTOM_AMP": {"label_zh": "底波幅值", "label_en": "Bottom-wave Amplitude",
-                   "family": "PHYSICAL", "units": "a.u."},
-    "SWA": {"label_zh": "表面波幅值", "label_en": "Surface Wave Amplitude",
-            "family": "PHYSICAL", "units": "a.u."},
-    "TOF_XCORR": {"label_zh": "表面波-底波互相关TOF（诊断）",
-                  "label_en": "Surface–Bottom XCorr TOF (diagnostic)",
-                  "family": "PHYSICAL_DIAGNOSTIC", "units": "samples"},
-    "ATTEN_MAX": {"label_zh": "底波衰减（最大）", "label_en": "Bottom Attenuation (max)",
-                  "family": "PHYSICAL", "units": "a.u."},
-    "ATTEN_MEAN": {"label_zh": "底波衰减（均值）", "label_en": "Bottom Attenuation (mean)",
-                   "family": "PHYSICAL", "units": "a.u."},
-    "ATTEN_ENERGY": {"label_zh": "底波衰减（能量）", "label_en": "Bottom Attenuation (energy)",
-                     "family": "PHYSICAL", "units": "a.u."},
-    "BPS": {"label_zh": "底波相移", "label_en": "Bottom-wave Phase Shift",
-            "family": "PHYSICAL", "units": "radian"},
+    "BOTTOM_AMP": {
+        "label_zh": "底波幅值",
+        "label_en": "Bottom-wave Amplitude",
+        "family": "PHYSICAL",
+        "units": "a.u.",
+    },
+    "SWA": {
+        "label_zh": "表面波幅值",
+        "label_en": "Surface Wave Amplitude",
+        "family": "PHYSICAL",
+        "units": "a.u.",
+    },
+    "TOF_XCORR": {
+        "label_zh": "表面波-底波互相关TOF（诊断）",
+        "label_en": "Surface–Bottom XCorr TOF (diagnostic)",
+        "family": "PHYSICAL_DIAGNOSTIC",
+        "units": "samples",
+    },
+    "ATTEN_MAX": {
+        "label_zh": "底波衰减（最大）",
+        "label_en": "Bottom Attenuation (max)",
+        "family": "PHYSICAL",
+        "units": "a.u.",
+    },
+    "ATTEN_MEAN": {
+        "label_zh": "底波衰减（均值）",
+        "label_en": "Bottom Attenuation (mean)",
+        "family": "PHYSICAL",
+        "units": "a.u.",
+    },
+    "ATTEN_ENERGY": {
+        "label_zh": "底波衰减（能量）",
+        "label_en": "Bottom Attenuation (energy)",
+        "family": "PHYSICAL",
+        "units": "a.u.",
+    },
+    "BPS": {
+        "label_zh": "底波相移",
+        "label_en": "Bottom-wave Phase Shift",
+        "family": "PHYSICAL",
+        "units": "radian",
+    },
 }
 
 
@@ -1579,8 +1850,7 @@ def feature_target_ranking(
     # §25 forbidden predictors: recognized and formally BLOCKED (no numbers),
     # not silently rejected as unknown — the block itself is the answer.
     blocked = [f for f in features if get_column_role(f) == ColumnRole.FORBIDDEN_PREDICTOR]
-    missing = [f for f in features
-               if f not in known_codes and f not in blocked]
+    missing = [f for f in features if f not in known_codes and f not in blocked]
     if missing:
         raise APIError(ErrorCode.NOT_FOUND, f"unknown features: {missing}")
 
@@ -1591,8 +1861,9 @@ def feature_target_ranking(
     for f in features:
         raw = "waveform_abs_peak_a_u" if f == "amplitude_a_u" else _ALIAS_TO_RAW.get(f, f)
         if raw in seen_series:
-            alias_dedup.append({"dropped": f, "kept": seen_series[raw],
-                                "reason": "same underlying series (alias)"})
+            alias_dedup.append(
+                {"dropped": f, "kept": seen_series[raw], "reason": "same underlying series (alias)"}
+            )
             continue
         seen_series[raw] = f
         kept.append(f)
@@ -1601,16 +1872,14 @@ def feature_target_ranking(
     features = [f for f in features if f not in blocked]
 
     frames = _load_frames(request, battery_id, experiment_id)
+    gate_context = _experiment_gate_context(request, battery_id, experiment_id)
+    gate_bounds = gate_context["gate_bounds"]
+    _validate_experiment_gate_context(gate_context, frames)
     series_map: dict[str, np.ndarray] = {
-        "BOTTOM_AMP": bottom_wave_amplitude(frames)["raw"],
-        "SWA": surface_wave_amplitude(frames)["raw"],
-        "TOF_XCORR": surface_bottom_xcorr_tof(frames)["tof_samples"].astype(float),
-        "ATTEN_MAX": np.asarray(bottom_attenuation_explicit(frames)["amp_max"]),
-        "ATTEN_MEAN": np.asarray(bottom_attenuation_explicit(frames)["amp_mean"]),
-        "ATTEN_ENERGY": np.asarray(bottom_attenuation_explicit(frames)["amp_energy"]),
-        "BPS": bottom_wave_phase_shift(frames)["raw_radian"],
+        code: selected_feature_series(frames, [code], gate_bounds=gate_bounds)[code]
+        for code in _PREDEFINED_PHYSICAL_CODES
     }
-    series_map.update(_catalogue_feature_series(frames, features))
+    series_map.update(_catalogue_feature_series(frames, features, gate_bounds))
 
     # canonical envelope-peak TOF: read-only from the materialized artifact
     tof_provenance: dict[str, Any] | None = None
@@ -1618,7 +1887,10 @@ def feature_target_ranking(
     if "tof_us" in features:
         ct_path = (
             get_service(request).processed_root
-            / "features_physical" / battery_id / experiment_id / "canonical_tof.parquet"
+            / "features_physical"
+            / battery_id
+            / experiment_id
+            / "canonical_tof.parquet"
         )
         if not ct_path.is_file():
             raise APIError(
@@ -1639,17 +1911,20 @@ def feature_target_ranking(
         cm = _read_json_local(ct_path.parent / "canonical_tof_manifest.json") or {}
         from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
 
-        cal = resolve_tof_gate_calibration(battery_id, experiment_id,
-                                           get_service(request).processed_root)
+        cal = resolve_tof_gate_calibration(
+            battery_id, experiment_id, get_service(request).processed_root
+        )
         # Values are only as current as the GateCalibrationRecord embedded in
         # the artifact; the newest confirmed record is reported separately.
         embedded_ids = sorted({str(v) for v in ct["gate_calibration_id"].unique()})
         embedded_id = embedded_ids[0] if len(embedded_ids) == 1 else None
-        gc_dir = (get_service(request).processed_root / "gate_calibrations"
-                  / battery_id / experiment_id)
+        gc_dir = (
+            get_service(request).processed_root / "gate_calibrations" / battery_id / experiment_id
+        )
         emb_record = _read_json_local(gc_dir / f"{embedded_id}.json") if embedded_id else None
         window_matches = emb_record is not None and all(
-            emb_record.get(k) == cal.get(key) for k, key in (
+            emb_record.get(k) == cal.get(key)
+            for k, key in (
                 ("surface_gate_id", "surface_gate_id"),
                 ("bottom_gate_id", "bottom_gate_id"),
                 ("surface_start_sample", "surface_start"),
@@ -1692,8 +1967,11 @@ def feature_target_ranking(
                 "INVALID_SPLIT: TRAIN_ONLY_ML_SAFE ranking requires split_id and fold_index (Grouped Split)",
             )
         sa_path = get_service(request).processed_root / "splits" / battery_id / experiment_id
-        sa_file = next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None) \
-            if sa_path.is_dir() else None
+        sa_file = (
+            next(sa_path.rglob(f"{split_id}/split_assignments.parquet"), None)
+            if sa_path.is_dir()
+            else None
+        )
         if sa_file is None:
             raise APIError(
                 ErrorCode.ARTIFACT_NOT_AVAILABLE,
@@ -1708,7 +1986,11 @@ def feature_target_ranking(
 
     def _rows_for(code: str):
         rows = _correlation_rows(
-            request, battery_id, experiment_id, series_map[code], code,
+            request,
+            battery_id,
+            experiment_id,
+            series_map[code],
+            code,
             max_frames=len(frames),
         )
         if train_ids is not None:
@@ -1717,17 +1999,33 @@ def feature_target_ranking(
 
     def _meta_for(code: str) -> dict[str, Any]:
         if code in _RANK_PHYSICAL_META:
-            return dict(_RANK_PHYSICAL_META[code])
-        if code == "tof_us":
-            return {"label_zh": "规范包络峰TOF（表面→底波）", "label_en": "Canonical Envelope-Peak TOF",
-                    "family": "CANONICAL_TOF", "units": "µs"}
-        d = catalogue._defs.get(code)
-        if d is not None:
-            return {"label_zh": getattr(d, "display_name_zh", code),
+            meta = dict(_RANK_PHYSICAL_META[code])
+        elif code == "tof_us":
+            return {
+                "label_zh": "规范包络峰TOF（表面→底波）",
+                "label_en": "Canonical Envelope-Peak TOF",
+                "family": "CANONICAL_TOF",
+                "units": "µs",
+            }
+        else:
+            d = catalogue._defs.get(code)
+            if d is not None:
+                meta = {
+                    "label_zh": getattr(d, "display_name_zh", code),
                     "label_en": getattr(d, "display_name_en", code),
                     "family": getattr(d, "family", "TD"),
-                    "units": getattr(d, "units", "a.u.")}
-        return {"label_zh": code, "label_en": code, "family": "RAW_ALIAS", "units": "a.u."}
+                    "units": getattr(d, "units", "a.u."),
+                }
+            else:
+                meta = {"label_zh": code, "label_en": code, "family": "RAW_ALIAS", "units": "a.u."}
+        required_gates = FEATURE_GATE_TEMPLATES.get(code)
+        if required_gates:
+            meta["gate_templates"] = list(required_gates)
+            meta["gate_calibration_id"] = gate_context["gate_calibration_id"]
+            meta["gate_bounds_source"] = (
+                "EXPERIMENT_FROZEN" if gate_context["gate_calibration_id"] else "SOURCE_TEMPLATE"
+            )
+        return meta
 
     # direct-measurement targets: overall + honest scope note (no fake split stats)
     if target_id in ("voltage_v", "current_a"):
@@ -1745,62 +2043,123 @@ def feature_target_ranking(
             if x.size >= 3 and np.std(x) > 0 and np.std(y) > 0:
                 p, s = _pearson(x, y), _spearman(x, y)
             status = "VALID" if p is not None else "INSUFFICIENT_OVERLAP"
-            results.append({
-                "feature_code": code, **_meta_for(code),
-                "pearson_overall": p, "spearman_overall": s,
-                "pearson_charge": None, "pearson_discharge": None,
-                "spearman_charge": None, "spearman_discharge": None,
-                "n_valid": int(x.size), "n_missing": int(n - x.size),
-                "status": status,
-                "direction_status": _rank_direction_status(status, None, None, s),
-                "direction_dependent": False,
-                "scope_note": "state-stratified metrics not reported for direct targets",
-                "freshness": (
-                    "REFRESH_REQUIRED" if (code == "tof_us" and tof_refresh_required) else "CURRENT"
-                ),
-                "commit_eligible": not (code == "tof_us" and tof_refresh_required),
-            })
-        return _rank_response(mode, target_id, split_id, fold_index, results,
-                              alias_dedup, blocked, tof_provenance, None, request,
-                              battery_id, experiment_id)
+            results.append(
+                {
+                    "feature_code": code,
+                    **_meta_for(code),
+                    "pearson_overall": p,
+                    "spearman_overall": s,
+                    "pearson_charge": None,
+                    "pearson_discharge": None,
+                    "spearman_charge": None,
+                    "spearman_discharge": None,
+                    "n_valid": int(x.size),
+                    "n_missing": int(n - x.size),
+                    "status": status,
+                    "direction_status": _rank_direction_status(status, None, None, s),
+                    "direction_dependent": False,
+                    "scope_note": "state-stratified metrics not reported for direct targets",
+                    "freshness": (
+                        "REFRESH_REQUIRED"
+                        if (code == "tof_us" and tof_refresh_required)
+                        else "CURRENT"
+                    ),
+                    "commit_eligible": not (code == "tof_us" and tof_refresh_required),
+                }
+            )
+        return _rank_response(
+            mode,
+            target_id,
+            split_id,
+            fold_index,
+            results,
+            alias_dedup,
+            blocked,
+            tof_provenance,
+            None,
+            request,
+            battery_id,
+            experiment_id,
+        )
 
     if target_id == "soh_capacity_reference_percent":
         summary = soh_cycle_summary(_rows_for(features[0])) if features else []
-        return _rank_response(mode, target_id, split_id, fold_index, [],
-                              alias_dedup, blocked, tof_provenance,
-                              {"group_summary": summary,
-                               "note": "SOH is cycle-level; frame-level ranking is not reported"},
-                              request, battery_id, experiment_id)
+        return _rank_response(
+            mode,
+            target_id,
+            split_id,
+            fold_index,
+            [],
+            alias_dedup,
+            blocked,
+            tof_provenance,
+            {
+                "group_summary": summary,
+                "note": "SOH is cycle-level; frame-level ranking is not reported",
+            },
+            request,
+            battery_id,
+            experiment_id,
+        )
 
     if target_id == "temperature_c":
         ranking_t: list[dict[str, Any]] = []
         for code in features:
             frows = _rows_for(code)
-            r = correlate_feature_state(frows, state_variable="temperature_c",
-                                        method="pearson", analysis_id=f"rank:{code}",
-                                        feature_code=code)
-            rs = correlate_feature_state(frows, state_variable="temperature_c",
-                                         method="spearman", analysis_id=f"rank:{code}:sp",
-                                         feature_code=code)
-            ranking_t.append({
-                "feature_code": code, **_meta_for(code),
-                "pearson_overall": r.coefficient, "spearman_overall": rs.coefficient,
-                "pearson_charge": None, "pearson_discharge": None,
-                "spearman_charge": None, "spearman_discharge": None,
-                "n_valid": r.n_valid,
-                "n_missing": r.missing_feature_count + r.missing_state_count,
-                "status": r.status,
-                "direction_status": _rank_direction_status(r.status, None, None, rs.coefficient),
-                "direction_dependent": False,
-                "freshness": (
-                    "REFRESH_REQUIRED" if (code == "tof_us" and tof_refresh_required) else "CURRENT"
-                ),
-                "commit_eligible": r.status == "VALID" and not (
-                    code == "tof_us" and tof_refresh_required),
-            })
-        return _rank_response(mode, target_id, split_id, fold_index, ranking_t,
-                              alias_dedup, blocked, tof_provenance, None, request,
-                              battery_id, experiment_id)
+            r = correlate_feature_state(
+                frows,
+                state_variable="temperature_c",
+                method="pearson",
+                analysis_id=f"rank:{code}",
+                feature_code=code,
+            )
+            rs = correlate_feature_state(
+                frows,
+                state_variable="temperature_c",
+                method="spearman",
+                analysis_id=f"rank:{code}:sp",
+                feature_code=code,
+            )
+            ranking_t.append(
+                {
+                    "feature_code": code,
+                    **_meta_for(code),
+                    "pearson_overall": r.coefficient,
+                    "spearman_overall": rs.coefficient,
+                    "pearson_charge": None,
+                    "pearson_discharge": None,
+                    "spearman_charge": None,
+                    "spearman_discharge": None,
+                    "n_valid": r.n_valid,
+                    "n_missing": r.missing_feature_count + r.missing_state_count,
+                    "status": r.status,
+                    "direction_status": _rank_direction_status(
+                        r.status, None, None, rs.coefficient
+                    ),
+                    "direction_dependent": False,
+                    "freshness": (
+                        "REFRESH_REQUIRED"
+                        if (code == "tof_us" and tof_refresh_required)
+                        else "CURRENT"
+                    ),
+                    "commit_eligible": r.status == "VALID"
+                    and not (code == "tof_us" and tof_refresh_required),
+                }
+            )
+        return _rank_response(
+            mode,
+            target_id,
+            split_id,
+            fold_index,
+            ranking_t,
+            alias_dedup,
+            blocked,
+            tof_provenance,
+            None,
+            request,
+            battery_id,
+            experiment_id,
+        )
 
     # Reference SOC via the existing stratified suite (§3/§4/§5/§6)
     ranking: list[dict[str, Any]] = []
@@ -1810,7 +2169,8 @@ def feature_target_ranking(
         by = {(r.method, r.scope): r for r in suite}
         po = by[("pearson", "overall")]
         entry: dict[str, Any] = {
-            "feature_code": code, **_meta_for(code),
+            "feature_code": code,
+            **_meta_for(code),
             "pearson_overall": po.coefficient,
             "spearman_overall": by[("spearman", "overall")].coefficient,
             "pearson_charge": by[("pearson", "charge")].coefficient,
@@ -1822,7 +2182,9 @@ def feature_target_ranking(
             "status": po.status,
         }
         entry["direction_status"] = _rank_direction_status(
-            po.status, entry["pearson_charge"], entry["pearson_discharge"],
+            po.status,
+            entry["pearson_charge"],
+            entry["pearson_discharge"],
             entry["spearman_overall"],
         )
         entry["direction_dependent"] = entry["direction_status"] == "DIRECTION_DEPENDENT"
@@ -1843,85 +2205,140 @@ def feature_target_ranking(
 
     detail: dict[str, Any] | None = None
     if detail_feature and detail_feature in series_map:
-        detail = _ranking_detail_scatter(request, battery_id, experiment_id,
-                                         series_map[detail_feature], detail_feature,
-                                         target_id, train_ids, len(frames))
+        detail = _ranking_detail_scatter(
+            request,
+            battery_id,
+            experiment_id,
+            series_map[detail_feature],
+            detail_feature,
+            target_id,
+            train_ids,
+            len(frames),
+        )
 
     # default display ordering: abs overall Spearman (explicitly NOT "best")
     ranking.sort(key=lambda e: -abs(e.get("spearman_overall") or 0.0))
-    return _rank_response(mode, target_id, split_id, fold_index, ranking,
-                          alias_dedup, blocked, tof_provenance,
-                          {"detail": detail} if detail else None,
-                          request, battery_id, experiment_id, variant)
+    return _rank_response(
+        mode,
+        target_id,
+        split_id,
+        fold_index,
+        ranking,
+        alias_dedup,
+        blocked,
+        tof_provenance,
+        {"detail": detail} if detail else None,
+        request,
+        battery_id,
+        experiment_id,
+        variant,
+    )
 
 
-def _rank_response(mode, target_id, split_id, fold_index, ranking, alias_dedup,
-                   blocked, tof_provenance, extra, request, battery_id, experiment_id,
-                   variant="RAW") -> dict[str, Any]:
+def _rank_response(
+    mode,
+    target_id,
+    split_id,
+    fold_index,
+    ranking,
+    alias_dedup,
+    blocked,
+    tof_provenance,
+    extra,
+    request,
+    battery_id,
+    experiment_id,
+    variant="RAW",
+) -> dict[str, Any]:
     """Shared envelope: honest counts, limitations, association-only note."""
     events, labels = _load_events_labels(request, battery_id, experiment_id)
     joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
     n = len(joined)
-    eligible = int((joined["analysis_eligible"] & joined["soc_reference_percent"].notna()).sum()) \
-        if "soc_reference_percent" in joined.columns \
+    eligible = (
+        int((joined["analysis_eligible"] & joined["soc_reference_percent"].notna()).sum())
+        if "soc_reference_percent" in joined.columns
         else int(joined["analysis_eligible"].sum())
+    )
     data: dict[str, Any] = {
-        "mode": mode, "analysis_mode": mode, "target_id": target_id,
+        "mode": mode,
+        "analysis_mode": mode,
+        "target_id": target_id,
         "variant": variant,
         "scope": ["overall", "charge", "discharge"],
-        "split_id": split_id or None, "fold_index": fold_index or None,
+        "split_id": split_id or None,
+        "fold_index": fold_index or None,
         "ordering": "abs_overall_spearman — Default display ordering "
-                    "(display convention, not a scientific best)",
+        "(display convention, not a scientific best)",
         "ranking": ranking,
         "alias_dedup": alias_dedup,
         "blocked_forbidden": [
-            {"feature_code": b, "status": "BLOCKED_FORBIDDEN_PREDICTOR",
-             "commit_eligible": False,
-             "reason": "target-derivation column — never ranked or committed"}
+            {
+                "feature_code": b,
+                "status": "BLOCKED_FORBIDDEN_PREDICTOR",
+                "commit_eligible": False,
+                "reason": "target-derivation column — never ranked or committed",
+            }
             for b in blocked
         ],
-        "summary": {"aligned_events": n, "target_eligible_rows": eligible,
-                    "waveform_valid_frames": n},
-        "limitations": (["EXPLORATORY_NOT_ML_SAFE"] if mode == "EXPLORATORY"
-                        else ["TRAIN_ONLY_ML_SAFE", "WITHIN_BATTERY_CROSS_CYCLE_LIMITED"])
-                       + ["RANKING_DESCRIBES_ASSOCIATION_ONLY"],
+        "summary": {
+            "aligned_events": n,
+            "target_eligible_rows": eligible,
+            "waveform_valid_frames": n,
+        },
+        "limitations": (
+            ["EXPLORATORY_NOT_ML_SAFE"]
+            if mode == "EXPLORATORY"
+            else ["TRAIN_ONLY_ML_SAFE", "WITHIN_BATTERY_CROSS_CYCLE_LIMITED"]
+        )
+        + ["RANKING_DESCRIBES_ASSOCIATION_ONLY"],
         "note": "Ranking describes statistical association under the selected "
-                "scope; it does not identify the scientifically best feature, "
-                "causality, or a predictive guarantee.",
+        "scope; it does not identify the scientifically best feature, "
+        "causality, or a predictive guarantee.",
     }
     if tof_provenance is not None:
         data["tof_provenance"] = tof_provenance
     if isinstance(extra, dict):
         data.update(extra)
-    return {"data": data,
-            "meta": {"read_only": True,
-                     "note": "ranking is a read-only aggregation of canonical "
-                             "artifacts; no artifact writes"}}
+    return {
+        "data": data,
+        "meta": {
+            "read_only": True,
+            "note": "ranking is a read-only aggregation of canonical artifacts; no artifact writes",
+        },
+    }
 
 
-def _ranking_detail_scatter(request, battery_id, experiment_id, series, code,
-                            target_id, train_ids, max_frames) -> dict[str, Any]:
+def _ranking_detail_scatter(
+    request, battery_id, experiment_id, series, code, target_id, train_ids, max_frames
+) -> dict[str, Any]:
     """§13 detail panel data: backend-computed scatter + stats per scope."""
     import random
 
-    rows = _correlation_rows(request, battery_id, experiment_id, series, code,
-                             max_frames=max_frames)
+    rows = _correlation_rows(
+        request, battery_id, experiment_id, series, code, max_frames=max_frames
+    )
     if train_ids is not None:
         rows = [r for r in rows if r.measurement_event_id in train_ids]
     tcol = {"reference_soc_percent": "reference_soc_percent"}.get(target_id, target_id)
-    scopes = {"overall": [r for r in rows if r.analysis_eligible],
-              "charge": [r for r in rows if r.analysis_eligible and r.state == "charge"],
-              "discharge": [r for r in rows if r.analysis_eligible and r.state == "discharge"]}
+    scopes = {
+        "overall": [r for r in rows if r.analysis_eligible],
+        "charge": [r for r in rows if r.analysis_eligible and r.state == "charge"],
+        "discharge": [r for r in rows if r.analysis_eligible and r.state == "discharge"],
+    }
     out: dict[str, Any] = {"feature_code": code, "target_id": target_id, "scopes": {}}
     rng = random.Random(21)
     for scope, srows in scopes.items():
-        pts = [(r.value, getattr(r, tcol, None)) for r in srows
-               if r.value is not None and getattr(r, tcol, None) is not None]
+        pts = [
+            (r.value, getattr(r, tcol, None))
+            for r in srows
+            if r.value is not None and getattr(r, tcol, None) is not None
+        ]
         if len(pts) > 300:
             pts = rng.sample(pts, 300)
         out["scopes"][scope] = {
-            "n": len([r for r in srows
-                      if r.value is not None and getattr(r, tcol, None) is not None]),
+            "n": len(
+                [r for r in srows if r.value is not None and getattr(r, tcol, None) is not None]
+            ),
             "points": [{"x": float(x), "y": float(y)} for x, y in pts],
         }
     out["excluded_ineligible"] = len([r for r in rows if not r.analysis_eligible])
@@ -1988,13 +2405,17 @@ def canonical_tof(
         battery_id, experiment_id, get_service(request).processed_root
     )
     surface_binding = TOFGateBinding(
-        role="surface", gate_id=cal["surface_gate_id"], matlab_range="",
+        role="surface",
+        gate_id=cal["surface_gate_id"],
+        matlab_range="",
         python_start=cal["surface_start"],
         python_end_exclusive=cal["surface_end_exclusive"],
         length_samples=cal["surface_end_exclusive"] - cal["surface_start"],
     )
     bottom_binding = TOFGateBinding(
-        role="bottom", gate_id=cal["bottom_gate_id"], matlab_range="",
+        role="bottom",
+        gate_id=cal["bottom_gate_id"],
+        matlab_range="",
         python_start=cal["bottom_start"],
         python_end_exclusive=cal["bottom_end_exclusive"],
         length_samples=cal["bottom_end_exclusive"] - cal["bottom_start"],
@@ -2019,7 +2440,9 @@ def canonical_tof(
         if s is None or s.empty:
             return None
         return {
-            "min": float(s.min()), "median": float(s.median()), "max": float(s.max()),
+            "min": float(s.min()),
+            "median": float(s.median()),
+            "max": float(s.max()),
         }
 
     return {

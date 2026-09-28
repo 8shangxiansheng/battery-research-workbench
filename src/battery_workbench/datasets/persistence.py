@@ -120,6 +120,7 @@ def write_dataset_payload(
         label_set_checksum=_sha256(label_set_path),
         parameter_set_id=report.parameter_set_id,
         parameter_dependency=config.parameter_dependency,
+        gate_calibration_id=report.gate_calibration_id,
         predictor_policy=config.predictor_policy,
         predictor_columns=report.predictor_columns,
         forbidden_predictor_columns=report.forbidden_predictor_columns,

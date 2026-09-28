@@ -160,12 +160,17 @@ describe("E2E3 — Deep link: structured blocking for BLOCKED steps", () => {
     }
   });
 
-  it("non-BLOCKED steps do not have blocking sub-object", async (ctx) => {
+  it("non-BLOCKED steps may expose prerequisite blockers with structured recovery actions", async (ctx) => {
     if (!available) ctx.skip();
     const wf = await getWorkflowContext();
     const nonBlocked = Object.entries(wf.steps).filter(([, v]) => v.status !== "BLOCKED");
     for (const [, step] of nonBlocked) {
-      expect(step.blocking).toBeUndefined();
+      if (step.blocking) {
+        expect(step.blocking.blocking_code).toBeDefined();
+        expect(step.blocking.blocking_message).toBeDefined();
+        expect(step.blocking.required_action).toBeDefined();
+        expect(step.blocking.scientific_reason).toBeDefined();
+      }
     }
   });
 });

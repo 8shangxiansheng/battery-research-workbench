@@ -11,9 +11,7 @@ from battery_workbench.features.selected_series import (
 
 
 def test_selected_feature_series_materializes_physical_catalogue_and_alias() -> None:
-    frames = np.vstack(
-        [np.linspace(-1.0, 1.0, 1300), np.linspace(-0.5, 1.5, 1300)]
-    )
+    frames = np.vstack([np.linspace(-1.0, 1.0, 1300), np.linspace(-0.5, 1.5, 1300)])
 
     series = selected_feature_series(frames, ["SWA", "TDM", "amplitude_a_u"])
 
@@ -22,6 +20,21 @@ def test_selected_feature_series_materializes_physical_catalogue_and_alias() -> 
     assert np.isfinite(series["SWA"]).all()
     assert np.isfinite(series["TDM"]).all()
     assert np.isfinite(series["amplitude_a_u"]).all()
+
+
+def test_selected_feature_series_uses_frozen_experiment_gate_bounds() -> None:
+    frames = np.zeros((1, 1300), dtype=np.float64)
+    frames[0, 5] = 10.0
+    frames[0, 100] = 5.0
+
+    source = selected_feature_series(frames, ["SWA"])["SWA"]
+    frozen = selected_feature_series(
+        frames,
+        ["SWA"],
+        gate_bounds={"SWA_SURFACE_GATE": (0, 20)},
+    )["SWA"]
+
+    assert frozen[0] > source[0]
 
 
 def test_load_waveform_frames_preserves_multi_asset_metadata_order(tmp_path) -> None:

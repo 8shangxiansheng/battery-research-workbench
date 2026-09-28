@@ -63,6 +63,7 @@ class DatasetReport(BaseModel):
     label_set_id: str = ""
     parameter_set_id: str = ""
     parameter_dependency: str = "INFORMATIONAL"
+    gate_calibration_id: str | None = None
 
     input_feature_rows: int = 0
     input_label_rows: int = 0
@@ -115,6 +116,7 @@ class DatasetManifest(BaseModel):
     label_set_checksum: str = ""
     parameter_set_id: str = ""
     parameter_dependency: str = "INFORMATIONAL"
+    gate_calibration_id: str | None = None
 
     predictor_policy: str = "ULTRASOUND_ONLY"
     predictor_columns: list[str] = Field(default_factory=list)

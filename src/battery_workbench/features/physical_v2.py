@@ -19,6 +19,7 @@ MATLAB-centered with shrinking endpoints and is EXPLORATORY by default
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -92,10 +93,37 @@ GATE_TEMPLATES: tuple[GateTemplateDefinition, ...] = (
 )
 
 _TEMPLATE_INDEX = {t.gate_template_id: t for t in GATE_TEMPLATES}
+GateBounds = Mapping[str, tuple[int, int]]
 
 
 def get_gate_template(gate_template_id: str) -> GateTemplateDefinition:
     return _TEMPLATE_INDEX[gate_template_id]
+
+
+def resolve_gate_bounds(
+    gate_template_id: str,
+    gate_bounds: GateBounds | None,
+    *,
+    sample_count: int,
+) -> tuple[int, int]:
+    """Resolve frozen half-open sample bounds, or use the source template.
+
+    The persisted bounds are Python zero-based ``[start, end)`` indices. They
+    are validated against the actual waveform length so a stale/out-of-range
+    calibration cannot silently produce shortened slices.
+    """
+    template = get_gate_template(gate_template_id)
+    bounds = (gate_bounds or {}).get(gate_template_id)
+    if bounds is None:
+        start, end = template.python_start, template.python_end_exclusive
+    else:
+        start, end = int(bounds[0]), int(bounds[1])
+    if start < 0 or end <= start or end > sample_count:
+        raise ValueError(
+            f"invalid frozen bounds for {gate_template_id}: "
+            f"require 0 <= start < end <= {sample_count}; got [{start}, {end})"
+        )
+    return start, end
 
 
 def matlab_gate(
@@ -118,17 +146,27 @@ def matlab_movmean5(values) -> np.ndarray:
     return out
 
 
-def _envelope_max_series(a: np.ndarray, template: GateTemplateDefinition) -> np.ndarray:
+def _envelope_max_series(
+    a: np.ndarray,
+    template: GateTemplateDefinition,
+    gate_bounds: GateBounds | None = None,
+) -> np.ndarray:
     """|hilbert(gate)| max per frame, frames on axis 0."""
-    gate = np.asarray(a, dtype=np.float64)[:, template.python_start : template.python_end_exclusive]
+    values = np.asarray(a, dtype=np.float64)
+    start, end = resolve_gate_bounds(
+        template.gate_template_id, gate_bounds, sample_count=values.shape[1]
+    )
+    gate = values[:, start:end]
     env = np.abs(hilbert(gate, axis=1))
     return np.max(env, axis=1)
 
 
-def bottom_wave_amplitude(frames: np.ndarray) -> dict[str, Any]:
+def bottom_wave_amplitude(
+    frames: np.ndarray, gate_bounds: GateBounds | None = None
+) -> dict[str, Any]:
     """Feature 1 — Bottom-wave Amplitude / 底波幅值 (MATLAB 750:1100)."""
     t = get_gate_template("BOTTOM_AMPLITUDE_GATE")
-    raw = _envelope_max_series(frames, t)
+    raw = _envelope_max_series(frames, t, gate_bounds)
     return {
         "feature_code": "BOTTOM_AMP",
         "method": METHOD_BOTTOM_AMP,
@@ -139,11 +177,13 @@ def bottom_wave_amplitude(frames: np.ndarray) -> dict[str, Any]:
     }
 
 
-def surface_wave_amplitude(frames: np.ndarray) -> dict[str, Any]:
+def surface_wave_amplitude(
+    frames: np.ndarray, gate_bounds: GateBounds | None = None
+) -> dict[str, Any]:
     """Feature 2 — SWA / 表面波幅值 (MATLAB 90:200). Valid only when the
     surface-wave gate role is confirmed by calibration."""
     t = get_gate_template("SWA_SURFACE_GATE")
-    raw = _envelope_max_series(frames, t)
+    raw = _envelope_max_series(frames, t, gate_bounds)
     return {
         "feature_code": "SWA",
         "method": METHOD_SWA,
@@ -154,7 +194,9 @@ def surface_wave_amplitude(frames: np.ndarray) -> dict[str, Any]:
     }
 
 
-def surface_bottom_xcorr_tof(frames: np.ndarray) -> dict[str, Any]:
+def surface_bottom_xcorr_tof(
+    frames: np.ndarray, gate_bounds: GateBounds | None = None
+) -> dict[str, Any]:
     """Feature 3 — Surface–Bottom XCorr TOF / 表面波-底波互相关TOF.
 
     Exact source semantics:
@@ -167,10 +209,16 @@ def surface_bottom_xcorr_tof(frames: np.ndarray) -> dict[str, Any]:
     a = np.asarray(frames, dtype=np.float64)
     t_ref = get_gate_template("TOF_SURFACE_REFERENCE_GATE")
     t_bot = get_gate_template("TOF_BOTTOM_GATE")
-    surface = a[:, t_ref.python_start : t_ref.python_end_exclusive]
-    bottom = a[:, t_bot.python_start : t_bot.python_end_exclusive]
+    ref_start, ref_end = resolve_gate_bounds(
+        t_ref.gate_template_id, gate_bounds, sample_count=a.shape[1]
+    )
+    bot_start, bot_end = resolve_gate_bounds(
+        t_bot.gate_template_id, gate_bounds, sample_count=a.shape[1]
+    )
+    surface = a[:, ref_start:ref_end]
+    bottom = a[:, bot_start:bot_end]
 
-    lags = correlation_lags(t_ref.length_samples, t_bot.length_samples, mode="full")
+    lags = correlation_lags(surface.shape[1], bottom.shape[1], mode="full")
     tof = np.empty(a.shape[0], dtype=np.int64)
     peak_idx0 = np.empty(a.shape[0], dtype=np.int64)
     lag_samples = np.empty(a.shape[0], dtype=np.int64)
@@ -202,7 +250,9 @@ def tof_samples_to_us(tof_samples: np.ndarray, sampling_rate_hz: float) -> np.nd
 
 
 def bottom_attenuation_explicit(
-    frames: np.ndarray, sampling_rate_hz: float | None = None
+    frames: np.ndarray,
+    sampling_rate_hz: float | None = None,
+    gate_bounds: GateBounds | None = None,
 ) -> dict[str, Any]:
     """Feature 4 — Bottom-wave attenuation features 1–4 (gate 750:1150).
 
@@ -214,7 +264,10 @@ def bottom_attenuation_explicit(
     """
     a = np.asarray(frames, dtype=np.float64)
     t = get_gate_template("ATTENUATION_BOTTOM_GATE")
-    gate = a[:, t.python_start : t.python_end_exclusive]
+    start, end = resolve_gate_bounds(
+        t.gate_template_id, gate_bounds, sample_count=a.shape[1]
+    )
+    gate = a[:, start:end]
 
     n = gate.shape[0]
     amp_max = np.empty(n)
@@ -266,7 +319,9 @@ def bottom_attenuation_explicit(
     }
 
 
-def bottom_wave_phase_shift(frames: np.ndarray) -> dict[str, Any]:
+def bottom_wave_phase_shift(
+    frames: np.ndarray, gate_bounds: GateBounds | None = None
+) -> dict[str, Any]:
     """Feature 5 — BPS / 底波相移 (gate 750:1150, METHOD_BOTTOM_WAVE_HILBERT_MEAN_PHASE_SHIFT_V1).
 
     Reference = the FIRST source frame (frozen, persisted, never reselected
@@ -276,7 +331,10 @@ def bottom_wave_phase_shift(frames: np.ndarray) -> dict[str, Any]:
     """
     a = np.asarray(frames, dtype=np.float64)
     t = get_gate_template("BPS_BOTTOM_GATE")
-    gate = a[:, t.python_start : t.python_end_exclusive]
+    start, end = resolve_gate_bounds(
+        t.gate_template_id, gate_bounds, sample_count=a.shape[1]
+    )
+    gate = a[:, start:end]
 
     ref_phase = np.angle(hilbert(gate[0]))
     raw = np.empty(gate.shape[0])
