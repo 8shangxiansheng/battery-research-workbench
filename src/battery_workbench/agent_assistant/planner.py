@@ -18,14 +18,19 @@ from battery_workbench.agent_assistant.intents import (
     REFERENCE_SOC_ID,
     SOC_DISCLAIMER,
     SOC_DISCLAIMER_ZH,
-    classify_intent,
     enforce_claim_safety,
+)
+from battery_workbench.agent_assistant.research_plan import (
+    ResearchPlan,
+    advance_plan,
+    build_plan,
 )
 from battery_workbench.agent_assistant.session import (
     AgentResearchSession,
     NextAction,
     SessionStore,
 )
+from battery_workbench.agent_assistant.understanding import understand
 from battery_workbench.agent_tools.gateway import ToolGateway
 
 PLANNER_VERSION = "RESEARCH_PLANNER_V1"
@@ -148,9 +153,9 @@ class ResearchPlanner:
     # intent handlers
     # ------------------------------------------------------------------
     def handle_message(self, ctx: AgentResearchSession, message: str) -> PlannerResponse:
-        """Main entry: classify → policy gates → tool → interpretation."""
+        """Main entry: understand (LLM-mapped + deterministic fallback) → policy gates → tool → interpretation."""
         ctx.add_turn("user", message)
-        classified = classify_intent(message, mode=ctx.feature_selection_mode)
+        classified = understand(message, mode=ctx.feature_selection_mode)
 
         # SOC mention always carries the retrospective disclaimer (§F)
         disclaimer = ""
@@ -178,8 +183,70 @@ class ResearchPlanner:
         enforce_claim_safety(resp.message)
         ctx.add_turn("assistant", resp.message, intent=resp.intent,
                      evidence_refs=resp.evidence_refs)
+        self._sync_plan(ctx, message)
         self.store.save(ctx)
         return resp
+
+    def _confirmation_needed(self, ctx: AgentResearchSession, result, classified) -> PlannerResponse | None:
+        """写操作确认门透传：CONFIRMATION_REQUIRED 一律返回给用户确认，planner 永不自动确认."""
+        if getattr(result, "status", None) != "CONFIRMATION_REQUIRED":
+            return None
+        conf = (getattr(result, "confirmation", None) or {})
+        cid = conf.get("confirmation_id") if isinstance(conf, dict) else None
+        ctx.phase = "WAITING_FOR_USER"
+        ctx.last_confirmation_id = cid
+        ctx.pending_user_action = {
+            "confirmation_id": cid,
+            "tool_name": conf.get("tool_name") if isinstance(conf, dict) else None,
+            "inputs_digest": conf.get("inputs_digest") if isinstance(conf, dict) else None,
+            "policy": "USER_CONFIRMATION",
+        }
+        tool_name = ctx.pending_user_action.get("tool_name") or "写操作"
+        return PlannerResponse(
+            message=f"{tool_name} 需要你确认后才能执行（确认 ID：{cid}）。请在确认弹窗中核对输入后确认，我不会自动执行写操作。",
+            intent=classified.intent.value, phase=ctx.phase,
+            status="CONFIRMATION_REQUIRED", confirmation_id=cid,
+            pending_user_action=ctx.pending_user_action,
+            limitations=self._limitations(result),
+        )
+
+    def _sync_plan(self, ctx: AgentResearchSession, message: str) -> None:
+        """多步研究计划编排同步：只存 goal + 步骤/状态/引用，不存科学计算值."""
+        try:
+            if ctx.research_plan is None:
+                plan = build_plan(self.gateway.service, ctx, goal=message.strip() or "未命名研究目标")
+                ctx.research_goal = plan.goal
+            else:
+                plan = ResearchPlan.model_validate(ctx.research_plan)
+            refs: dict[str, str | None] = {
+                "TARGET": ctx.selected_target,
+                "DATASET": ctx.dataset_id,
+                "SPLIT": ctx.split_id,
+                "MODELS": ctx.model_run_id,
+                "REPORT": ctx.report_id,
+            }
+            for step in plan.steps:
+                if step.step_id == "ALIGNMENT":
+                    want_done = bool(ctx.alignment_status)
+                elif step.step_id == "FEATURES":
+                    want_done = bool(ctx.selected_features)
+                else:
+                    want_done = bool(refs.get(step.step_id))
+                ref_val = refs.get(step.step_id)
+                if want_done:
+                    advance_plan(plan, step.step_id, "DONE", ref=ref_val)  # type: ignore[arg-type]
+                elif step.status == "DONE":
+                    advance_plan(plan, step.step_id, "TODO", ref=ref_val)  # type: ignore[arg-type]
+                elif ref_val and not step.ref:
+                    advance_plan(plan, step.step_id, step.status, ref=ref_val)  # type: ignore[arg-type]
+            cur = plan.current
+            if cur is not None and cur.status == "TODO":
+                advance_plan(plan, cur.step_id, "IN_PROGRESS")  # type: ignore[arg-type]
+            ctx.research_plan = plan.model_dump(mode="json")
+            if ctx.research_goal is None:
+                ctx.research_goal = plan.goal
+        except Exception:  # noqa: BLE001, S110 — 计划同步永不阻塞主流程
+            pass
 
     # ---- INSPECT_CANONICAL_TOF (BRW-017R2) ----
     def _on_inspect_canonical_tof(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
@@ -441,6 +508,9 @@ class ResearchPlanner:
                                          label_zh="创建分组划分", intent="CREATE_GROUPED_SPLIT")],
             )
         result = self._execute("run_limited_soc_baselines", ctx, {})
+        gated = self._confirmation_needed(ctx, result, classified)
+        if gated is not None:
+            return gated
         if result.status in ("WAITING_FOR_USER", "BLOCKED"):
             ctx.phase = "WAITING_FOR_USER"
             ctx.pending_user_action = result.data.get("pending")
@@ -552,6 +622,9 @@ class ResearchPlanner:
         if ctx.feature_selection_mode != "ML_SAFE":
             return self._on_run_baselines(ctx, message, classified)
         result = self._execute("prepare_soc_dataset", ctx, {})
+        gated = self._confirmation_needed(ctx, result, classified)
+        if gated is not None:
+            return gated
         if result.status in ("WAITING_FOR_USER", "BLOCKED"):
             ctx.phase = "WAITING_FOR_USER"
             return PlannerResponse(message=f"构建数据集缺少输入: {result.error}",
@@ -577,6 +650,9 @@ class ResearchPlanner:
     # ---- report / evidence / limitation / misc ----
     def _on_generate_report(self, ctx: AgentResearchSession, message: str, classified) -> PlannerResponse:
         result = self._execute("generate_scientific_report", ctx, {})
+        gated = self._confirmation_needed(ctx, result, classified)
+        if gated is not None:
+            return gated
         ctx.phase = "REPORT"
         ctx.report_id = result.data.get("report_id")
         return PlannerResponse(
@@ -626,6 +702,9 @@ class ResearchPlanner:
                 message="先构建 ML-safe 数据集，再创建 grouped split。",
                 intent=classified.intent.value, phase="BUILD_DATASET", status="BLOCKED")
         result = self._execute("prepare_grouped_evaluation_split", ctx, {"dataset_id": ctx.dataset_id})
+        gated = self._confirmation_needed(ctx, result, classified)
+        if gated is not None:
+            return gated
         ctx.split_id = result.data.get("split_id")
         # split ready → subsequent feature analysis runs TRAIN-only (ML-safe)
         ctx.feature_selection_mode = "ML_SAFE"

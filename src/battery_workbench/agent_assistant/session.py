@@ -87,6 +87,10 @@ class AgentResearchSession(BaseModel):
     pending_user_action: dict[str, Any] | None = None
     last_confirmation_id: str | None = None
 
+    # BRW-027R+ 多步研究计划：只存 goal + 步骤/状态/引用，不存科学计算值
+    research_goal: str | None = None
+    research_plan: dict[str, Any] | None = None
+
     scientific_limitations: list[dict[str, Any]] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     next_actions: list[NextAction] = Field(default_factory=list)
