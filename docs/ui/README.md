@@ -1,4 +1,6 @@
-# BRW-025 Scientific Workbench UI — 使用说明
+# BRW UI 开发与运行说明
+
+> 用户操作流程、实验导入、科学限制和常见问题请看[当前使用指南](../USER_GUIDE.md)。本文件保留本地开发和前端测试命令。
 
 ## 启动
 
@@ -45,7 +47,6 @@ npm run preview
 | `npm run build` | frontend/ | 生产构建 |
 | `.venv/bin/pytest tests/` | 仓库根 | 后端全量回归 |
 
-## 真实 artifact demo
+## Demo 数据
 
-后端 API 使用仓库默认 `data/raw` + `data/processed`（CELL_001/EXP_001 真实产物）。
-UI 打开即显示真实 workspace-summary / waveform / features / modeling / evidence。
+API 默认从仓库的 `data/raw`、`data/processed` 和 `data/artifacts` 读取数据；实验库中的 Demo 需由界面加载或选择。页面内容受当前实验、参数、产物新鲜度和 grouped split 状态影响，并不保证所有页面始终显示旧版演示截图中的 READY 状态。

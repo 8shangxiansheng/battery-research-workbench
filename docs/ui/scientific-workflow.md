@@ -1,23 +1,16 @@
-# 科学工作流（UI 操作路径）
+# 科学工作流（UI 实现参考）
 
-1. **工作区 Workspace** — 打开 `/experiments/CELL_001/EXP_001/workspace`。
-   readiness / limitations / next_actions 全部来自 `GET /workspace-summary`，UI 不自行推导。
-2. **波形与闸门** — 选择帧 → 波形预览（API 降采样，x 轴 = Sample Index，因为采样频率未验证）
-   → 拖选区间生成 draft gate（橙色）→ 填显示名 → 提交（POST /gates，蓝色 committed）。
-3. **特征** — CORE（tof/amplitude）优先；AUXILIARY 折叠；TOF 显示 BLOCKED + 原因（值 null，不显示 0）。
-   勾选 = draft FeatureLocator 选择。
-4. **特征分析** — 显式选择 EXPLORATORY_FULL_DATA（显示 not-ML-safe 横幅）或 TRAIN_ONLY_ML_SAFE
-   （TRAIN 参与 selection；HELD_OUT 不参与）。提交 POST /feature-analyses。
-   相关性表渲染 API 数据，UI 不重算；不自动命名 Best Feature。
-5. **确认特征选择** — 走运行记录页的 UserActionRequired（API confirmation contract）。
-   确认前不自动构建数据集。
-6. **数据集与划分** — POST /datasets（同 spec 幂等 REUSED）→ POST /splits。
-   LEAVE_ONE_GROUP_OUT：TRAIN/HELD_OUT 分组（group_column=cycle_group_id）。
-   2 个独立 cycle 不支持 3-way；无 random row fallback。
-7. **SOC 建模** — Dummy/Linear/Ridge/RF/GB 的 per-fold + macro 指标（GET results）。
-   无 tuning 控件。真实结果弱于 Dummy 时显示诚实结论横幅。
-8. **科学报告** — POST /reports（聚合既有产物，幂等 REUSED，不触发 refit）。
-9. **证据与血缘** — 每个数值可追溯到 EvidenceType（直接产物/既往审计等视觉区分）→ limitations → lineage。
-10. **运行记录** — REUSED/EXECUTED/BLOCKED/WAITING_FOR_USER。
-    WAITING_FOR_USER：显示科学原因 → 用户输入（如采样率 MHz，客户端只做单位换算，不猜数值）
-    → POST user-actions → resume → 状态更新（5s 轮询）。
+> 面向用户的当前操作步骤见[工作台使用指南](../USER_GUIDE.md)。本文件说明页面之间的科学数据关系；界面状态和路由可能随版本演进。
+
+当前用户主导航为 Overview → Waveform → Analysis → Models → Report。Analysis 内按 Target → Alignment → Features → Relationships → Selection → Dataset 检查科学流程；Split、Models 和 Report 是否可进入由当前 dataset、分组划分及工件状态决定。
+
+## 科学工作流约束
+
+1. **Overview** 汇总实验身份、数据就绪情况、科学限制和推荐下一步；前端使用后端返回的数据，不自行计算科学状态。
+2. **Waveform / Gates** 展示波形和局部样本闸门。拖选区域先形成草稿，需显式确认后才成为已提交配置。横轴在采样率未可靠验证时使用 sample index。
+3. **Target / Alignment** 展示目标定义、来源、覆盖及 MeasurementEvent 同步结果。同步按 DataAsset 与绝对时间建立；保留 `sync_error_s` 和歧义状态，不用 Cycle 替代跨文件身份。
+4. **Features / Relationships** 显示特征的定义、单位、来源和状态。相关性与 Ranking 来自 API；前端不重算科学量，也不将相关性解释为因果关系。
+5. **Selection / Preview** 以所选特征构成 X，以唯一研究目标构成 y；预览应检查纳入/排除统计和行级 provenance。ML-safe 评估中 held-out 标签由后端遮蔽。
+6. **Dataset / Split** 在确认数据定义后生成数据集和分组 split。禁止随机拆分相关联的帧/行来替代 Battery-level 分组；样本组数不足时应保持阻断。
+7. **Models / Report** 只对当前有效 dataset 和 split 的结果作结论；旧产物须标为 stale，报告聚合既有证据，不应暗示自动完成了超参数调优。
+8. **Advanced / Assistant / Runs** 用于查看参数、证据、血缘和运行状态。`BLOCKED`、`WAITING_FOR_USER`、`PROVISIONAL`、`UNKNOWN` 与 `STALE` 都是有意义的科研状态，不应被折叠成通用错误或 READY。
