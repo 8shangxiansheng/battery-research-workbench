@@ -18,6 +18,7 @@ const clientMock = {
   getArtifact: vi.fn(), createDataset: vi.fn(), listReports: vi.fn(), getLimitations: vi.fn(), createReport: vi.fn(),
   getFeatureCorrelations: vi.fn(), getReport: vi.fn(),
   listCohortDatasets: vi.fn(), runCohortLOBO: vi.fn(), listDatasets: vi.fn(), createCohortDataset: vi.fn(),
+  listModelingStrategies: vi.fn(),
 };
 vi.mock("../src/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/api/client")>()),
@@ -39,6 +40,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   clientMock.listCohortDatasets.mockResolvedValue({ data: [], meta: {} });
   clientMock.listDatasets.mockResolvedValue({ data: [], meta: {} });
+  clientMock.listModelingStrategies.mockResolvedValue({ data: {
+    policy: "FIXED_BASELINE_PROTOCOL",
+    strategies: ["DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
+      "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS",
+      "RANDOM_FOREST", "GRADIENT_BOOSTING", "ELASTIC_NET", "HUBER_REGRESSION", "MLP_REGRESSOR"
+    ].map((strategy) => ({ strategy, fixed_config: {}, stochastic: false, scaled: false })),
+  }, meta: {} });
 });
 
 describe("RunsPage user actions", () => {
@@ -107,6 +115,8 @@ describe("Models-page launcher", () => {
     setupWf(true);
     wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
     const user = userEvent.setup();
+    // 默认仅勾选 Dummy 参考基线；再勾选一个 peer 策略后启动
+    await user.click(await screen.findByTestId("modeling-strategy-LINEAR_REGRESSION"));
     const btn = await screen.findByTestId("launcher-start-run");
     await waitFor(() => expect(btn).toBeEnabled());
     await user.click(btn);
@@ -115,14 +125,21 @@ describe("Models-page launcher", () => {
       target: "soc_reference_percent", features: { selected_features: ["SWA"] },
       fold_index: 1,
       modeling: expect.objectContaining({
-        strategies: expect.arrayContaining([
-          "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS"]),
+        strategies: ["DUMMY_MEAN", "LINEAR_REGRESSION"],
         random_state: 42,
       }),
       feature_analysis: expect.objectContaining({
         analysis_mode: "TRAIN_ONLY_ML_SAFE", candidate_features: ["SWA"],
       }),
     })));
+  });
+
+  it("renders registry strategies as selectable checkboxes with Dummy preselected", async () => {
+    setupWf(true);
+    wrap(<ModelsWorkbench />, route, "/experiments/:batteryId/:experimentId/models");
+    const mlp = await screen.findByTestId("modeling-strategy-MLP_REGRESSOR");
+    expect(mlp).not.toBeChecked();
+    expect(await screen.findByTestId("modeling-strategy-DUMMY_MEAN")).toBeChecked();
   });
 
   it("offers in-page split creation when split is missing", async () => {

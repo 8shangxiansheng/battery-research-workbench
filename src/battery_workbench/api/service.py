@@ -130,6 +130,32 @@ class WorkbenchService:
     def version(self) -> dict[str, Any]:
         return {"version": "0.1.0", "api_version": "v1"}
 
+    def modeling_strategies(self) -> dict[str, Any]:
+        """Canonical fixed-baseline registry snapshot for UI model selection.
+
+        The UI renders checkboxes from this endpoint instead of a hardcoded
+        list, so newly registered STRATEGIES appear without frontend changes.
+        """
+        from battery_workbench.modeling import engine as modeling_engine
+        from battery_workbench.modeling.schemas import (
+            FIXED_CONFIGS,
+            STOCHASTIC_STRATEGIES,
+            STRATEGIES,
+        )
+
+        return {
+            "strategies": [
+                {
+                    "strategy": strategy,
+                    "fixed_config": dict(FIXED_CONFIGS[strategy]),
+                    "stochastic": strategy in STOCHASTIC_STRATEGIES,
+                    "scaled": strategy in modeling_engine.SCALED_STRATEGIES,
+                }
+                for strategy in STRATEGIES
+            ],
+            "policy": "FIXED_BASELINE_PROTOCOL",
+        }
+
     def health(self) -> dict[str, Any]:
         return {"status": "ok"}
 

@@ -124,3 +124,19 @@ def test_response_envelope(client: TestClient) -> None:
     body = resp.json()
     assert "data" in body
     assert "error" not in body or body["error"] is None
+
+
+def test_modeling_strategies_mirrors_registry(client: TestClient) -> None:
+    """GET /modeling/strategies exposes the canonical STRATEGIES registry."""
+    from battery_workbench.modeling.schemas import STRATEGIES
+
+    resp = client.get("/api/v1/modeling/strategies")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["policy"] == "FIXED_BASELINE_PROTOCOL"
+    assert [s["strategy"] for s in data["strategies"]] == list(STRATEGIES)
+    assert "MLP_REGRESSOR" in [s["strategy"] for s in data["strategies"]]
+    mlp = next(s for s in data["strategies"] if s["strategy"] == "MLP_REGRESSOR")
+    assert mlp["stochastic"] is True
+    assert mlp["scaled"] is True
+    assert mlp["fixed_config"]["solver"] == "lbfgs"

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { getCoreRowModel, getSortedRowModel, useReactTable, flexRender, type ColumnDef, type SortingState } from "@tanstack/react-table";
-import { client, type ResultRecord, type SourceDatasetRecord } from "../../api/client";
+import { client, type ModelingStrategy, type ResultRecord, type SourceDatasetRecord } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from "../../components/ui/table";
@@ -29,6 +29,7 @@ export function modelingRunRequest(
   batteryId: string,
   experimentId: string,
   selectedFeatures: string[],
+  strategies: string[],
 ) {
   return {
     profile: "FULL_PRE_MODEL",
@@ -55,7 +56,7 @@ export function modelingRunRequest(
         policy: { min_abs_spearman: 0.15, max_missing_fraction: 0.05 },
       },
     },
-    modeling: { strategies: FIXED_BASELINE_SUITE, random_state: 42 },
+    modeling: { strategies, random_state: 42 },
   };
 }
 
@@ -239,12 +240,13 @@ function CohortBuilderPanel() {
  * progress and user actions (CONFIRM_FEATURE_SELECTION etc.) are handled
  * on the Runs page — this panel never trains or rebuilds implicitly.
  */
-/** The predeclared fixed baseline suite (mirrors modeling/schemas.STRATEGIES
- *  order; Dummy stays first — no tuning, no additions at runtime). */
-const FIXED_BASELINE_SUITE = [
-  "DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE",
+/** Fallback order when /modeling/strategies is unreachable: the canonical
+ *  registry order, Dummy first. The UI prefers the endpoint; this constant
+ *  only keeps the launcher usable offline and must mirror STRATEGIES. */
+const FALLBACK_BASELINE_SUITE = [
+  "DUMMY_MEAN", "LINEAR_REGRESSION", "RIDGE", "ELASTIC_NET", "HUBER_REGRESSION",
   "SUPPORT_VECTOR_REGRESSION", "GAUSSIAN_PROCESS_REGRESSION", "K_NEAREST_NEIGHBORS",
-  "RANDOM_FOREST", "GRADIENT_BOOSTING",
+  "RANDOM_FOREST", "GRADIENT_BOOSTING", "MLP_REGRESSOR",
 ];
 
 function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; experimentId: string; wf: ReturnType<typeof useWorkflowContext>["data"] }) {
@@ -262,7 +264,15 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] }); },
   });
   const selectedFeatures = ((steps.DATASET?.committed as { selected_features?: string[] } | undefined)?.selected_features ?? []);
-  const request = modelingRunRequest(batteryId, experimentId, selectedFeatures);
+  const strategiesQ = useQuery({ queryKey: ["modeling-strategies"], queryFn: () => client.listModelingStrategies() });
+  const available: ModelingStrategy[] = (strategiesQ.data?.data.strategies ?? []).length > 0
+    ? strategiesQ.data!.data.strategies
+    : FALLBACK_BASELINE_SUITE.map((strategy) => ({ strategy, fixed_config: {}, stochastic: false, scaled: false }));
+  const [selectedStrategies, setSelectedStrategies] = useState<string[]>(["DUMMY_MEAN"]);
+  const effectiveStrategies = selectedStrategies.filter((s) => available.some((a) => a.strategy === s));
+  const toggleStrategy = (strategy: string) => setSelectedStrategies((prev) =>
+    prev.includes(strategy) ? prev.filter((s) => s !== strategy) : [...prev, strategy]);
+  const request = modelingRunRequest(batteryId, experimentId, selectedFeatures, effectiveStrategies);
   const dryRun = useMutation({ mutationFn: () => client.dryRun(request) });
   const startRun = useMutation({
     mutationFn: () => client.startRun(request),
@@ -280,10 +290,20 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
       onClick={() => createSplit.mutate()}>{createSplit.isPending ? "创建中…" : "创建分组划分 / Create grouped split"}</Button></p>}
     {waitingRun && <p className="notice text-sm mt-2" role="status" data-testid="launcher-waiting-run">
       有一个运行正在等待你的确认（特征选择/参数）：<Link className="underline" to="/runs">前往运行页处理</Link></p>}
+    <fieldset className="mt-4">
+      <legend className="text-sm font-medium">建模策略（固定基线协议 · 无调参）</legend>
+      {strategiesQ.isLoading && <p className="text-sm muted mt-2" role="status">正在读取可用策略…</p>}
+      {strategiesQ.error && <p className="text-sm text-[#9b782e] mt-2" role="alert">策略目录读取失败，已使用内置顺序。<button className="underline ml-1" onClick={() => void strategiesQ.refetch()}>重试</button></p>}
+      <div className="flex flex-wrap gap-3 mt-2">{available.map((item) => <label key={item.strategy} className="inline-flex items-center gap-2 text-sm">
+        <input type="checkbox" data-testid={`modeling-strategy-${item.strategy}`} checked={selectedStrategies.includes(item.strategy)} onChange={() => toggleStrategy(item.strategy)} />
+        {displayName(item.strategy)}{item.strategy === "DUMMY_MEAN" && <span className="muted">（参考基线）</span>}
+      </label>)}</div>
+      {effectiveStrategies.length === 0 && <p className="text-sm text-[#9b782e] mt-2" role="alert">至少选择 1 个策略才能启动建模运行。</p>}
+    </fieldset>
     <div className="flex gap-3 mt-3 items-center flex-wrap">
       <Button variant="outline" size="sm" data-testid="launcher-dry-run" disabled={!datasetId || !hasSplit || dryRun.isPending}
         onClick={() => dryRun.mutate()}>{dryRun.isPending ? "计划中…" : "查看运行计划（只读 dry-run）"}</Button>
-      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !selectedFeatures.length || !!waitingRun || startRun.isPending}
+      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !selectedFeatures.length || effectiveStrategies.length === 0 || !!waitingRun || startRun.isPending}
         onClick={() => startRun.mutate()}>{startRun.isPending ? "启动中…" : "启动建模运行 / Start run"}</Button>
       {startRun.isSuccess && <span className="text-sm">已启动：<code>{String((startRun.data as { data?: { run_id?: string } })?.data?.run_id ?? "").slice(0, 28)}</code> · <Link className="underline" to="/runs">运行页跟踪与确认</Link></span>}
       {startRun.error && <span className="text-sm text-[#9b782e]" data-testid="launcher-start-error">启动失败：{(startRun.error as Error).message?.slice(0, 120)}</span>}

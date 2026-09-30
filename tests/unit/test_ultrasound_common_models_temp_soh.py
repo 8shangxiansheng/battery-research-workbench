@@ -121,6 +121,52 @@ def test_new_strategies_beat_dummy_on_monotone_synthetic() -> None:
         assert float(np.mean(np.abs(preds - truth))) < float(np.mean(np.abs(dummy - truth)))
 
 
+def test_mlp_regressor_registered_with_fixed_config() -> None:
+    """MLP-M1: MLP_REGRESSOR 在白名单且有冻结配置 (sklearn-only, 无调参)."""
+    from battery_workbench.modeling.schemas import FIXED_CONFIGS, STRATEGIES
+
+    assert "MLP_REGRESSOR" in STRATEGIES
+    cfg = FIXED_CONFIGS["MLP_REGRESSOR"]
+    assert cfg["solver"] == "lbfgs"
+    assert cfg["hidden_layer_sizes"] == [50]
+    assert cfg["max_iter"] == 500
+
+
+def test_mlp_regressor_is_stochastic_requires_random_state() -> None:
+    """MLP-M1: 随机初始化须进 STOCHASTIC, 透传 spec.random_state."""
+    from battery_workbench.modeling.schemas import STOCHASTIC_STRATEGIES
+
+    assert "MLP_REGRESSOR" in STOCHASTIC_STRATEGIES
+    spec = _spec("MLP_REGRESSOR")
+    assert spec.random_state == 42
+
+
+def test_mlp_regressor_fit_predict_deterministic_scaled() -> None:
+    """MLP-M2: lbfgs + 固定 random_state 确定性, 走 StandardScaler pipeline."""
+    from battery_workbench.modeling.engine import SCALED_STRATEGIES, fit_model, predict
+
+    assert "MLP_REGRESSOR" in SCALED_STRATEGIES
+    fitted = fit_model(_view(), _spec("MLP_REGRESSOR"))
+    assert fitted.pipeline is not None
+    p1 = predict(fitted, _view().x_held_out)
+    p2 = predict(fit_model(_view(), _spec("MLP_REGRESSOR")), _view().x_held_out)
+    np.testing.assert_array_equal(p1, p2)
+    assert np.all(np.isfinite(p1))
+
+
+def test_mlp_regressor_beats_dummy_on_monotone_synthetic() -> None:
+    """MLP-M3: 单调合成数据 held-out MAE 优于 Dummy (sanity, 非性能声明)."""
+    from battery_workbench.modeling.engine import fit_model, predict
+
+    view = _view()
+    preds = predict(fit_model(view, _spec("MLP_REGRESSOR")), view.x_held_out)
+    frame = _frame()
+    truth = frame.loc[list(view.held_out_measurement_event_ids),
+                      "soc_reference_percent"].to_numpy(dtype=float)
+    dummy = float(np.mean(view.y_train.to_numpy()))
+    assert float(np.mean(np.abs(preds - truth))) < float(np.mean(np.abs(dummy - truth)))
+
+
 def test_unknown_strategy_still_rejected() -> None:
     """M4: 未知策略仍被拒绝."""
     import pytest

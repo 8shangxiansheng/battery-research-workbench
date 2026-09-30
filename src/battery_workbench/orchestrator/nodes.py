@@ -1927,23 +1927,16 @@ class SocModelingNode(WorkflowNode):
             write_model_comparison,
             write_model_payload,
         )
-        from battery_workbench.modeling.schemas import ModelSpec
+        from battery_workbench.modeling.schemas import STRATEGIES, ModelSpec
         from battery_workbench.modeling.view import build_fold_training_view
 
         modeling_cfg = dict(plan.modeling or {})
         strategies = list(
             modeling_cfg.get(
                 "strategies",
-                [
-                    "DUMMY_MEAN",
-                    "LINEAR_REGRESSION",
-                    "RIDGE",
-                    "SUPPORT_VECTOR_REGRESSION",
-                    "GAUSSIAN_PROCESS_REGRESSION",
-                    "K_NEAREST_NEIGHBORS",
-                    "RANDOM_FOREST",
-                    "GRADIENT_BOOSTING",
-                ],
+                # Derive from the canonical registry so new fixed baselines
+                # (ELASTIC_NET/HUBER/MLP/...) are included by default.
+                list(STRATEGIES),
             )
         )
         random_state = modeling_cfg.get("random_state", 42)

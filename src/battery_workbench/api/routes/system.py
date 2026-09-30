@@ -24,3 +24,8 @@ def capabilities(request: Request) -> dict[str, Any]:
 @router.get("/version")
 def version(request: Request) -> dict[str, Any]:
     return {"data": get_service(request).version(), "meta": {}}
+
+
+@router.get("/modeling/strategies")
+def modeling_strategies(request: Request) -> dict[str, Any]:
+    return {"data": get_service(request).modeling_strategies(), "meta": {}}

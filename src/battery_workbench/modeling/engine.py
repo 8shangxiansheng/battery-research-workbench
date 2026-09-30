@@ -19,6 +19,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 from sklearn.linear_model import ElasticNet, HuberRegressor, LinearRegression, Ridge
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
@@ -35,6 +36,7 @@ SCALED_STRATEGIES = {
     "SUPPORT_VECTOR_REGRESSION",
     "GAUSSIAN_PROCESS_REGRESSION",
     "K_NEAREST_NEIGHBORS",
+    "MLP_REGRESSOR",
 }
 
 
@@ -123,6 +125,20 @@ def fit_model(view: FoldTrainingView, spec: ModelSpec) -> FittedModel:
             random_state=spec.random_state,
         )
         est.fit(x, y)
+    elif spec.strategy == "MLP_REGRESSOR":
+        hidden = spec.config.get("hidden_layer_sizes", [50])
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            # lbfgs is deterministic given fixed random_state (weight init)
+            ("regressor", MLPRegressor(
+                hidden_layer_sizes=tuple(hidden),
+                solver="lbfgs",
+                max_iter=spec.config.get("max_iter", 500),
+                random_state=spec.random_state,
+            )),
+        ])
+        pipeline.fit(x, y)
+        est = pipeline.named_steps["regressor"]
     else:  # pragma: no cover - schema rejects unknown strategies
         raise ValueError(f"unknown strategy: {spec.strategy}")
 

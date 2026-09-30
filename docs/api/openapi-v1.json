@@ -4585,6 +4585,29 @@
         ]
       }
     },
+    "/api/v1/modeling/strategies": {
+      "get": {
+        "operationId": "modeling_strategies_api_v1_modeling_strategies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Modeling Strategies Api V1 Modeling Strategies Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Modeling Strategies",
+        "tags": [
+          "system"
+        ]
+      }
+    },
     "/api/v1/models/baseline-runs": {
       "post": {
         "operationId": "create_baseline_model_api_v1_models_baseline_runs_post",

@@ -67,6 +67,18 @@ export interface Capabilities {
   experiment_readiness: Record<string, string>;
 }
 
+export interface ModelingStrategy {
+  strategy: string;
+  fixed_config: Record<string, unknown>;
+  stochastic: boolean;
+  scaled: boolean;
+}
+
+export interface ModelingStrategies {
+  strategies: ModelingStrategy[];
+  policy: string;
+}
+
 export interface ExperimentSummary {
   battery_id: string;
   experiment_id: string;
@@ -1004,6 +1016,7 @@ export const client = {
   health: () => request<SystemStatus>("/health"),
   capabilities: () => request<Capabilities>("/capabilities"),
   version: () => request<{ version: string; api_version: string }>("/version"),
+  listModelingStrategies: () => request<ModelingStrategies>("/modeling/strategies"),
 
   // experiments
   listExperiments: (limit = 50, cursor?: string) =>

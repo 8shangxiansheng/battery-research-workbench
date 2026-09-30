@@ -26,8 +26,9 @@ STRATEGIES = (
     "K_NEAREST_NEIGHBORS",
     "RANDOM_FOREST",
     "GRADIENT_BOOSTING",
+    "MLP_REGRESSOR",
 )
-STOCHASTIC_STRATEGIES = {"RANDOM_FOREST", "GRADIENT_BOOSTING"}
+STOCHASTIC_STRATEGIES = {"RANDOM_FOREST", "GRADIENT_BOOSTING", "MLP_REGRESSOR"}
 
 # PREDECLARED_FIXED_BASELINE_CONFIG (no tuning; frozen for this task pack).
 # GPR/SVR/kNN hyperparameters follow the small-sample conventions reported in
@@ -48,6 +49,13 @@ FIXED_CONFIGS: dict[str, dict[str, Any]] = {
     "K_NEAREST_NEIGHBORS": {"n_neighbors": 10, "weights": "distance"},
     "RANDOM_FOREST": {"n_estimators": 300, "max_depth": None},
     "GRADIENT_BOOSTING": {"n_estimators": 200, "learning_rate": 0.05},
+    # MLP: lbfgs solver suits small samples and is deterministic given a fixed
+    # random_state (weight init); single hidden layer of 50, fixed max_iter.
+    "MLP_REGRESSOR": {
+        "hidden_layer_sizes": [50],
+        "solver": "lbfgs",
+        "max_iter": 500,
+    },
 }
 
 
