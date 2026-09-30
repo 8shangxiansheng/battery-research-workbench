@@ -19,6 +19,8 @@ STRATEGIES = (
     "DUMMY_MEAN",
     "LINEAR_REGRESSION",
     "RIDGE",
+    "ELASTIC_NET",
+    "HUBER_REGRESSION",
     "SUPPORT_VECTOR_REGRESSION",
     "GAUSSIAN_PROCESS_REGRESSION",
     "K_NEAREST_NEIGHBORS",
@@ -35,6 +37,8 @@ FIXED_CONFIGS: dict[str, dict[str, Any]] = {
     "DUMMY_MEAN": {"strategy": "mean"},
     "LINEAR_REGRESSION": {},
     "RIDGE": {"alpha": 1.0},
+    "ELASTIC_NET": {"alpha": 1.0, "l1_ratio": 0.5},
+    "HUBER_REGRESSION": {"epsilon": 1.35, "alpha": 0.0001},
     "SUPPORT_VECTOR_REGRESSION": {"kernel": "rbf", "C": 1.0, "epsilon": 0.1},
     "GAUSSIAN_PROCESS_REGRESSION": {
         "kernel": "1.0*RBF(length_scale=1.0) + WhiteKernel(noise_level=1.0)",

@@ -17,7 +17,7 @@ from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import ElasticNet, HuberRegressor, LinearRegression, Ridge
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -30,6 +30,8 @@ MODEL_INPUT_NOT_COMPLETE = "MODEL_INPUT_NOT_COMPLETE"
 SCALED_STRATEGIES = {
     "LINEAR_REGRESSION",
     "RIDGE",
+    "ELASTIC_NET",
+    "HUBER_REGRESSION",
     "SUPPORT_VECTOR_REGRESSION",
     "GAUSSIAN_PROCESS_REGRESSION",
     "K_NEAREST_NEIGHBORS",
@@ -61,12 +63,21 @@ def fit_model(view: FoldTrainingView, spec: ModelSpec) -> FittedModel:
         est = DummyRegressor(strategy="mean")
         pipeline = None
         est.fit(x, y)
-    elif spec.strategy in ("LINEAR_REGRESSION", "RIDGE"):
-        inner = (
-            LinearRegression()
-            if spec.strategy == "LINEAR_REGRESSION"
-            else Ridge(alpha=spec.config.get("alpha", 1.0))
-        )
+    elif spec.strategy in ("LINEAR_REGRESSION", "RIDGE", "ELASTIC_NET", "HUBER_REGRESSION"):
+        if spec.strategy == "LINEAR_REGRESSION":
+            inner = LinearRegression()
+        elif spec.strategy == "RIDGE":
+            inner = Ridge(alpha=spec.config.get("alpha", 1.0))
+        elif spec.strategy == "ELASTIC_NET":
+            inner = ElasticNet(
+                alpha=spec.config.get("alpha", 1.0),
+                l1_ratio=spec.config.get("l1_ratio", 0.5),
+            )
+        else:  # HUBER_REGRESSION
+            inner = HuberRegressor(
+                epsilon=spec.config.get("epsilon", 1.35),
+                alpha=spec.config.get("alpha", 0.0001),
+            )
         pipeline = Pipeline([("scaler", StandardScaler()), ("regressor", inner)])
         pipeline.fit(x, y)
         est = pipeline.named_steps["regressor"]

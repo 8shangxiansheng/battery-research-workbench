@@ -112,7 +112,7 @@ data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.tx
 
 ### 4.1 Target：选择研究目标
 
-在“特征分析”中选择目标，例如 Reference SOC。查看目标来源、覆盖率、范围和限制。当前 CELL_001 的 Reference SOC 是回顾性分段归一化参考标签，不是真实 SOC。Temperature 目前无可用通道；SOH 只有两个独立状态，不能把逐帧重复值当成大量独立样本。
+在“特征分析”中选择目标，例如 Reference SOC。查看目标来源、覆盖率、范围和限制。当前 CELL_001 的 Reference SOC 是回顾性分段归一化参考标签，不是真实 SOC。Temperature 目标走数据驱动门：有温度通道且极差 ≥ 2°C 时放行，否则仍拒收并给出原因；SOH 只有两个独立状态，不能把逐帧重复值当成大量独立样本。
 
 ### 4.2 Alignment：检查同步
 
@@ -168,7 +168,7 @@ ML-safe Review 会依据分组 split 处理训练集与 held-out 数据。held-o
 - 样例只有 CELL_001 单电池、EXP_001 两个循环；不能据此声称跨电池泛化。
 - 时间基准仍可能为 provisional，需在 Alignment 页面核实当前状态。
 - Reference SOC 是回顾性参考标签，不等于独立测得的真实 SOC。
-- 当前样例缺温度通道；SOH 独立状态数不足以支撑稳健的逐帧建模结论。
+- 当前样例缺温度通道（温度目标需有通道且极差 ≥ 2°C 才放行）；SOH 独立状态数不足以支撑稳健的逐帧建模结论。
 - Dummy baseline 未被模型超过时，应如实报告；固定基线比较不等于超参数调优。
 - 特征相关、Ranking 和模型误差都受样本数量、分组结构、同步质量与标签定义限制。
 

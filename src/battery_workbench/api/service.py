@@ -41,6 +41,29 @@ _SPLIT_ID = "SPLIT::062cf007d21578a11ab2d728"
 
 _TOF_REASON = "sampling rate/time-zero and arrival detector are not validated"
 _SOC_REASON = "retrospective protocol-anchored reference, not true SOC"
+TEMPERATURE_VARIATION_MIN_C = 2.0
+
+
+def temperature_target_gate(
+    *, valid_count: int, temp_range_c: float | None
+) -> tuple[bool, str]:
+    """Data-driven temperature target gate (pure; no artifact access).
+
+    Returns (allowed, reason). The blanket refusal is replaced by a
+    conditional gate: a temperature channel with range >= 2C passes,
+    otherwise the dataset target is still refused with a stated reason.
+    """
+    if valid_count <= 0 or temp_range_c is None:
+        return False, "本实验无温度通道，无可用目标"
+    if temp_range_c < TEMPERATURE_VARIATION_MIN_C:
+        return (
+            False,
+            (
+                f"温度极差 {temp_range_c:.2f}°C < {TEMPERATURE_VARIATION_MIN_C:.1f}°C，"
+                "不足以支撑逐帧建模结论"
+            ),
+        )
+    return True, ""
 
 
 def _cohort_evaluation_artifacts_current(processed_root: Path, manifest: dict[str, Any]) -> bool:
@@ -973,6 +996,35 @@ class WorkbenchService:
                     return {"analysis_id": analysis_id, "status": "AVAILABLE"}
         raise APIError(ErrorCode.NOT_FOUND, "feature analysis not found")
 
+    def _temperature_target_status(
+        self, battery_id: str, experiment_id: str
+    ) -> tuple[bool, str]:
+        """Measure the canonical temperature channel for the dataset gate."""
+        import pandas as pd
+
+        events_path = (
+            self.processed_root
+            / "multimodal"
+            / battery_id
+            / experiment_id
+            / "measurement_events.parquet"
+        )
+        if not events_path.is_file():
+            return temperature_target_gate(valid_count=0, temp_range_c=None)
+        try:
+            frame = pd.read_parquet(events_path)
+        except OSError:
+            return temperature_target_gate(valid_count=0, temp_range_c=None)
+        if "temperature_c" not in frame.columns:
+            return temperature_target_gate(valid_count=0, temp_range_c=None)
+        series = frame["temperature_c"].dropna()
+        if series.empty:
+            return temperature_target_gate(valid_count=0, temp_range_c=None)
+        return temperature_target_gate(
+            valid_count=int(series.size),
+            temp_range_c=float(series.max() - series.min()),
+        )
+
     # ---------- datasets (deterministic, reuse-only) ----------
     def create_dataset(self, payload: dict[str, Any]) -> dict[str, Any]:
         if "path" in payload:
@@ -993,14 +1045,29 @@ class WorkbenchService:
             "soc_reference_percent",
             "reference_soc_percent",
         ):
-            reason = {
-                "soh_capacity_reference_percent": "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",
-                "temperature_c": "本实验无温度通道，无可用目标",
-            }.get(str(target_name), "当前流程仅物化 Reference SOC 数据集族")
-            raise APIError(
-                ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
-                f"dataset target not ready: {target_name} — {reason}",
-            )
+            if str(target_name) == "temperature_c":
+                # Data-driven gate (replaces the blanket refusal): a
+                # temperature channel with range >= 2C passes; otherwise the
+                # target is still refused with a stated reason.
+                allowed, temp_reason = self._temperature_target_status(
+                    battery_id, experiment_id
+                )
+                if not allowed:
+                    raise APIError(
+                        ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                        f"dataset target not ready: {target_name} — {temp_reason}",
+                    )
+                # Passed the gate: materialize under its own family, never
+                # under "SOC" (mislabeled artifact risk).
+                family = "TEMPERATURE"
+            else:
+                reason = {
+                    "soh_capacity_reference_percent": "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",
+                }.get(str(target_name), "当前流程仅物化 Reference SOC 数据集族")
+                raise APIError(
+                    ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                    f"dataset target not ready: {target_name} — {reason}",
+                )
         family_dir = self.processed_root / "datasets" / battery_id / experiment_id / family
         # reuse canonical artifact when the request is a minimal resolve request
         if family_dir.is_dir() and (
