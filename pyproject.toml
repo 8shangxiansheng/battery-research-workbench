@@ -23,6 +23,7 @@ dependencies = [
   "uvicorn>=0.30",
   "pyyaml>=6.0",
   "matplotlib>=3.9",
+  "openai>=1.40",
 ]
 
 [project.optional-dependencies]

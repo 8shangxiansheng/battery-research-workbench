@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from battery_workbench.agent_assistant.intents import (
@@ -55,28 +56,82 @@ _KNOWN_FEATURES = frozenset(
 )
 
 
+_LLM_ENV_NAMES = frozenset({"OPENAI_API_KEY", "OPENAI_BASE_URL", "BRW_LLM_MODEL"})
+
+
+def _load_llm_env(path: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """只读解析仓库根 ``.env`` 的 LLM 三变量，缺文件返回 ``{}``.
+
+    极简 KEY=VALUE 解析：跳过空行/``#`` 注释/无 ``=`` 行，剥离前后空格与
+    单双引号；只认 ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` /
+    ``BRW_LLM_MODEL``，其它变量一律拒绝（``.env`` 是全仓库共享空间）。
+    永不新建或写入文件，无新依赖。默认读取当前工作目录下的 ``.env``
+    （本地从仓库根启动服务、容器 WORKDIR 挂载 ``.env`` 均覆盖）。
+    """
+    target = Path(path) if path is not None else Path.cwd() / ".env"
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    data: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if name not in _LLM_ENV_NAMES:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1].strip()
+        data[name] = value
+    return data
+
+
+def _llm_env_snapshot() -> dict[str, str]:
+    """合并显式环境变量与 ``.env`` 文件值：显式环境优先.
+
+    空字符串视为未设置（回退文件值，兼容 compose ``${VAR:-}`` 缺省透传
+    的空串）；文件中的空值同样丢弃。每次调用重新读取文件，本地改
+    ``.env`` 无需重启进程（Docker 仍需重建容器，见 USER_GUIDE）。
+    """
+    file_values = _load_llm_env()
+    snap: dict[str, str] = {}
+    for name in _LLM_ENV_NAMES:
+        explicit = os.environ.get(name)
+        if explicit:
+            snap[name] = explicit
+        elif file_values.get(name):
+            snap[name] = file_values[name]
+    return snap
+
+
 def _llm_available() -> bool:
-    """仅当显式配置 key 且未被测试 monkeypatch 关闭时才认为可用."""
-    return bool(os.environ.get("OPENAI_API_KEY"))
+    """仅当快照中有 key（显式环境或 ``.env`` 文件）时才认为可用."""
+    return bool(_llm_env_snapshot().get("OPENAI_API_KEY"))
 
 
 def _call_llm(message: str, *, mode: str = "EXPLORATORY") -> dict[str, Any]:
     """调用外部 LLM 做意图映射，返回原始 dict（调用方负责枚举校验）.
 
-    默认实现走 OpenAI Chat Completions（JSON 模式）；无依赖/无 key/
-    调用失败一律抛异常，由 ``understand`` 捕获并确定性回退。测试通过
-    monkeypatch 替换本函数注入各种 LLM 输出。
+    默认实现走 OpenAI Chat Completions（JSON 模式，兼容 DeepSeek 等
+    OpenAI 兼容网关：``OPENAI_BASE_URL`` 透传给 client，未配置时为
+    None 走官方默认地址）；无依赖/无 key/调用失败一律抛异常，由
+    ``understand`` 捕获并确定性回退。测试通过 monkeypatch 替换本函数
+    注入各种 LLM 输出。
     """
     try:
         from openai import OpenAI  # type: ignore[import-not-found]
     except Exception as exc:
         raise RuntimeError("openai dependency unavailable") from exc
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    snap = _llm_env_snapshot()
+    api_key = snap.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not configured")
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=snap.get("OPENAI_BASE_URL") or None)
     schema_hint = (
         "Return STRICT JSON only with keys: intent (one of "
         + ", ".join(sorted(_ALLOWED_INTENTS))
@@ -86,7 +141,7 @@ def _call_llm(message: str, *, mode: str = "EXPLORATORY") -> dict[str, Any]:
         "Do not output any numeric scientific values."
     )
     resp = client.chat.completions.create(
-        model=os.environ.get("BRW_LLM_MODEL", "gpt-4o-mini"),
+        model=snap.get("BRW_LLM_MODEL") or "gpt-4o-mini",
         messages=[
             {"role": "system", "content": schema_hint},
             {"role": "user", "content": message},

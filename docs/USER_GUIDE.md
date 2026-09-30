@@ -52,6 +52,27 @@ npm run dev
 
 打开 Vite 输出的本地地址（通常是 `http://localhost:5173`）。开发服务器会将 `/api/v1` 请求代理到本机 API。也可运行 `npm run build` 构建前端。
 
+### 模型接入（Assistant 意图理解，可选）
+
+Assistant 的 LLM 只做意图理解（把一句话映射为意图/目标/特征枚举），不做任何科学计算；不配 key 时自动用关键词规则，功能不受影响。支持任何 OpenAI 兼容接口（DeepSeek / OpenAI / 通义 / 自建网关）。
+
+```bash
+cp .env.example .env   # .env 含密钥，已被 git 忽略，切勿提交
+```
+
+然后用文本编辑器打开 `.env`，一次只启用一组（以 DeepSeek 为例）：
+
+```bash
+OPENAI_API_KEY=sk-你的key
+OPENAI_BASE_URL=https://api.deepseek.com
+BRW_LLM_MODEL=deepseek-chat
+```
+
+其它供应商模板见 `.env.example` 中的 B/C/D 组注释。改完 `.env` 后：
+
+- Docker 部署：`docker compose up --build -d` 重建容器生效（compose 读取 `.env` 做变量插值）。
+- 本地开发：重启 API 进程即可（backend 会兜底读取仓库根 `.env`，无需 `export`）。
+
 ## 2. 了解实验身份与文件组织
 
 工作台用 **Battery → Experiment → DataAsset** 标识数据，不以文件名或 Cycle 作为数据身份。一个实验可以有多个电学 XLSX 和超声 TXT；导入时请确认电池与实验身份、文件类型和科学元数据。

@@ -12,6 +12,13 @@ services:
       - ./data/processed:/srv/brw/data/processed
       - ./data/artifacts:/srv/brw/data/artifacts
     user: "${BRW_UID:-10001}:${BRW_GID:-10001}"
+    # LLM 模型接入：compose 自动读取仓库根 .env 做变量插值
+    # （cp .env.example .env 后一次启用一组供应商）。容器内 backend
+    # 同样会兜底读取挂载目录的 .env（本地 dev 无需 export）——见 USER_GUIDE。
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - BRW_LLM_MODEL=${BRW_LLM_MODEL:-gpt-4o-mini}
     restart: unless-stopped
 
   # dev-only: the parser/SQL layer can target this; not required to serve the UI
