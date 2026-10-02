@@ -99,6 +99,7 @@ export function FeatureLabelRowDrawer({ row, targetId, features, rawAsset, asset
         <DialogDescription>frame → MeasurementEvent → electrical locator → sync → Target → feature producer</DialogDescription>
       </DialogHeader>
       {row && <dl className="grid grid-cols-[180px_1fr] gap-x-4 gap-y-1.5 text-sm" data-testid="feature-label-row-provenance">
+        <dt className="muted">Ultrasound asset / 超声资产</dt><dd className="text-xs">{row.ultrasound_asset_id ?? "—"}</dd>
         <dt className="muted">Ultrasound frame / 超声帧</dt><dd className="tabular-nums">{row.frame_index_raw ?? "—"}</dd>
         <dt className="muted">MeasurementEvent</dt><dd className="text-xs"><code>{row.measurement_event_id}</code></dd>
         <dt className="muted">Electrical locator</dt><dd className="text-xs font-mono">{row.electrical_record_locator ?? "null（ambiguous — 未选择）"}</dd>
@@ -254,7 +255,7 @@ export function FeatureLabelTablePreview({ batteryId, experimentId, targetId, fe
           <TableBody>
             {pageRows.map(r => <TableRow key={r.measurement_event_id} data-testid={`fl-row-${r.measurement_event_id}`}
               className="cursor-pointer" onClick={() => setOpenRow(r)}>
-              <TableCell className="text-xs">{r.frame_index_raw}</TableCell>
+              <TableCell className="text-xs">{r.frame_index_raw} <span className="muted">· {r.ultrasound_asset_id?.replace(/^AS::/, "").slice(0, 8) ?? "—"}</span></TableCell>
               {d.features.map(f => <TableCell key={f} className="tabular-nums">{numberText(r.values[f], 2)}</TableCell>)}
               <TableCell className="tabular-nums font-medium">
                 {r.y_redacted
@@ -286,7 +287,7 @@ export function FeatureLabelTablePreview({ batteryId, experimentId, targetId, fe
             <th className="text-left muted">Electrical identity</th><th className="text-left muted">y</th><th className="text-right muted">候选数</th></tr></thead>
           <tbody>{d.ambiguous_rows.map(a => <tr key={a.measurement_event_id} data-testid={`ambiguous-row-${a.measurement_event_id}`}>
             <td className="font-mono">{a.measurement_event_id.split("::").slice(-2).join("::")}</td>
-            <td>{a.frame_index_raw}</td><td>{STATE_ZH[a.state] ?? a.state}</td>
+            <td>{a.frame_index_raw} · {a.ultrasound_asset_id?.replace(/^AS::/, "").slice(0, 8) ?? "—"}</td><td>{STATE_ZH[a.state] ?? a.state}</td>
             <td className="muted">null（未选择）</td><td className="muted">不可用</td>
             <td className="text-right tabular-nums">{numberText(a.candidate_count, 0)}</td>
           </tr>)}</tbody>

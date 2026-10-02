@@ -153,6 +153,12 @@ ML-safe Review 会依据分组 split 处理训练集与 held-out 数据。held-o
 
 生成报告前确认报告引用的是当前 dataset、split 和模型评估，而不是旧版本 artifact。报告中的数值应与其证据来源和数据限制一起解释。
 
+### 4.8 跨电池 Cohort 与 LOBO
+
+Models 页面另有“建立跨电池队列”和“Battery-level LOBO”入口。只有在至少准备好 2 块不同电池、且每块都有 manifest-backed SOC 数据集后，才有条件建立队列。还必须核对参考标签的公式/时间语义、特征定义版本和单位；系统不做单位换算。创建队列时需填写 harmonization policy 和 evidence references，服务端会再校验来源和 checksum。来源变化后旧队列会过期，应基于最新 source datasets 新建版本。
+
+队列就绪后可运行固定基线 LOBO：每折留出一块电池，主要指标按电池等权汇总；pooled-row 数值只是诊断项。该流程不做超参数调优。当前仓库的真实样例只有 CELL_001 一块电池，因此该入口会显示阻断状态；登记了多块电池或通过合成测试，都不能代替第二块真实兼容电池的证据。
+
 ## 5. 状态、过期结果与常见问题
 
 - **BLOCKED**：前置条件不满足；阅读页面给出的原因与 required action，并使用链接返回对应步骤。

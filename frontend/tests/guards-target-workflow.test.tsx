@@ -167,7 +167,7 @@ describe("Feature–Label table guards", () => {
     target_readiness: "READY_FOR_LIMITED_EVALUATION",
     features: ["SWA", "BOTTOM_AMP"],
     rows: [
-      { measurement_event_id: "ME::1", frame_index_raw: 0, cycle: 1, state: "charge", target: 0.5, values: { SWA: 1.1, BOTTOM_AMP: 2.2 }, sync_error_s: 0.03, electrical_asset_id: "E001" },
+      { measurement_event_id: "ME::1", ultrasound_asset_id: "U001", frame_index_raw: 0, cycle: 1, state: "charge", target: 0.5, values: { SWA: 1.1, BOTTOM_AMP: 2.2 }, sync_error_s: 0.03, electrical_asset_id: "E001" },
     ],
     summary: {
       total_frames: 3999, aligned_events: 3999, eligible_rows: 3995, excluded_rows: 4,

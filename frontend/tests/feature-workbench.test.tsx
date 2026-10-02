@@ -151,15 +151,15 @@ describe("PhysicalFeatureCards + ElectricalStatePanel（需求 5/9/10）", () =>
     clientMock.listPhysicalFeatures.mockResolvedValue({ data: {
       battery_id: "C", experiment_id: "E", frame_count: 10,
       features: [
-        { feature_code: "SWA", method: "SURFACE_WAVE_AMPLITUDE_ENVELOPE_MAX_V1", gate_template_id: "SWA_SURFACE_GATE", display_name_en: "Surface Wave Amplitude (SWA)", display_name_zh: "表面波幅值", unit: "a.u.", values: [1.5, 2.5] },
-        { feature_code: "BOTTOM_AMP", method: "M", gate_template_id: "G", display_name_en: "Bottom-wave Amplitude", display_name_zh: "底波幅值", unit: "a.u.", values: [3.5, 4.5] },
-        { feature_code: "TOF_XCORR", method: "M", gate_template_id: "G", display_name_en: "Surface–Bottom XCorr TOF", display_name_zh: "表面波-底波互相关TOF", unit: "samples", values: [450, 451], physical_time_blocked: "fs" },
-        { feature_code: "ATTENUATION", method: "M", gate_template_id: "G", display_name_en: "Attenuation", display_name_zh: "底波衰减", unit: "a.u.", values: [0.5, 0.4], blocked_features: [{ code: "ATTEN_HF_ENERGY", status: "SOURCE_FORMULA_INCOMPLETE" }] },
-        { feature_code: "BPS", method: "M", gate_template_id: "G", display_name_en: "BPS", display_name_zh: "底波相移", unit: "radian", values: [0.1, 0.2] },
+        { feature_code: "SWA", method: "SURFACE_WAVE_AMPLITUDE_ENVELOPE_MAX_V1", gate_template_id: "SWA_SURFACE_GATE", display_name_en: "Surface Wave Amplitude (SWA)", display_name_zh: "表面波幅值", unit: "a.u.", values: [1.5, 2.5], frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }, { ultrasound_asset_id: "U001", frame_index_raw: 1 }] },
+        { feature_code: "BOTTOM_AMP", method: "M", gate_template_id: "G", display_name_en: "Bottom-wave Amplitude", display_name_zh: "底波幅值", unit: "a.u.", values: [3.5, 4.5], frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }, { ultrasound_asset_id: "U001", frame_index_raw: 1 }] },
+        { feature_code: "TOF_XCORR", method: "M", gate_template_id: "G", display_name_en: "Surface–Bottom XCorr TOF", display_name_zh: "表面波-底波互相关TOF", unit: "samples", values: [450, 451], physical_time_blocked: "fs", frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }, { ultrasound_asset_id: "U001", frame_index_raw: 1 }] },
+        { feature_code: "ATTENUATION", method: "M", gate_template_id: "G", display_name_en: "Attenuation", display_name_zh: "底波衰减", unit: "a.u.", values: [0.5, 0.4], blocked_features: [{ code: "ATTEN_HF_ENERGY", status: "SOURCE_FORMULA_INCOMPLETE" }], frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }, { ultrasound_asset_id: "U001", frame_index_raw: 1 }] },
+        { feature_code: "BPS", method: "M", gate_template_id: "G", display_name_en: "BPS", display_name_zh: "底波相移", unit: "radian", values: [0.1, 0.2], frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }, { ultrasound_asset_id: "U001", frame_index_raw: 1 }] },
       ],
     }, meta: {} });
     const { PhysicalFeatureCards } = await import("../src/components/workbench/FrameContextPanels");
-    renderPage(<PhysicalFeatureCards batteryId="C" experimentId="E" frameIndex={1} />);
+    renderPage(<PhysicalFeatureCards batteryId="C" experimentId="E" frameIndex={1} ultrasoundAssetId="U001" />);
     await waitFor(() => {
       expect(screen.getByTestId("phys-SWA")!.textContent).toContain("2.5");
       expect(screen.getByTestId("phys-BOTTOM_AMP")!.textContent).toContain("4.5");

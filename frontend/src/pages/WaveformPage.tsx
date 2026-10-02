@@ -144,14 +144,15 @@ export function WaveformPage() {
     queryKey: ["waveform-frames", batteryId, experimentId],
     queryFn: () => client.listWaveformFrames(batteryId, experimentId),
   });
+  const selectedFrame = frames.data?.data.frames[frameIndex];
   const gates = useQuery({
     queryKey: ["gates", batteryId, experimentId],
     queryFn: () => client.listGates(batteryId, experimentId),
   });
   const preview = useQuery({
-    queryKey: ["waveform-frame", batteryId, experimentId, frameIndex],
-    queryFn: () => client.getWaveformFrame(batteryId, experimentId, frameIndex, 500),
-    enabled: frames.isSuccess,
+    queryKey: ["waveform-frame", batteryId, experimentId, selectedFrame?.ultrasound_asset_id, selectedFrame?.frame_index_raw],
+    queryFn: () => client.getWaveformFrame(batteryId, experimentId, selectedFrame!.frame_index_raw, selectedFrame!.ultrasound_asset_id, 500),
+    enabled: !!selectedFrame,
   });
 
   const commitGate = useMutation({

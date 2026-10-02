@@ -92,3 +92,13 @@ temperature_valid_count=0, has_independent_validation=false`。
 - Models 页增加 cohort LOBO 区域；无包含当前实验且至少 2 块电池的有效 cohort 时明确阻断。合成 cohort API E2E 验证多电池折叠、来源、macro、报告与 stale invalidation；前端以正式 API client 读取/运行。
 - Readiness 不再用全局注册 Battery 数量激活跨电池状态；只接受 source/Parquet checksum 验证通过、且包含当前实验的 cohort。当前 repository 没有第二块真实兼容电池的 processed dataset，因此真实 readiness 仍 `BLOCKED_BY_DATA`；synthetic success 不构成真实泛化证据。
 - 限制：V1 不做单位换算、温度/SOH cohort、嵌套调参；生成了 cohort-specific fixed-baseline 报告，但尚未并入单实验报告列表或 Result Registry。旧 CELL_001 单实验模型/报告 contract 保持原样。
+
+## G. 后续实现状态补记（截至 2026-10-02）
+
+以下状态是对本计划后续提交的补记；A–F 各节保留其原始日期和当时结论，不作为当前功能清单单独引用。
+
+- **Cohort / LOBO**：F 节所述 cohort API 与 Models 页面入口已在当前主线实现。能力已启用，但真实跨电池评估仍要求至少 2 个来源校验通过、定义兼容的独立电池数据集；当前 CELL_001 单电池不满足该门。
+- **Temperature target**：由无条件拒绝调整为数据门控；只有存在实测有效温度且范围至少 2 °C 时才允许目标数据集。当前样例没有有效温度读数，仍不可建模。
+- **SOH**：容量比标签公式和来源 provenance 有离线测试锁定；这不改变数据门。当前只有 2 个 cycle 级独立状态，至少需要 3 个状态才能满足 SOH 建模 readiness。
+- **模型策略**：固定基线扩展为 11 种策略，新增 ElasticNet、Huber Regression 和 MLP Regressor；策略清单由 `GET /api/v1/modeling/strategies` 提供并可在 UI 选择。所有配置仍是预声明固定参数，不是超参数调优。
+- **仍未闭合的数据/方法项**：时间基准验证写入流程、独立 VALIDATION 角色与嵌套分组调参仍未实现；新增模型策略也没有增加真实独立电池或验证数据。

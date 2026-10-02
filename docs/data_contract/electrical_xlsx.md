@@ -62,7 +62,7 @@ Confirmed columns from the real file:
 1. Never alter the workbook.
 2. Preserve original Chinese column names in raw schema metadata.
 3. Map to canonical English field names only in the standardized layer.
-4. Time must be non-decreasing within each DataAsset; duplicate timestamps are allowed and must be reported.
+4. Duplicate timestamps and backward transitions must be reported. The parser preserves workbook row order and source-row provenance without repairing or dropping rows; synchronization builds a timestamp-sorted lookup copy and retains the original record locator.
 5. Cycle/step values must be cross-checkable against `cycle`/`step`.
 6. Missing/ambiguous fields remain explicit null/unknown.
 7. Fully blank formatted rows and identity-free non-tabular footer rows may be excluded only with explicit parser warnings; partially populated tabular rows must fail validation.

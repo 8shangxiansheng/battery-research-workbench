@@ -259,7 +259,10 @@ export interface ArtifactMetadata {
 }
 
 export interface FrameMetadata {
+  ultrasound_asset_id: string;
+  frame_index_raw: number;
   frame_index: number;
+  event_order_index: number;
   waveform_group: string;
   waveform_row_index: number;
   sample_count: number;
@@ -281,7 +284,9 @@ export interface WaveformSample {
 }
 
 export interface FramePreviewResponse {
+  ultrasound_asset_id: string;
   frame_index: number;
+  frame_index_raw: number;
   waveform_group: string;
   waveform_row_index: number;
   waveform_length: number;
@@ -334,6 +339,7 @@ export interface IntakeAssetRecord {
   content_kind: string | null;
   file_start_time: string | null;
   file_end_time: string | null;
+  anchor_for_asset_id: string | null;
 }
 
 export interface AdapterDetection {
@@ -465,6 +471,7 @@ export interface PhysicalFeatureBlock {
   display_name_zh: string;
   unit: string;
   values: (number | null)[];
+  frame_locators?: { ultrasound_asset_id: string; frame_index_raw: number }[];
   physical_time_blocked?: string;
   reference_frame_index?: number;
   blocked_features?: { code: string; status: string }[];
@@ -730,6 +737,7 @@ export interface AlignmentExclusionsResponse {
 
 export interface FeatureLabelPreviewRow {
   measurement_event_id: string;
+  ultrasound_asset_id: string | null;
   frame_index_raw: number | null;
   cycle: number | null;
   state: string;
@@ -788,6 +796,7 @@ export interface TofProvenance {
 
 export interface AmbiguousPreviewRow {
   measurement_event_id: string;
+  ultrasound_asset_id: string | null;
   frame_index_raw: number | null;
   state: string;
   electrical_identity: null;
@@ -1053,10 +1062,11 @@ export const client = {
     batteryId: string,
     experimentId: string,
     frameIndex: number,
+    ultrasoundAssetId: string,
     maxPoints = 500,
   ) =>
     request<FramePreviewResponse>(
-      `/experiments/${batteryId}/${experimentId}/waveform-frames/${frameIndex}?max_points=${maxPoints}`,
+      `/experiments/${batteryId}/${experimentId}/waveform-frames/${frameIndex}?ultrasound_asset_id=${encodeURIComponent(ultrasoundAssetId)}&max_points=${maxPoints}`,
     ),
 
   // gates
@@ -1222,11 +1232,18 @@ export const client = {
     request<IntakeSessionDetail>(`/experiments/${batteryId}/${experimentId}/intake-sessions`, { method: "POST", body: JSON.stringify({}) }),
   getIntakeSession: (sessionId: string) =>
     request<IntakeSessionDetail>(`/intake-sessions/${encodeURIComponent(sessionId)}`),
-  uploadIntakeAsset: (sessionId: string, role: AssetRole, file: File, fileStartTime?: string) => {
+  uploadIntakeAsset: (
+    sessionId: string,
+    role: AssetRole,
+    file: File,
+    fileStartTime?: string,
+    anchorForAssetId?: string,
+  ) => {
     const form = new FormData();
     form.append("role", role);
     form.append("file", file);
     if (fileStartTime) form.append("file_start_time", fileStartTime);
+    if (anchorForAssetId) form.append("anchor_for_asset_id", anchorForAssetId);
     return request<IntakeAssetRecord>(`/intake-sessions/${encodeURIComponent(sessionId)}/assets`, {
       method: "POST",
       body: form,
@@ -1277,13 +1294,19 @@ export const client = {
       formula_source_id: string;
       formula_policy_version: string;
     }>("/feature-definitions"),
-  listPhysicalFeatures: (batteryId: string, experimentId: string, limit = 200) =>
+  listPhysicalFeatures: (
+    batteryId: string,
+    experimentId: string,
+    limit = 200,
+    locator?: { ultrasoundAssetId: string; frameIndexRaw: number },
+  ) =>
     request<{
       battery_id: string;
       experiment_id: string;
       frame_count: number;
       features: PhysicalFeatureBlock[];
-    }>(`/experiments/${batteryId}/${experimentId}/physical-features?limit=${limit}`),
+    }>(`/experiments/${batteryId}/${experimentId}/physical-features?limit=${limit}` +
+      (locator ? `&ultrasound_asset_id=${encodeURIComponent(locator.ultrasoundAssetId)}&frame_index_raw=${locator.frameIndexRaw}` : "")),
   getFeatureCorrelations: (batteryId: string, experimentId: string, featureCode: string, limit = 4000) =>
     request<FeatureCorrelationsResponse>(
       `/experiments/${batteryId}/${experimentId}/feature-correlations?feature_code=${encodeURIComponent(featureCode)}&limit=${limit}`,

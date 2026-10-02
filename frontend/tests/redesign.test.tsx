@@ -5,6 +5,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider, Route, createRoutesFromElements } from "react-router-dom";
 
 
@@ -185,14 +186,61 @@ describe("AnalysisWorkbench（R1 target-first workflow）", () => {
 });
 
 describe("Waveform workbench（§9/§11）", () => {
+  it("uses the asset + local frame identity when two TXT files both contain frame 0", async () => {
+    clientMock.listWaveformFrames.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 2,
+      waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
+      frames: [
+        { ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 },
+        { ultrasound_asset_id: "U002", frame_index_raw: 0, frame_index: 0, event_order_index: 1, waveform_group: "U002/waveform", waveform_row_index: 0, sample_count: 1250 },
+      ],
+    }, meta: {} });
+    clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
+    clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
+    clientMock.getWaveformFrame.mockResolvedValue({ data: {
+      ultrasound_asset_id: "U001", frame_index: 0, frame_index_raw: 0,
+      waveform_group: "U001/waveform", waveform_row_index: 0, waveform_length: 1250,
+      x_axis: "SAMPLE_INDEX", time_axis_us: null, sampling_rate_status: "NOT_VERIFIED",
+      max_points: 1000, samples: [],
+    }, meta: {} });
+    clientMock.getMeasurementEvents.mockImplementation(async (_b, _e, _limit, _cursor, scope) => ({
+      data: { total: 1, events: [{
+        measurement_event_id: `ME::${scope?.assetId}`, frame_index_raw: 0,
+        ultrasound_asset_id: scope?.assetId, timestamp: null, cycle_index_raw: 1,
+        step_index_raw: 1, voltage_v: 3.7, current_a: 1, soc_reference_percent: 50,
+        sync_error_s: 0.01, electrical_asset_id: "E001",
+      }] }, meta: {},
+    }));
+    clientMock.listPhysicalFeatures.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1, features: [],
+    }, meta: {} });
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+    const position = await screen.findByRole("spinbutton", { name: "帧位置" });
+    await userEvent.clear(position);
+    await userEvent.type(position, "2");
+
+    await waitFor(() => {
+      expect(clientMock.getWaveformFrame).toHaveBeenCalledWith(
+        "CELL_001", "EXP_001", 0, "U002", 1000,
+      );
+      expect(clientMock.getMeasurementEvents).toHaveBeenCalledWith(
+        "CELL_001", "EXP_001", 50, undefined, { frameIndex: 0, assetId: "U002" },
+      );
+      expect(clientMock.listPhysicalFeatures).toHaveBeenCalledWith(
+        "CELL_001", "EXP_001", 200, { ultrasoundAssetId: "U002", frameIndexRaw: 0 },
+      );
+    });
+  });
+
   it("TOF blocked card offers Add sampling rate, never 0", async () => {
     clientMock.listWaveformFrames.mockResolvedValue({ data: { battery_id: "C", experiment_id: "E",
       frame_count: 1, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
-      frames: [{ frame_index: 0, waveform_group: "g", waveform_row_index: 0, sample_count: 1250 }] }, meta: {} });
+      frames: [{ ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "g", waveform_row_index: 0, sample_count: 1250 }] }, meta: {} });
     clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
     clientMock.getMeasurementEvents.mockResolvedValue({ data: { total: 0, events: [] }, meta: {} });
     clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
-    clientMock.getWaveformFrame.mockResolvedValue({ data: { frame_index: 0, waveform_group: "g",
+    clientMock.getWaveformFrame.mockResolvedValue({ data: { ultrasound_asset_id: "U001", frame_index: 0, frame_index_raw: 0, waveform_group: "g",
       waveform_row_index: 0, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_us: null,
       sampling_rate_status: "NOT_VERIFIED", max_points: 1000, samples: [] }, meta: {} });
     const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
@@ -208,7 +256,7 @@ describe("Waveform workbench（§9/§11）", () => {
   it("events are fetched scoped to the selected frame and sync provenance stays visible", async () => {
     clientMock.listWaveformFrames.mockResolvedValue({ data: { battery_id: "C", experiment_id: "E",
       frame_count: 1, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
-      frames: [{ frame_index: 7, waveform_group: "g", waveform_row_index: 0, sample_count: 1250 }] }, meta: {} });
+      frames: [{ ultrasound_asset_id: "AS::u1111111", frame_index_raw: 7, frame_index: 7, event_order_index: 0, waveform_group: "g", waveform_row_index: 0, sample_count: 1250 }] }, meta: {} });
     clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
     const event = {
       measurement_event_id: "ME::1", frame_index_raw: 7, timestamp: null,
@@ -222,7 +270,7 @@ describe("Waveform workbench（§9/§11）", () => {
     };
     clientMock.getMeasurementEvents.mockResolvedValue({ data: { total: 1, events: [event] }, meta: {} });
     clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
-    clientMock.getWaveformFrame.mockResolvedValue({ data: { frame_index: 7, waveform_group: "g",
+    clientMock.getWaveformFrame.mockResolvedValue({ data: { ultrasound_asset_id: "AS::u1111111", frame_index: 7, frame_index_raw: 7, waveform_group: "g",
       waveform_row_index: 0, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_us: null,
       sampling_rate_status: "NOT_VERIFIED", max_points: 1000, samples: [] }, meta: {} });
     const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
@@ -233,7 +281,7 @@ describe("Waveform workbench（§9/§11）", () => {
     // cross-asset electrical context: the query is scoped to THIS frame,
     // not a shared first-50 preview
     expect(clientMock.getMeasurementEvents).toHaveBeenCalledWith(
-      "CELL_001", "EXP_001", 50, undefined, { frameIndex: 7 },
+      "CELL_001", "EXP_001", 50, undefined, { frameIndex: 7, assetId: "AS::u1111111" },
     );
     // sync_error_s + both asset identities are displayed (never hidden)
     expect(screen.getByTestId("frame-sync-error").textContent).toContain("0.031");

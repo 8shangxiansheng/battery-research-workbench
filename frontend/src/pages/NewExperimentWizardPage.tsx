@@ -39,6 +39,7 @@ export function NewExperimentWizardPage() {
   const [stepError, setStepError] = useState<unknown>(null);
   const [committed, setCommitted] = useState<Record<string, unknown> | null>(null);
   const [ultrasoundStartTime, setUltrasoundStartTime] = useState("");
+  const [anchorForAssetId, setAnchorForAssetId] = useState("");
   const [uploaded, setUploaded] = useState<{ role: string; filename: string; size: number; sha256: string }[]>([]);
 
   const sessionQuery = useQuery({
@@ -72,17 +73,24 @@ export function NewExperimentWizardPage() {
   });
 
   const upload = useMutation({
-    mutationFn: async ({ role, file }: { role: "ELECTRICAL" | "ULTRASOUND"; file: File }) => {
+    mutationFn: async ({ role, file, anchorFor, fileStartTime }: {
+      role: "ELECTRICAL" | "ULTRASOUND" | "EXPERIMENT_METADATA";
+      file: File;
+      anchorFor?: string;
+      fileStartTime?: string;
+    }) => {
       if (!session) throw new Error("no session");
       return client.uploadIntakeAsset(
         session.session_id,
         role,
         file,
-        role === "ULTRASOUND" ? ultrasoundStartTime : undefined,
+        role === "ULTRASOUND" ? fileStartTime : undefined,
+        anchorFor,
       );
     },
     onSuccess: (r) => {
       setStepError(null);
+      if (r.data.role === "EXPERIMENT_METADATA") setAnchorForAssetId("");
       setUploaded((prev) => [
         ...prev.filter((x) => x.filename !== r.data.original_filename),
         {
@@ -293,7 +301,7 @@ export function NewExperimentWizardPage() {
         <>
           <h3>上传数据资产（走 intake API，禁止手工 raw 目录 — §5）</h3>
           <p className="field max-w-md">
-            <label htmlFor="ultrasound-start-time">超声文件起始时间（推荐，用于电学对齐）</label>
+            <label htmlFor="ultrasound-start-time">下一份超声文件的采集起始时间（可选）</label>
             <input
               id="ultrasound-start-time"
               type="datetime-local"
@@ -301,7 +309,7 @@ export function NewExperimentWizardPage() {
               value={ultrasoundStartTime}
               onChange={(event) => setUltrasoundStartTime(event.target.value)}
             />
-            <small>请使用仪器记录；留空时同步保持 blocked/provisional，不从文件名或帧间隔猜测。</small>
+            <small>只应用于下一次超声上传，上传后自动清空。多文件请逐份填写；优先绑定对应 M2K 证据。留空不会猜测。</small>
           </p>
           <table data-testid="upload-table">
             <thead>
@@ -339,10 +347,51 @@ export function NewExperimentWizardPage() {
                       data-testid="upload-ultrasound"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) upload.mutate({ role: "ULTRASOUND", file: f });
+                        if (f) {
+                          upload.mutate({
+                            role: "ULTRASOUND",
+                            file: f,
+                            fileStartTime: ultrasoundStartTime,
+                          });
+                          setUltrasoundStartTime("");
+                          e.target.value = "";
+                        }
                       }}
                     />
                   </label>
+                </td>
+              </tr>
+              <tr>
+                <td>M2K 时间证据（.xml）</td>
+                <td>
+                  <label htmlFor="m2k-anchor-target">绑定到已上传的超声文件</label>{" "}
+                  <select
+                    id="m2k-anchor-target"
+                    data-testid="m2k-anchor-target"
+                    value={anchorForAssetId}
+                    onChange={(event) => setAnchorForAssetId(event.target.value)}
+                  >
+                    <option value="">请选择超声文件</option>
+                    {(session?.assets ?? []).filter((asset) => asset.role === "ULTRASOUND").map((asset) => (
+                      <option key={asset.intake_asset_id} value={asset.intake_asset_id}>
+                        {asset.original_filename}
+                      </option>
+                    ))}
+                  </select>{" "}
+                  <input
+                    type="file"
+                    accept=".xml"
+                    data-testid="upload-m2k-evidence"
+                    disabled={!anchorForAssetId}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file && anchorForAssetId) {
+                        upload.mutate({ role: "EXPERIMENT_METADATA", file, anchorFor: anchorForAssetId });
+                        event.currentTarget.value = "";
+                      }
+                    }}
+                  />
+                  <small>每份配置必须人工绑定到对应超声资产；系统不会从文件名猜测。</small>
                 </td>
               </tr>
             </tbody>

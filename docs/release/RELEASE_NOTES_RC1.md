@@ -2,6 +2,8 @@
 
 基线 commit `3a8a1af`（BRW-025R-WF）之上的收口变更。无新科学功能。
 
+> **历史快照说明**：本文件只记录 RC1 基线及其冻结工件，不代表后续 `main` 的完整功能列表。后续加入的 Cohort/LOBO API、温度目标数据门和固定模型策略扩展，不回溯改变本 RC1 的评估结果。当前状态见[使用指南](../USER_GUIDE.md)和[扩展能力状态](../architecture/future-scientific-extension-contracts.md)。
+
 ## 科学状态（canonical: CELL_001/EXP_001）
 - Canonical Envelope-Peak TOF 激活：3995/3995 VALID（fs 50 MHz 来自参数注册表 VERIFIED；GC-TOF::e401fecb FROZEN v20）；tof_us 15.52–16.08 µs。
 - 新 CURRENT 链：DS::83013a61…（X 含 tof_us）→ SPLIT::23ebb24f…（LOGO/cycle）→ 5 固定基线（fold1 有限评估）→ REPORT::5b6cf84d…（JSON/MD/HTML）。

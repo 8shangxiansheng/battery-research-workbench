@@ -7,17 +7,30 @@ import { numberText } from "../../lib/presentation";
 
 /** Physical feature cards for the current frame — values computed by the
  *  backend deterministic modules; the frontend never recomputes them. */
-export function PhysicalFeatureCards({ batteryId, experimentId, frameIndex }: {
-  batteryId: string; experimentId: string; frameIndex: number | undefined;
+export function PhysicalFeatureCards({ batteryId, experimentId, frameIndex, ultrasoundAssetId }: {
+  batteryId: string; experimentId: string; frameIndex: number | undefined; ultrasoundAssetId?: string;
 }) {
   const phys = useQuery({
-    queryKey: ["physical-features", batteryId, experimentId],
-    queryFn: () => client.listPhysicalFeatures(batteryId, experimentId, 200),
+    queryKey: ["physical-features", batteryId, experimentId, ultrasoundAssetId, frameIndex],
+    queryFn: () => client.listPhysicalFeatures(
+      batteryId,
+      experimentId,
+      200,
+      ultrasoundAssetId != null && frameIndex != null
+        ? { ultrasoundAssetId, frameIndexRaw: frameIndex }
+        : undefined,
+    ),
   });
   if (phys.isLoading) return <LoadingState />;
   if (phys.error) return <ErrorState error={phys.error} retry={() => void phys.refetch()} />;
   const blocks = phys.data?.data.features ?? [];
-  const valueAt = (b: PhysicalFeatureBlock) => (frameIndex != null ? b.values[frameIndex] ?? null : null);
+  const valueAt = (b: PhysicalFeatureBlock) => {
+    if (frameIndex == null || !ultrasoundAssetId || !b.frame_locators) return null;
+    const index = b.frame_locators.findIndex(
+      locator => locator.ultrasound_asset_id === ultrasoundAssetId && locator.frame_index_raw === frameIndex,
+    );
+    return index >= 0 ? b.values[index] ?? null : null;
+  };
   return <div className="grid md:grid-cols-5 gap-3 mt-4" data-testid="physical-features" aria-label="物理特征（当前帧）">
     {blocks.map(b => {
       const v = valueAt(b);

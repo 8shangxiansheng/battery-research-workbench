@@ -16,12 +16,14 @@ const frameList: FrameListResponse = {
   x_axis: "SAMPLE_INDEX",
   time_axis_available: false,
   frames: [
-    { frame_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 },
+    { ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 },
   ],
 };
 
 const framePreview: FramePreviewResponse = {
+  ultrasound_asset_id: "U001",
   frame_index: 0,
+  frame_index_raw: 0,
   waveform_group: "U001/waveform",
   waveform_row_index: 0,
   waveform_length: 1250,

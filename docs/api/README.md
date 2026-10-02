@@ -10,8 +10,8 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 
 | Group | Endpoints |
 |---|---|
-| system | `GET /health`, `GET /capabilities`, `GET /version` |
-| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment; timebase/target/tuning contracts remain dormant) |
+| system | `GET /health`, `GET /capabilities`, `GET /version`, `GET /modeling/strategies` (canonical fixed-baseline registry and configurations) |
+| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment; cohort API is implemented, while timebase validation, generic target-dataset, and tuning write paths remain unavailable) |
 | experiments | `GET /experiments`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence`, `/research-overview`, `/workflow-context` |
 | runs | `POST /runs/plan`, `POST /runs/dry-run`, `POST /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`, `POST /runs/{run_id}/resume`, `POST /runs/{run_id}/retry/{node_id}` |
 | user-actions | `GET /runs/{run_id}/user-actions`, `POST /runs/{run_id}/user-actions/{action_id}` (typed values required; API never fills scientific values) |
@@ -24,7 +24,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | cohorts | `POST /cohort-datasets`, `GET /cohort-datasets`, `GET /cohort-datasets/{cohort_dataset_id}` (immutable, harmonized SOC cohort); `POST /cohort-datasets/{cohort_dataset_id}/lobo-evaluations`, `GET /cohort-lobo-evaluations/{evaluation_id}` (fixed baselines, Battery-grouped LOBO) |
 | splits | `POST /splits` (deterministic, idempotent REUSED), `GET /splits/{split_id}` |
 | feature-analyses | `POST /feature-analyses` (deterministic AN::id), `GET /feature-analyses/{analysis_id}` |
-| models | `POST /models/baseline-runs` (fixed baseline only — no tuning endpoint), deterministic MODEL::id |
+| models | `POST /models/baseline-runs` (selected fixed strategies — no tuning endpoint), deterministic MODEL::id |
 | reports | `POST /reports` (deterministic REPORT::id), `GET /reports`, `GET /reports/{report_id}` |
 | artifacts | `GET /artifacts/{artifact_id}`, `GET /artifacts/{artifact_id}/preview?limit≤200` (metadata only, never bulk parquet) |
 

@@ -35,7 +35,7 @@ import { FeatureLabelTablePreview } from "../src/components/workbench/FeatureLab
 
 function row(overrides: Partial<FeatureLabelPreviewResponse["rows"][number]> = {}) {
   return {
-    measurement_event_id: "ME::C::E::U001::0", frame_index_raw: 0, cycle: 1,
+    measurement_event_id: "ME::C::E::U001::0", ultrasound_asset_id: "U001", frame_index_raw: 0, cycle: 1,
     state: "charge", target: 12.5, values: { SWA: 1.1 }, sync_error_s: 0.03,
     electrical_asset_id: "E001", electrical_record_locator: "records.parquet:2",
     electrical_row_index: 2, electrical_timestamp: "2024-01-06T09:53:00",
@@ -64,7 +64,7 @@ const basePayload: FeatureLabelPreviewResponse = {
     values: { SWA: 1.1 + i * 0.01 },
   })),
   ambiguous_rows: [
-    { measurement_event_id: "ME::C::E::U001::3995", frame_index_raw: 3995, state: "charge",
+    { measurement_event_id: "ME::C::E::U001::3995", ultrasound_asset_id: "U001", frame_index_raw: 3995, state: "charge",
       electrical_identity: null, target: null, candidate_count: 2, values: { SWA: 0.9 },
       note: "ambiguous sync — electrical identity null; target unavailable; never auto-nearest" },
   ],

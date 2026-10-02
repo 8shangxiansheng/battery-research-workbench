@@ -3,6 +3,8 @@
 系统：Battery Research Workbench（超声–电气多模态电池实验工作台）
 冻结工件身份见 `docs/release/RELEASE_MANIFEST.json`；截图 `docs/ui/screenshots/brwrc1/`。
 
+> **时点说明**：本表是 BRW-RC1 冻结时的论文交接快照，不是当前 `main` 的完整模型目录。表中“5 固定模型”及相应指标只描述 RC1 工件；后续主线加入了更多固定基线策略和可选策略入口，不能据此改写 RC1 指标，也不能把新策略描述为已在该快照上完成评估。当前 Cohort/LOBO 实现状态见[扩展能力状态](../architecture/future-scientific-extension-contracts.md)。
+
 | 论文章节 | 系统对应 | 证据位置 |
 |---|---|---|
 | Architecture | 分层：parsers → synchronization → MeasurementEvent → features/parameters/gates → datasets/splits → modeling → reporting → API → UI → Agent | README.md, docs/development-plan.md |
