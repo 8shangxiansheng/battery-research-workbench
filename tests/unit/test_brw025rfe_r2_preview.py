@@ -62,7 +62,8 @@ class TestPreviewHardening:
                         json={"target_id": "reference_soc_percent", "features": ["SWA"], "limit": 5}
                         ).json()["data"]
         row = d["rows"][0]
-        for col in ("electrical_record_locator", "electrical_row_index",
+        assert row["ultrasound_asset_id"] == "U001"
+        for col in ("ultrasound_asset_id", "electrical_record_locator", "electrical_row_index",
                     "electrical_timestamp", "match_status", "electrical_asset_id"):
             assert col in row, col
         assert row["match_status"] == "MATCHED_UNIQUE"

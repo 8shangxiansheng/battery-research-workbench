@@ -91,3 +91,39 @@ def validate_non_decreasing_timestamps(
             asset_id=asset_id, source_file=source_file, sheet=sheet, column="timestamp"
         )
         raise ElectricalValidationError(f"{context}: timestamps must be non-decreasing")
+
+
+def timestamp_order_diagnostic(
+    timestamps: pd.Series,
+    source_rows: pd.Series,
+    *,
+    asset_id: str,
+    source_file: Path,
+    sheet: str,
+) -> str | None:
+    """Describe backward transitions without reordering or dropping raw rows.
+
+    Synchronization builds a timestamp-sorted lookup copy and retains each
+    source-row locator, so source order remains auditable without blocking
+    records that contain explicit absolute timestamps.
+    """
+    backwards: list[tuple[int, int, float]] = []
+    values = timestamps.tolist()
+    rows = source_rows.tolist()
+    for index in range(1, len(values)):
+        previous = pd.Timestamp(values[index - 1])
+        current = pd.Timestamp(values[index])
+        delta_s = (current - previous).total_seconds()
+        if delta_s < 0:
+            backwards.append((int(rows[index - 1]), int(rows[index]), delta_s))
+    if not backwards:
+        return None
+
+    context = validation_context(
+        asset_id=asset_id, source_file=source_file, sheet=sheet, column="timestamp"
+    )
+    details = ", ".join(f"{left}->{right} ({delta_s:g}s)" for left, right, delta_s in backwards[:5])
+    return (
+        f"{context}: found {len(backwards)} backward timestamp transition(s); "
+        f"rows preserved in source order without repair; first transitions: {details}"
+    )

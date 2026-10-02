@@ -338,6 +338,7 @@ async def upload_asset(
     role: AssetRole = Form(...),  # noqa: B008 — FastAPI DI pattern
     file_start_time: str | None = Form(default=None),
     file_end_time: str | None = Form(default=None),
+    anchor_for_asset_id: str | None = Form(default=None),
     file: UploadFile = File(...),  # noqa: B008 — FastAPI DI pattern
 ) -> dict[str, Any]:
     validate_id(session_id, "session_id")
@@ -354,6 +355,7 @@ async def upload_asset(
             content=content,
             file_start_time=file_start_time,
             file_end_time=file_end_time,
+            anchor_for_asset_id=anchor_for_asset_id,
         )
     except IntakePolicyError as exc:
         raise _policy_error(exc) from exc

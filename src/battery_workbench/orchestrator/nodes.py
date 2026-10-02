@@ -961,9 +961,7 @@ class CanonicalTofNode(WorkflowNode):
         return ref, reason
 
     def run(self, plan, inputs, ctx):
-        import numpy as np
         import pandas as pd
-        import zarr
 
         from battery_workbench.features.gate_calibration import (
             CANONICAL_TOF_METHOD,
@@ -972,6 +970,7 @@ class CanonicalTofNode(WorkflowNode):
             TOFGateBinding,
             resolve_tof_gate_calibration,
         )
+        from battery_workbench.features.selected_series import load_waveform_frames
         from battery_workbench.features_physical.canonical_tof import (
             compute_canonical_tof_series,
             effective_fs,
@@ -983,12 +982,26 @@ class CanonicalTofNode(WorkflowNode):
         if not feature_sets:
             raise FileNotFoundError("no ULTRASOUND_FEATURE_SET available for canonical TOF")
         features = pd.read_parquet(feature_sets[-1] / "ultrasound_features.parquet")
-        zg = zarr.open_group(
-            str(Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr"), mode="r"
+        required_feature_identity = {
+            "measurement_event_id",
+            "ultrasound_asset_id",
+            "frame_index_raw",
+            "event_order_index",
+            "waveform_group",
+            "waveform_row_index",
+        }
+        missing_identity = required_feature_identity - set(features.columns)
+        if missing_identity:
+            raise ValueError(
+                "ultrasound feature rows lack multi-asset waveform identity: "
+                f"{sorted(missing_identity)}"
+            )
+        if features["measurement_event_id"].astype(str).duplicated().any():
+            raise ValueError("ultrasound feature rows contain duplicate MeasurementEvent identities")
+        features = features.sort_values("event_order_index", kind="stable").reset_index(drop=True)
+        frames = load_waveform_frames(
+            Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr", features
         )
-        arr = np.asarray(zg[str(features["waveform_group"].iloc[0])])
-        rows = features["waveform_row_index"].to_numpy()
-        frames = arr[rows]
 
         eff = self._load_effective_parameters(inputs)
         fs, fs_verified = effective_fs(eff, require_verified=True)
@@ -1021,6 +1034,21 @@ class CanonicalTofNode(WorkflowNode):
             sampling_rate_hz=fs,
             parameter_set_id=ps_id,
         )
+        identity = features[
+            ["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"]
+        ].copy()
+        # The calculator's sequential frame index is only a local placeholder;
+        # persisted identity must come from the source feature/event rows.
+        table = table.drop(columns=["frame_index_raw"], errors="ignore")
+        table = table.merge(
+            identity,
+            on="measurement_event_id",
+            how="left",
+            validate="one_to_one",
+            sort=False,
+        )
+        if table[["ultrasound_asset_id", "frame_index_raw"]].isna().any().any():
+            raise ValueError("canonical TOF output lost its Ultrasound DataAsset/frame identity")
         valid = table[table["tof_status"] == "VALID"]
         out_dir = Path(ctx.processed_root) / "features_physical" / b / e
         out_dir.mkdir(parents=True, exist_ok=True)

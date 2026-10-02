@@ -59,7 +59,10 @@ from battery_workbench.features.state_correlation import (
     soc_correlation_suite,
     soh_cycle_summary,
 )
-from battery_workbench.features_physical.canonical_tof import effective_fs
+from battery_workbench.features_physical.canonical_tof import (
+    canonical_tof_values_by_event,
+    effective_fs,
+)
 
 router = APIRouter(tags=["feature-workbench"])
 
@@ -195,12 +198,58 @@ def physical_features(
     battery_id: str,
     experiment_id: str,
     limit: int = Query(default=200, ge=1, le=2000),
+    ultrasound_asset_id: str | None = Query(default=None),
+    frame_index_raw: int | None = Query(default=None, ge=0),
 ) -> dict[str, Any]:
+    import pandas as pd
+
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     gate_context = _experiment_gate_context(request, battery_id, experiment_id)
     bounds = gate_context["gate_bounds"]
-    frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    frame_meta_path = (
+        get_service(request).processed_root
+        / "ultrasound"
+        / battery_id
+        / experiment_id
+        / "frames.parquet"
+    )
+    frame_meta = pd.read_parquet(
+        frame_meta_path,
+        columns=["ultrasound_asset_id", "frame_index_raw", "waveform_group", "waveform_row_index"],
+    )
+    if (ultrasound_asset_id is None) != (frame_index_raw is None):
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "ultrasound_asset_id and frame_index_raw must be provided together",
+        )
+    if ultrasound_asset_id is not None and frame_index_raw is not None:
+        frame_meta = frame_meta[
+            (frame_meta["ultrasound_asset_id"].astype(str) == ultrasound_asset_id)
+            & (frame_meta["frame_index_raw"].astype("Int64") == frame_index_raw)
+        ]
+        if len(frame_meta) > 1:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "frame identity is duplicated within one Ultrasound DataAsset",
+                {"ultrasound_asset_id": ultrasound_asset_id, "frame_index_raw": frame_index_raw},
+            )
+        if frame_meta.empty:
+            raise APIError(ErrorCode.NOT_FOUND, "frame not found in Ultrasound DataAsset")
+        store_path = frame_meta_path.parent / "waveforms.zarr"
+        frames = load_waveform_frames(store_path, frame_meta)
+    else:
+        frame_meta = frame_meta.head(limit)
+        frames = load_waveform_frames(
+            frame_meta_path.parent / "waveforms.zarr", frame_meta
+        )
+    frame_locators = [
+        {
+            "ultrasound_asset_id": str(row.ultrasound_asset_id),
+            "frame_index_raw": int(row.frame_index_raw),
+        }
+        for row in frame_meta.itertuples(index=False)
+    ]
     _validate_experiment_gate_context(gate_context, frames)
 
     bottom = bottom_wave_amplitude(frames, bounds)
@@ -221,8 +270,39 @@ def physical_features(
     if ct_path.is_file():
         import pandas as ct_pd
 
-        ct = ct_pd.read_parquet(ct_path, columns=["frame_index_raw", "tof_us", "tof_status"])
-        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
+        ct = ct_pd.read_parquet(
+            ct_path, columns=["measurement_event_id", "tof_us", "tof_status"]
+        )
+        event_path = (
+            get_service(request).processed_root
+            / "multimodal"
+            / battery_id
+            / experiment_id
+            / "measurement_events.parquet"
+        )
+        event_values: dict[tuple[str, int], float] = {}
+        if event_path.is_file():
+            event_meta = ct_pd.read_parquet(
+                event_path,
+                columns=["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"],
+            ).dropna(subset=["ultrasound_asset_id", "frame_index_raw"])
+            valid_tof = ct[ct["tof_status"] == "VALID"].dropna(subset=["tof_us"])
+            try:
+                joined_tof = event_meta.merge(
+                    valid_tof,
+                    on="measurement_event_id",
+                    how="inner",
+                    validate="one_to_one",
+                )
+            except pd.errors.MergeError as exc:
+                raise APIError(
+                    ErrorCode.INTEGRITY_ERROR,
+                    "canonical TOF must contain at most one row per MeasurementEvent",
+                ) from exc
+            event_values = {
+                (str(row.ultrasound_asset_id), int(row.frame_index_raw)): float(row.tof_us)
+                for row in joined_tof.itertuples(index=False)
+            }
         canonical_tof_block = {
             "feature_code": "tof_us",
             "method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
@@ -230,9 +310,7 @@ def physical_features(
             "display_name_en": "Canonical Envelope-Peak TOF",
             "display_name_zh": "规范包络峰TOF（表面→底波）",
             "unit": "µs",
-            "values": [
-                float(valid_map[i]) if i in valid_map.index else None for i in range(len(frames))
-            ],
+            "values": [event_values.get((item["ultrasound_asset_id"], item["frame_index_raw"])) for item in frame_locators],
             "artifact_read_only": True,
         }
 
@@ -296,6 +374,8 @@ def physical_features(
     ]
     if canonical_tof_block is not None:
         feature_blocks.insert(0, canonical_tof_block)
+    for block in feature_blocks:
+        block["frame_locators"] = frame_locators
     return {
         "data": {
             "battery_id": battery_id,
@@ -1357,10 +1437,12 @@ def feature_label_preview(
                 ErrorCode.NOT_FOUND,
                 "canonical TOF artifact not materialized — run CANONICAL_TOF_FEATURES first",
             )
-        ct = join_pd.read_parquet(ct_path, columns=["frame_index_raw", "tof_us", "tof_status"])
-        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
-        series_by_code["tof_us"] = (
-            joined["frame_index_raw"].map(valid_map).astype("float64").to_numpy()
+        ct = join_pd.read_parquet(
+            ct_path, columns=["measurement_event_id", "tof_us", "tof_status"]
+        )
+        series_by_code["tof_us"] = np.asarray(
+            canonical_tof_values_by_event(joined["measurement_event_id"].astype(str).tolist(), ct),
+            dtype="float64",
         )
 
     tcol = target_cols[target_id]
@@ -1420,6 +1502,9 @@ def feature_label_preview(
         target_value, y_redacted = _redact(event_id, raw_target)
         row: dict[str, Any] = {
             "measurement_event_id": event_id,
+            "ultrasound_asset_id": str(r["ultrasound_asset_id"])
+            if join_pd.notna(r.get("ultrasound_asset_id"))
+            else None,
             "frame_index_raw": int(r["frame_index_raw"])
             if join_pd.notna(r["frame_index_raw"])
             else None,
@@ -1466,6 +1551,9 @@ def feature_label_preview(
         ambiguous_rows.append(
             {
                 "measurement_event_id": str(r["measurement_event_id"]),
+                "ultrasound_asset_id": str(r["ultrasound_asset_id"])
+                if join_pd.notna(r.get("ultrasound_asset_id"))
+                else None,
                 "frame_index_raw": int(r["frame_index_raw"])
                 if join_pd.notna(r["frame_index_raw"])
                 else None,
@@ -1902,11 +1990,13 @@ def feature_target_ranking(
         events_t, _ = _load_events_labels(request, battery_id, experiment_id)
         ct = ct_pd.read_parquet(
             ct_path,
-            columns=["frame_index_raw", "tof_us", "tof_status", "gate_calibration_id"],
+            columns=["measurement_event_id", "tof_us", "tof_status", "gate_calibration_id"],
         )
-        valid_map = ct[ct["tof_status"] == "VALID"].set_index("frame_index_raw")["tof_us"]
-        series_map["tof_us"] = (
-            events_t["frame_index_raw"].map(valid_map).astype("float64").to_numpy()
+        series_map["tof_us"] = np.asarray(
+            canonical_tof_values_by_event(
+                events_t["measurement_event_id"].astype(str).tolist(), ct
+            ),
+            dtype="float64",
         )
         cm = _read_json_local(ct_path.parent / "canonical_tof_manifest.json") or {}
         from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
@@ -2364,8 +2454,35 @@ def canonical_tof(
     """
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
-    frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    import pandas as pd
+
+    frames = _load_frames(request, battery_id, experiment_id)
     events, _ = _load_events_labels(request, battery_id, experiment_id)
+    frame_meta_path = (
+        get_service(request).processed_root
+        / "ultrasound"
+        / battery_id
+        / experiment_id
+        / "frames.parquet"
+    )
+    frame_meta = pd.read_parquet(
+        frame_meta_path, columns=["ultrasound_asset_id", "frame_index_raw"]
+    )
+    event_identity = events[
+        ["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"]
+    ]
+    identity = frame_meta.merge(
+        event_identity,
+        on=["ultrasound_asset_id", "frame_index_raw"],
+        how="left",
+        validate="one_to_one",
+        sort=False,
+    )
+    if identity["measurement_event_id"].isna().any():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "canonical TOF could not resolve every waveform to one MeasurementEvent",
+        )
 
     # fs from the effective parameter set — the only legal provenance
     ps_root = get_service(request).processed_root / "parameters" / battery_id / experiment_id
@@ -2387,8 +2504,6 @@ def canonical_tof(
             ErrorCode.ARTIFACT_NOT_AVAILABLE,
             "no resolved sampling-rate parameter set (fs alone does not activate TOF)",
         )
-
-    import pandas as pd
 
     from battery_workbench.features.gate_calibration import (
         CANONICAL_TOF_METHOD,
@@ -2420,16 +2535,27 @@ def canonical_tof(
         python_end_exclusive=cal["bottom_end_exclusive"],
         length_samples=cal["bottom_end_exclusive"] - cal["bottom_start"],
     )
-    n = min(len(frames), len(events))
+    n = min(len(frames), len(identity), limit)
+    frames = frames[:n]
+    identity = identity.iloc[:n].reset_index(drop=True)
     table = compute_canonical_tof_series(
         frames[:n],
-        events["measurement_event_id"].iloc[:n].tolist(),
+        identity["measurement_event_id"].astype(str).tolist(),
         surface_gate=surface_binding,
         bottom_gate=bottom_binding,
         gate_calibration_id=cal["gate_calibration_id"],
         sampling_rate_hz=fs_hz if fs_verified else None,
         parameter_set_id=parameter_set_id,
         frame_index_offset=0,
+    )
+    # Do not expose the calculator's positional placeholder as source identity.
+    table = table.drop(columns=["frame_index_raw"], errors="ignore")
+    table = table.merge(
+        identity[["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"]],
+        on="measurement_event_id",
+        how="left",
+        validate="one_to_one",
+        sort=False,
     )
     status_counts = table["tof_status"].value_counts().to_dict()
     valid = table[table["tof_status"] == "VALID"]

@@ -34,6 +34,10 @@ from battery_workbench.synchronization.evidence import (
     experiment_start_hint_evidence,
     filename_hint_evidence,
 )
+from battery_workbench.synchronization.m2k_evidence import (
+    M2KTimeEvidenceError,
+    read_m2k_acquisition_start,
+)
 from battery_workbench.synchronization.schemas import (
     ExperimentTimeReference,
     TimeAnchorConfig,
@@ -70,7 +74,8 @@ def assess_experiment_time_anchors(
     # --- Experiment & asset metadata (read-only) ---
     experiments = load_experiments(manifest_root / "experiments.csv")
     candidates = [
-        e for e in experiments
+        e
+        for e in experiments
         if e.experiment_id == experiment_id and (battery_id is None or e.battery_id == battery_id)
     ]
     experiment = candidates[0] if len(candidates) == 1 else None
@@ -88,8 +93,7 @@ def assess_experiment_time_anchors(
 
     assets = load_data_assets(manifest_root / "data_assets.csv")
     experiment_assets = [
-        a for a in assets
-        if data_asset_matches(a, experiment.battery_id, experiment_id)
+        a for a in assets if data_asset_matches(a, experiment.battery_id, experiment_id)
     ]
 
     # --- Electrical coverage window from processed records (read-only) ---
@@ -134,11 +138,33 @@ def assess_experiment_time_anchors(
                 f"asset {asset.asset_id}: no frames found; elapsed coverage unavailable"
             )
 
+        m2k_evidence = None
+        if asset.time_anchor_metadata_path is not None:
+            raw_root = manifest_root.parent.resolve()
+            metadata_path = (raw_root / asset.time_anchor_metadata_path).resolve()
+            if not metadata_path.is_relative_to(raw_root):
+                warnings.append(
+                    f"asset {asset.asset_id}: time anchor metadata path escapes raw root"
+                )
+            else:
+                try:
+                    parsed_evidence = read_m2k_acquisition_start(metadata_path)
+                    m2k_evidence = parsed_evidence.__class__(
+                        anchor_datetime=parsed_evidence.anchor_datetime,
+                        source_ref=(f"{metadata_path.relative_to(raw_root)}#M2kData/@dateAcquis"),
+                        source_sha256=parsed_evidence.source_sha256,
+                    )
+                except M2KTimeEvidenceError as exc:
+                    warnings.append(
+                        f"asset {asset.asset_id}: M2K time evidence unavailable ({exc})"
+                    )
+
         candidates, evidence = collect_candidates(
             asset_id=asset.asset_id,
             modality=asset.modality,
             file_start_time=asset.file_start_time,
             overrides=overrides,
+            m2k_evidence=m2k_evidence,
         )
         # Record filename hint (raw evidence, never authoritative) and experiment-start hint.
         evidence.append(filename_hint_evidence(asset.asset_id, asset.relative_path.name))
@@ -155,6 +181,11 @@ def assess_experiment_time_anchors(
             evidence=evidence,
             overrides=overrides,
         )
+        if assessment.conflicts:
+            warnings.append(
+                f"asset {asset.asset_id}: conflicting time evidence; selected candidate is "
+                "retained for audit but absolute timestamp construction is blocked"
+            )
 
         selected = next(
             (c for c in candidates if c.anchor_id == assessment.selected_anchor_id), None

@@ -33,7 +33,7 @@ def test_missing_required_record_column_has_context(
     assert "绝对时间" in message
 
 
-def test_backwards_timestamp_fails_but_duplicate_timestamp_is_allowed(
+def test_backwards_timestamp_is_preserved_with_diagnostic_but_duplicate_is_allowed(
     electrical_workbook_factory: Callable[..., Path], tmp_path: Path
 ) -> None:
     valid_path = electrical_workbook_factory(name="duplicates.xlsx")
@@ -41,6 +41,12 @@ def test_backwards_timestamp_fails_but_duplicate_timestamp_is_allowed(
     assert valid.records["timestamp"].is_monotonic_increasing
     assert valid.records["timestamp"].duplicated().sum() == 1
 
-    invalid_path = electrical_workbook_factory(name="backwards.xlsx", backwards_timestamp=True)
-    with pytest.raises(ElectricalValidationError, match="non-decreasing"):
-        parse_electrical_asset(_asset(invalid_path, tmp_path), tmp_path, battery_id="CELL_SYNTH")
+    backwards_path = electrical_workbook_factory(name="backwards.xlsx", backwards_timestamp=True)
+    parsed = parse_electrical_asset(
+        _asset(backwards_path, tmp_path), tmp_path, battery_id="CELL_SYNTH"
+    )
+    assert not parsed.records["timestamp"].is_monotonic_increasing
+    assert parsed.records["source_row_index"].tolist() == [2, 3, 4, 5]
+    diagnostic = next(w for w in parsed.warnings if "backward timestamp" in w)
+    assert "rows preserved in source order without repair" in diagnostic
+    assert "4->5 (-1s)" in diagnostic

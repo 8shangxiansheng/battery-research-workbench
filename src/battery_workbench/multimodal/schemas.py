@@ -107,6 +107,7 @@ class CanonicalMeasurementEvent(BaseModel):
 
     # Synchronization (propagated, never recomputed).
     match_status: MatchStatus
+    match_block_reason: str | None = None
     sync_error_s: float | None = None
     within_tolerance: bool = False
     candidate_timestamp_count: int = 0

@@ -485,6 +485,96 @@ class TestValidation:
 
 # ---------- commit (T30-T36) ----------
 class TestCommit:
+    def test_m2k_time_evidence_is_bound_and_survives_pipeline(
+        self, env: tuple[TestClient, Path, Path]
+    ) -> None:
+        client, raw, processed = env
+        if not HAS_FIXTURES:
+            pytest.skip("fixtures missing")
+        _create_experiment(client, "EXP_001")
+        session = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/intake-sessions"
+        ).json()["data"]
+        sid = session["session_id"]
+        for role, fixture in (
+            ("ELECTRICAL", "sample_electrical.xlsx"),
+            ("ULTRASOUND", "sample_ultrasound.txt"),
+        ):
+            response = client.post(
+                f"/api/v1/intake-sessions/{sid}/assets",
+                files={
+                    "file": (
+                        fixture,
+                        (FIXTURES / fixture).read_bytes(),
+                        "application/octet-stream",
+                    )
+                },
+                data={"role": role},
+            )
+            assert response.status_code == 200, response.text
+            if role == "ULTRASOUND":
+                ultrasound_intake_id = response.json()["data"]["intake_asset_id"]
+
+        m2k_xml = b'<M2kData dateAcquis="06-01-2024 09:52:31" />'
+        evidence_upload = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("M2kConfig.xml", m2k_xml, "application/xml")},
+            data={
+                "role": "EXPERIMENT_METADATA",
+                "anchor_for_asset_id": ultrasound_intake_id,
+            },
+        )
+        assert evidence_upload.status_code == 200, evidence_upload.text
+        assert evidence_upload.json()["data"]["anchor_for_asset_id"] == ultrasound_intake_id
+
+        detections = client.post(f"/api/v1/intake-sessions/{sid}/detect").json()["data"][
+            "detections"
+        ]
+        m2k_detection = next(d for d in detections if d["asset_role"] == "EXPERIMENT_METADATA")
+        assert m2k_detection["state"] == "DETECTED_UNIQUE"
+        assert m2k_detection["adapter_id"] == "M2KTimeEvidence"
+        validation = client.post(f"/api/v1/intake-sessions/{sid}/validate").json()["data"]
+        assert validation["overall_passed"] is True
+
+        committed = client.post(f"/api/v1/intake-sessions/{sid}/commit")
+        assert committed.status_code == 200, committed.text
+        import csv
+
+        with (raw / "manifests/data_assets.csv").open(encoding="utf-8", newline="") as handle:
+            asset_rows = list(csv.DictReader(handle))
+        ultrasound_row = next(row for row in asset_rows if row["modality"] == "ultrasound")
+        evidence_path = ultrasound_row["time_anchor_metadata_path"]
+        assert evidence_path.startswith("batteries/CELL_001/EXP_001/timebase_evidence/")
+        assert (raw / evidence_path).read_bytes() == m2k_xml
+        assert len(committed.json()["data"]["assets"]) == 2  # evidence is not a modality asset
+
+        run = client.post(
+            "/api/v1/runs",
+            json={
+                "profile": "INGEST_TO_MEASUREMENT_EVENTS",
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+            },
+        )
+        assert run.status_code == 200, run.text
+        anchor_state_path = (
+            processed / "synchronization/CELL_001/EXP_001/time_anchors.json"
+        )
+        assert anchor_state_path.is_file()
+        import json
+
+        anchor_state = json.loads(anchor_state_path.read_text(encoding="utf-8"))
+        asset_state = anchor_state["assets"][0]
+        assert asset_state["anchor_status"] == "PROVISIONAL"
+        assert asset_state["selected_anchor_id"].endswith("-m2k-config")
+        evidence = next(
+            item
+            for item in asset_state["evidence"]
+            if item["source_type"] == "M2K_CONFIG_DATE_ACQUIS"
+        )
+        assert evidence["source_ref"] == f"{evidence_path}#M2kData/@dateAcquis"
+        assert evidence["source_sha256"]
+
     def test_t30_commit_validated(self, env: tuple[TestClient, Path, Path]) -> None:
         client, raw, _ = env
         if not HAS_FIXTURES:

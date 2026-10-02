@@ -17,6 +17,7 @@ class DataAsset(BaseModel):
     relative_path: Path
     file_start_time: datetime | None = None
     file_end_time: datetime | None = None
+    time_anchor_metadata_path: Path | None = None
     sha256: str | None = None
     parser_name: str | None = None
     parser_version: str | None = None

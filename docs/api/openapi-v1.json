@@ -30,6 +30,13 @@
             ],
             "title": "File Start Time"
           },
+          "anchor_for_asset_id": {
+            "anyOf": [
+              { "type": "string" },
+              { "type": "null" }
+            ],
+            "title": "Anchor For Asset Id"
+          },
           "role": {
             "enum": [
               "ELECTRICAL",
@@ -3059,6 +3066,39 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "ultrasound_asset_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ultrasound Asset Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "frame_index_raw",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Frame Index Raw"
+            }
           }
         ],
         "responses": {
@@ -3800,6 +3840,22 @@
             "schema": {
               "title": "Frame Index",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ultrasound_asset_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ultrasound Asset Id"
             }
           },
           {

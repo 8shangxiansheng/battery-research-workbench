@@ -238,6 +238,7 @@ class IntakeEngine:
         content: bytes,
         file_start_time: str | None = None,
         file_end_time: str | None = None,
+        anchor_for_asset_id: str | None = None,
     ) -> IntakeAssetRecord:
         self._require_mutatable(session)
         for field_name, value in (
@@ -251,6 +252,26 @@ class IntakeEngine:
                     raise IntakePolicyError(f"invalid {field_name}: expected ISO-8601") from exc
         if len(session.assets) >= MAX_ASSETS_PER_SESSION:
             raise IntakePolicyError(f"session asset limit reached ({MAX_ASSETS_PER_SESSION})")
+        if role == "EXPERIMENT_METADATA":
+            if not anchor_for_asset_id:
+                raise IntakePolicyError(
+                    "M2K time evidence must be explicitly bound to an Ultrasound DataAsset"
+                )
+            target = next(
+                (a for a in session.assets if a.intake_asset_id == anchor_for_asset_id), None
+            )
+            if target is None or target.role != "ULTRASOUND":
+                raise IntakePolicyError(
+                    "anchor_for_asset_id must reference an uploaded ULTRASOUND asset"
+                )
+            if Path(original_filename).suffix.lower() != ".xml":
+                raise IntakePolicyError("M2K time evidence must be an .xml configuration file")
+            if any(a.anchor_for_asset_id == anchor_for_asset_id for a in session.assets):
+                raise IntakePolicyError(
+                    "an M2K time evidence file is already bound to this Ultrasound DataAsset"
+                )
+        elif anchor_for_asset_id is not None:
+            raise IntakePolicyError("anchor_for_asset_id is only valid for EXPERIMENT_METADATA")
         if len(content) > MAX_FILE_SIZE:
             raise IntakePolicyError(f"asset too large: {len(content)} bytes")
         if not content:
@@ -275,6 +296,7 @@ class IntakeEngine:
             content_kind=Path(original_filename).suffix.lower().lstrip(".") or None,
             file_start_time=file_start_time or None,
             file_end_time=file_end_time or None,
+            anchor_for_asset_id=anchor_for_asset_id,
         )
         session.assets.append(record)
         session.status = "ASSETS_RECEIVED"
@@ -286,6 +308,7 @@ class IntakeEngine:
                 "intake_asset_id": record.intake_asset_id,
                 "role": role,
                 "sha256": record.sha256,
+                "anchor_for_asset_id": record.anchor_for_asset_id,
             },
         )
         return record
@@ -308,6 +331,51 @@ class IntakeEngine:
         for asset in session.assets:
             path = self.staged_path(session, asset)
             suffix = path.suffix.lower()
+            if asset.role == "EXPERIMENT_METADATA":
+                try:
+                    from battery_workbench.synchronization.m2k_evidence import (
+                        read_m2k_acquisition_start,
+                    )
+
+                    parsed = read_m2k_acquisition_start(path)
+                    target = next(
+                        (
+                            item
+                            for item in session.assets
+                            if item.intake_asset_id == asset.anchor_for_asset_id
+                        ),
+                        None,
+                    )
+                    if target is None or target.role != "ULTRASOUND":
+                        raise IntakePolicyError(
+                            "M2K evidence target must be an uploaded ULTRASOUND asset"
+                        )
+                    record = AdapterDetectionRecord(
+                        intake_asset_id=asset.intake_asset_id,
+                        state="DETECTED_UNIQUE",
+                        modality=None,
+                        adapter_id="M2KTimeEvidence",
+                        adapter_version="0.1.0",
+                        asset_role=asset.role,
+                        detection_reason=(
+                            "explicit M2K dateAcquis time evidence for "
+                            f"{target.original_filename}: "
+                            f"{parsed.anchor_datetime.isoformat()} (timezone unknown)"
+                        ),
+                        matched_signatures=["xml:M2kData/@dateAcquis", f"sha256:{asset.sha256}"],
+                    )
+                except Exception as exc:  # noqa: BLE001 — report invalid evidence at detect
+                    record = AdapterDetectionRecord(
+                        intake_asset_id=asset.intake_asset_id,
+                        state="UNSUPPORTED",
+                        adapter_id="M2KTimeEvidence",
+                        asset_role=asset.role,
+                        detection_reason=f"invalid M2K time evidence: {exc}",
+                        matched_signatures=[f"suffix:{suffix}"],
+                    )
+                detections.append(record)
+                continue
+
             matches: list[dict[str, Any]] = []
             if suffix in ELECTRICAL_SUFFIXES:
                 matches.append(
@@ -385,6 +453,7 @@ class IntakeEngine:
         checks: list[dict[str, Any]] = []
         electrical_ok = True
         ultrasound_ok = True
+        time_evidence_ok = True
         frames_meta: dict[str, int] = {}
 
         for asset in session.assets:
@@ -397,7 +466,35 @@ class IntakeEngine:
                     f"asset {asset.intake_asset_id} has no unique adapter detection"
                 )
             path = self.staged_path(session, asset)
-            if detection.modality == "electrical":
+            if asset.role == "EXPERIMENT_METADATA":
+                try:
+                    from battery_workbench.synchronization.m2k_evidence import (
+                        read_m2k_acquisition_start,
+                    )
+
+                    parsed = read_m2k_acquisition_start(path)
+                    checks.append(
+                        {
+                            "dimension": "FORMAT_VALIDITY",
+                            "level": "FULL_PARSE",
+                            "passed": True,
+                            "detail": (
+                                f"M2K dateAcquis={parsed.anchor_datetime.isoformat()} "
+                                "(timezone UNKNOWN; provisional anchor evidence only)"
+                            ),
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 — evidence parse failures block commit
+                    time_evidence_ok = False
+                    checks.append(
+                        {
+                            "dimension": "FORMAT_VALIDITY",
+                            "level": "FULL_PARSE",
+                            "passed": False,
+                            "detail": f"M2K time evidence invalid: {exc}",
+                        }
+                    )
+            elif detection.modality == "electrical":
                 try:
                     from battery_workbench.io.electrical.custom_excel import (
                         read_electrical_workbook,
@@ -478,7 +575,7 @@ class IntakeEngine:
             }
         )
 
-        overall = electrical_ok and ultrasound_ok and required_roles_present
+        overall = electrical_ok and ultrasound_ok and time_evidence_ok and required_roles_present
         from battery_workbench.intake.models import ValidationCheck
 
         validation = ImportValidationRecord(
@@ -488,7 +585,11 @@ class IntakeEngine:
             checks=[ValidationCheck.model_validate(c) for c in checks],
             sampling_rate_hz=None,
             sampling_rate_status="UNKNOWN",
-            timebase_status="UNKNOWN",
+            timebase_status=(
+                "PROVISIONAL"
+                if any(asset.role == "EXPERIMENT_METADATA" for asset in session.assets)
+                else "UNKNOWN"
+            ),
         )
         session.validation = validation
         session.status = "VALIDATED" if overall else session.status
@@ -526,14 +627,22 @@ class IntakeEngine:
             "sampling_rate_status": "UNKNOWN",
             "timebase_status": "UNKNOWN",
             "assets": [],
+            "time_anchor_evidence": [],
         }
         try:
+            committed_asset_ids: dict[str, str] = {}
+            committed_manifest_rows: dict[str, dict[str, str]] = {}
             for asset in session.assets:
+                if asset.role == "EXPERIMENT_METADATA":
+                    continue
                 detection = next(
                     d for d in session.detections if d.intake_asset_id == asset.intake_asset_id
                 )
                 modality = detection.modality
-                assert modality is not None
+                if modality is None:
+                    raise IntakePolicyError(
+                        f"asset {asset.original_filename} has no supported modality"
+                    )
                 role_dir = {"ELECTRICAL": "electrical", "ULTRASOUND": "ultrasound"}.get(
                     asset.role, "auxiliary"
                 )
@@ -568,8 +677,11 @@ class IntakeEngine:
                         "intake_session_id": session.session_id,
                         "adapter_id": detection.adapter_id or "",
                         "adapter_version": detection.adapter_version or "",
+                        "time_anchor_metadata_path": "",
                     }
                 )
+                committed_asset_ids[asset.intake_asset_id] = asset_id
+                committed_manifest_rows[asset.intake_asset_id] = manifest_assets[-1]
                 import_manifest["assets"].append(
                     {
                         "asset_id": asset_id,
@@ -579,6 +691,38 @@ class IntakeEngine:
                         "adapter_version": detection.adapter_version,
                     }
                 )
+            for asset in session.assets:
+                if asset.role != "EXPERIMENT_METADATA":
+                    continue
+                target_asset_id = committed_asset_ids.get(asset.anchor_for_asset_id or "")
+                target_row = committed_manifest_rows.get(asset.anchor_for_asset_id or "")
+                if not target_asset_id or target_row is None:
+                    raise IntakePolicyError(
+                        "M2K time evidence binding does not resolve to a committed Ultrasound asset"
+                    )
+                dest_dir = canonical_base / "timebase_evidence"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / asset.stored_filename
+                if dest.exists():
+                    if sha256_file(dest) != asset.sha256:
+                        raise IntakePolicyError(
+                            f"committed time evidence is immutable; checksum conflict for {dest.name}"
+                        )
+                else:
+                    shutil.move(str(self.staged_path(session, asset)), str(dest))
+                relative_path = str(dest.relative_to(self.raw_root))
+                target_row["time_anchor_metadata_path"] = relative_path
+                import_manifest["time_anchor_evidence"].append(
+                    {
+                        "intake_asset_id": asset.intake_asset_id,
+                        "ultrasound_asset_id": target_asset_id,
+                        "relative_path": relative_path,
+                        "sha256": asset.sha256,
+                        "source_ref": "M2kData/@dateAcquis",
+                    }
+                )
+            if import_manifest["time_anchor_evidence"]:
+                import_manifest["timebase_status"] = "PROVISIONAL"
             self._append_manifest_rows(manifest_assets, battery_id=battery_id)
         except IntakePolicyError:
             session.status = "FAILED"
@@ -632,6 +776,7 @@ class IntakeEngine:
             "file_end_time",
             "parser_name",
             "parser_version",
+            "time_anchor_metadata_path",
         ]
         if not assets_csv.exists():
             assets_csv.write_text(",".join(fieldnames) + "\n", encoding="utf-8")
@@ -646,8 +791,18 @@ class IntakeEngine:
                     writer.writeheader()
                     for row in existing_rows:
                         relative = Path(row.get("relative_path", "")).parts
-                        inferred = relative[1] if len(relative) >= 3 and relative[0] == "batteries" else ""
+                        inferred = (
+                            relative[1] if len(relative) >= 3 and relative[0] == "batteries" else ""
+                        )
                         writer.writerow({**row, "battery_id": inferred})
+            elif "time_anchor_metadata_path" not in existing_header:
+                migrated_header = [*existing_header, "time_anchor_metadata_path"]
+                temporary = assets_csv.with_suffix(".csv.tmp")
+                with temporary.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=migrated_header)
+                    writer.writeheader()
+                    writer.writerows(existing_rows)
+                temporary.replace(assets_csv)
         existing_checksum_keys = set()
         if assets_csv.is_file():
             for line in assets_csv.read_text(encoding="utf-8").splitlines()[1:]:
@@ -667,8 +822,7 @@ class IntakeEngine:
         with experiments_csv.open("r", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         if not any(
-            r["experiment_id"] == assets[0]["experiment_id"]
-            and r.get("battery_id") == battery_id
+            r["experiment_id"] == assets[0]["experiment_id"] and r.get("battery_id") == battery_id
             for r in rows
         ):
             with experiments_csv.open("a", encoding="utf-8", newline="") as handle:

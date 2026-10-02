@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from battery_workbench.synchronization.m2k_evidence import M2KAcquisitionStartEvidence
 from battery_workbench.synchronization.schemas import (
     TimeAnchorCandidate,
     TimeAnchorEvidence,
@@ -25,13 +26,13 @@ def collect_candidates(
     modality: str,
     file_start_time: datetime | None,
     overrides: dict[str, TimeAnchorOverride] | None = None,
+    m2k_evidence: M2KAcquisitionStartEvidence | None = None,
 ) -> tuple[list[TimeAnchorCandidate], list[TimeAnchorEvidence]]:
     """Build candidate anchors and their evidence for a single asset.
 
-    Deterministic source order for evidence: manual override (if any), then
-    manifest ``file_start_time`` (if any). A filename hint is intentionally
-    not constructed here; callers that detect a hint add it as evidence via
-    ``filename_hint_evidence`` without promoting it.
+    Candidate priority is applied by ``anchors.select_anchor``. M2K evidence is
+    accepted only when a DataAsset explicitly references its metadata file. A
+    filename hint is never constructed as a candidate.
     """
     overrides = overrides or {}
     candidates: list[TimeAnchorCandidate] = []
@@ -63,6 +64,32 @@ def collect_candidates(
             )
         )
 
+    if m2k_evidence is not None:
+        evidence.append(
+            TimeAnchorEvidence(
+                evidence_id=f"{asset_id}-m2k-config",
+                asset_id=asset_id,
+                source_type="M2K_CONFIG_DATE_ACQUIS",
+                source_ref=m2k_evidence.source_ref,
+                raw_value=m2k_evidence.anchor_datetime.strftime("%d-%m-%Y %H:%M:%S"),
+                parsed_value=m2k_evidence.anchor_datetime,
+                source_sha256=m2k_evidence.source_sha256 or None,
+                message="explicitly referenced M2K dateAcquis metadata",
+            )
+        )
+        candidates.append(
+            TimeAnchorCandidate(
+                anchor_id=f"{asset_id}-m2k-config",
+                asset_id=asset_id,
+                anchor_datetime=m2k_evidence.anchor_datetime,
+                elapsed_time_s_at_anchor=0.0,
+                source_type="M2K_CONFIG_DATE_ACQUIS",
+                source_ref=m2k_evidence.source_ref,
+                status="PROVISIONAL",
+                timezone_known=False,
+                notes="M2K metadata is an explicit candidate, not validated synchronization",
+            )
+        )
     if file_start_time is not None:
         evidence.append(
             TimeAnchorEvidence(

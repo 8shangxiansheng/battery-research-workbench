@@ -63,6 +63,7 @@ class IntakeAssetRecord(BaseModel):
     content_kind: str | None = None  # sniffed mime-ish hint, never authoritative
     file_start_time: str | None = None
     file_end_time: str | None = None
+    anchor_for_asset_id: str | None = None
 
 
 class AdapterDetectionRecord(BaseModel):

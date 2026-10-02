@@ -39,6 +39,7 @@ def list_waveform_frames(request: Request, battery_id: str, experiment_id: str) 
     frames = pd.read_parquet(
         frames_path,
         columns=[
+            "ultrasound_asset_id",
             "frame_index_raw",
             "waveform_group",
             "waveform_row_index",
@@ -47,7 +48,10 @@ def list_waveform_frames(request: Request, battery_id: str, experiment_id: str) 
     ).reset_index(drop=True)
     items = [
         {
+            "ultrasound_asset_id": str(r.ultrasound_asset_id),
+            "frame_index_raw": int(str(r.frame_index_raw)),
             "frame_index": int(str(r.frame_index_raw)),
+            "event_order_index": int(r.Index),
             "waveform_group": str(r.waveform_group),
             "waveform_row_index": int(str(r.waveform_row_index)),
             "sample_count": int(str(r.waveform_sample_count)),
@@ -75,6 +79,7 @@ def get_waveform_frame(
     battery_id: str,
     experiment_id: str,
     frame_index: int,
+    ultrasound_asset_id: str | None = Query(default=None),
     max_points: int = Query(default=500, ge=1, le=MAX_PREVIEW_POINTS),
 ) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
@@ -98,9 +103,24 @@ def get_waveform_frame(
     import zarr
 
     frames = pd.read_parquet(
-        frames_path, columns=["frame_index_raw", "waveform_group", "waveform_row_index"]
+        frames_path,
+        columns=["ultrasound_asset_id", "frame_index_raw", "waveform_group", "waveform_row_index"],
     ).reset_index(drop=True)
     row = frames[frames["frame_index_raw"] == frame_index]
+    if ultrasound_asset_id is not None:
+        row = row[row["ultrasound_asset_id"].astype(str) == ultrasound_asset_id]
+    elif len(row) > 1:
+        raise APIError(
+            ErrorCode.CONFLICT,
+            "frame_index_raw is ambiguous across Ultrasound DataAssets; provide ultrasound_asset_id",
+            {"frame_index_raw": frame_index, "ultrasound_asset_ids": sorted(row["ultrasound_asset_id"].astype(str).unique())},
+        )
+    if len(row) > 1:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "frame identity is duplicated within one Ultrasound DataAsset",
+            {"frame_index_raw": frame_index, "ultrasound_asset_id": ultrasound_asset_id},
+        )
     if row.empty:
         raise APIError(ErrorCode.NOT_FOUND, "frame not found")
     r = row.iloc[0]
@@ -115,7 +135,9 @@ def get_waveform_frame(
     ]
     return {
         "data": {
+            "ultrasound_asset_id": str(r.ultrasound_asset_id),
             "frame_index": int(frame_index),
+            "frame_index_raw": int(frame_index),
             "waveform_group": str(r.waveform_group),
             "waveform_row_index": int(r.waveform_row_index),
             "waveform_length": length,

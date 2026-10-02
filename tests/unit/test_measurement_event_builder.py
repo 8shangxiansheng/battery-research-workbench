@@ -139,12 +139,16 @@ def test_oot_event_preserved_t07(tmp_path: Path) -> None:
 
 
 def test_timestamp_unavailable_preserved_t08(tmp_path: Path) -> None:
-    _run([_aligned_row(0, "TIMESTAMP_UNAVAILABLE", locator=None)], tmp_path)
+    unavailable = _aligned_row(0, "TIMESTAMP_UNAVAILABLE", locator=None)
+    unavailable["match_block_reason"] = "TIMEBASE_CONFLICT"
+    _run([unavailable], tmp_path)
     out = pd.read_parquet(
         tmp_path / "multimodal" / "CELL_X" / "EXP_X" / "measurement_events.parquet"
     )
     row = out.iloc[0]
     assert row["event_quality_status"] == "TIMESTAMP_UNAVAILABLE"
+    assert row["match_block_reason"] == "TIMEBASE_CONFLICT"
+    assert "match_block_reason=TIMEBASE_CONFLICT" in row["event_quality_reason"]
     assert bool(row["analysis_eligible"]) is False
     assert row["voltage_v"] is None
 

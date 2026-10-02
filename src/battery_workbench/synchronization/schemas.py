@@ -26,6 +26,7 @@ CandidateStatus = Literal[
 ]
 SourceType = Literal[
     "MANIFEST_FILE_START",
+    "M2K_CONFIG_DATE_ACQUIS",
     "MANUAL_OVERRIDE",
     "FILENAME_HINT",
     "EXPERIMENT_START_HINT",
@@ -86,6 +87,7 @@ class TimeAnchorEvidence(BaseModel):
     parsed_value: datetime | None = None
     supports_candidate: bool = True
     conflicts_with_candidate: bool = False
+    source_sha256: str | None = None
     message: str = ""
 
 
@@ -127,6 +129,7 @@ class AssetAnchorAssessment(BaseModel):
     selected_anchor_id: str | None = None
     anchor_status: CandidateStatus | None = None
     coverage: CoverageDiagnostics | None = None
+    evidence: list[TimeAnchorEvidence] = Field(default_factory=list)
     conflicts: list[TimeAnchorEvidence] = Field(default_factory=list)
     validated_sync: bool = False
 

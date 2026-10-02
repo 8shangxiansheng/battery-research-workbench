@@ -64,13 +64,16 @@ def _event_id(row: pd.Series) -> str | None:
     )
 
 
-def _frame_identity(aligned: pd.DataFrame) -> dict[int, str]:
-    """Build frame_index_raw -> measurement_event_id from the aligned frame."""
-    mapping: dict[int, str] = {}
+def _frame_identity(aligned: pd.DataFrame) -> dict[tuple[str, int], str]:
+    """Build (ultrasound_asset_id, frame_index_raw) -> event identity."""
+    mapping: dict[tuple[str, int], str] = {}
     for _, row in aligned.iterrows():
         eid = _event_id(row)
         if eid is not None:
-            mapping[int(row["frame_index_raw"])] = eid
+            key = (str(row["ultrasound_asset_id"]), int(row["frame_index_raw"]))
+            if key in mapping:
+                raise ValueError(f"duplicate aligned frame identity {key!r}")
+            mapping[key] = eid
     return mapping
 
 
@@ -81,7 +84,7 @@ def validate_candidate_invariant(
     """Every ambiguous event's candidate relation rows must equal candidate_record_count."""
     if candidates.empty:
         return
-    # Candidates may not carry measurement_event_id; derive via aligned frame identity.
+    # Candidates may not carry measurement_event_id; derive only from composite identity.
     frame_to_event = _frame_identity(aligned)
     if "measurement_event_id" in candidates.columns:
         count_by_event: dict[str, int] = candidates.groupby("measurement_event_id").size().to_dict()
@@ -89,13 +92,23 @@ def validate_candidate_invariant(
         count_by_event = {}
         for _, crow in candidates.iterrows():
             frame = int(crow["frame_index_raw"])
-            eid = frame_to_event.get(frame)
+            asset = crow.get("ultrasound_asset_id")
+            if asset is None or pd.isna(asset):
+                matches = [event_id for (_, local_frame), event_id in frame_to_event.items() if local_frame == frame]
+                if len(matches) > 1:
+                    raise ValueError(
+                        f"candidate frame {frame} is ambiguous across Ultrasound DataAssets"
+                    )
+                eid = matches[0] if matches else None
+            else:
+                eid = frame_to_event.get((str(asset), frame))
             if eid is not None:
                 count_by_event[eid] = count_by_event.get(eid, 0) + 1
     for _, row in aligned.iterrows():
         if row["match_status"] != "MATCHED_AMBIGUOUS":
             continue
-        eid = frame_to_event.get(int(row["frame_index_raw"]))
+        key = (str(row["ultrasound_asset_id"]), int(row["frame_index_raw"]))
+        eid = frame_to_event.get(key)
         if eid is None:
             continue
         declared = (

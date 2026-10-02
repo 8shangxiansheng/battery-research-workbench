@@ -704,9 +704,29 @@ class ToolGateway:
             )
         frames = pd.read_parquet(
             base / "frames.parquet",
-            columns=["frame_index_raw", "waveform_group", "waveform_row_index"],
+            columns=[
+                "ultrasound_asset_id",
+                "frame_index_raw",
+                "waveform_group",
+                "waveform_row_index",
+            ],
         )
         row = frames[frames["frame_index_raw"] == int(inputs["frame_index"])]
+        asset_id = inputs.get("ultrasound_asset_id")
+        if asset_id is not None:
+            row = row[row["ultrasound_asset_id"].astype(str) == str(asset_id)]
+        if len(row) > 1:
+            return ToolResult(
+                status="BLOCKED",
+                error={
+                    "code": "AMBIGUOUS_FRAME_IDENTITY",
+                    "message": (
+                        "frame_index is local to an ultrasound asset; provide "
+                        "ultrasound_asset_id to inspect this frame"
+                    ),
+                },
+                scientific_context=self._scientific_context(ctx),
+            )
         if row.empty:
             raise PermissionError("frame not found")
         r = row.iloc[0]
@@ -722,6 +742,7 @@ class ToolGateway:
         ]
         return self._wrap(
             {
+                "ultrasound_asset_id": str(r.ultrasound_asset_id),
                 "frame_index": int(inputs["frame_index"]),
                 "waveform_length": len(wave),
                 "x_axis": "SAMPLE_INDEX",

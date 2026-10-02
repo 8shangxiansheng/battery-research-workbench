@@ -47,6 +47,29 @@ CANONICAL_TOF_OUTPUT_COLUMNS = [
 ]
 
 
+def canonical_tof_values_by_event(
+    event_ids: list[str], canonical_rows: pd.DataFrame
+) -> list[float | None]:
+    """Return canonical TOF values aligned by stable MeasurementEvent identity.
+
+    Raw frame indices are local to a DataAsset and may repeat across files; they
+    must never be used as a cross-asset lookup key.
+    """
+    required = {"measurement_event_id", "tof_us", "tof_status"}
+    if not required <= set(canonical_rows.columns):
+        raise ValueError(f"canonical TOF rows require columns: {sorted(required)}")
+    valid = canonical_rows[canonical_rows["tof_status"] == "VALID"].dropna(
+        subset=["measurement_event_id", "tof_us"]
+    )
+    if valid["measurement_event_id"].astype(str).duplicated().any():
+        raise ValueError("canonical TOF contains duplicate MeasurementEvent identities")
+    values = {
+        str(row.measurement_event_id): float(row.tof_us)
+        for row in valid.itertuples(index=False)
+    }
+    return [values.get(str(event_id)) for event_id in event_ids]
+
+
 def effective_fs(
     effective_parameters: dict[str, Any], *, require_verified: bool = True
 ) -> tuple[float | None, bool]:

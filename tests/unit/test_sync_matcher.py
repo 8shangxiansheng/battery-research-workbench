@@ -9,6 +9,7 @@ from battery_workbench.synchronization.matcher import (
     build_electrical_index,
     find_nearest_candidates,
 )
+from battery_workbench.synchronization.sync_service import align_frames
 
 
 def _records(timestamps: list[datetime], locators: list[int] | None = None) -> pd.DataFrame:
@@ -46,6 +47,49 @@ def test_exact_unique_match_t01() -> None:
     assert result.candidate_timestamp_count == 1
     assert result.candidate_record_count == 1
     assert result.ambiguity_type == "NONE"
+
+
+def test_conflicting_time_anchor_cannot_enter_nearest_match() -> None:
+    electrical = _records([datetime(2024, 1, 6, 10, 0, 0)])
+    index = _index(electrical)
+    ultrasound = pd.DataFrame(
+        {
+            "ultrasound_asset_id": ["U1"],
+            "frame_index_raw": [7],
+            "provisional_absolute_timestamp": [pd.Timestamp("2024-01-06 10:00:00")],
+            "anchor_id": ["U1-m2k-config"],
+            "anchor_status": ["CONFLICTING"],
+            "timestamp_available": [True],
+        }
+    )
+
+    aligned = align_frames(
+        ultrasound,
+        index,
+        max_sync_error_s=1.0,
+        tie_tolerance_s=1e-9,
+    )
+
+    assert aligned.loc[0, "match_status"] == "TIMESTAMP_UNAVAILABLE"
+    assert aligned.loc[0, "match_block_reason"] == "TIMEBASE_CONFLICT"
+    assert pd.isna(aligned.loc[0, "electrical_asset_id"])
+    assert pd.isna(aligned.loc[0, "electrical_record_locator"])
+    assert pd.isna(aligned.loc[0, "sync_error_s"])
+
+
+def test_non_monotonic_record_input_uses_sorted_lookup_and_original_locator() -> None:
+    first = datetime(2024, 1, 6, 10, 0, 1)
+    second = datetime(2024, 1, 6, 10, 0, 2)
+    records = _records([second, first], locators=[42, 41])
+    original_timestamps = records["timestamp"].tolist()
+
+    index = _index(records)
+    result = find_nearest_candidates(first, index, tie_tolerance_s=1e-9)
+
+    assert records["timestamp"].tolist() == original_timestamps
+    assert result.candidate_record_count == 1
+    assert result.best_timestamp == first
+    assert index.record_lists[first][0]["locator"] == "41"
 
 
 def test_nearest_previous_t02() -> None:

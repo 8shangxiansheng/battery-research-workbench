@@ -59,6 +59,11 @@ def load_data_assets(path: str | Path) -> list[DataAsset]:
                 relative_path=Path(row["relative_path"]),
                 file_start_time=_dt(row.get("file_start_time", "")),
                 file_end_time=_dt(row.get("file_end_time", "")),
+                time_anchor_metadata_path=(
+                    Path(row["time_anchor_metadata_path"])
+                    if row.get("time_anchor_metadata_path")
+                    else None
+                ),
                 parser_name=row.get("parser_name") or None,
                 parser_version=row.get("parser_version") or None,
             )

@@ -76,15 +76,36 @@ def align_frames(
             "provisional_absolute_timestamp": ts,
             "anchor_id": urow.get("anchor_id"),
             "anchor_status": urow.get("anchor_status"),
+            "match_block_reason": None,
             "validated_sync": False,
             # composite selected identity: (electrical_asset_id, locator);
             # filled only for MATCHED_UNIQUE, null otherwise (BRW-010R §2/§4).
             "electrical_asset_id": None,
         }
 
+        if urow.get("anchor_status") == "CONFLICTING":
+            base.update(
+                match_status="TIMESTAMP_UNAVAILABLE",
+                match_block_reason="TIMEBASE_CONFLICT",
+                electrical_asset_id=None,
+                electrical_record_locator=None,
+                electrical_timestamp=None,
+                sync_error_s=None,
+                within_tolerance=False,
+                candidate_timestamp_count=0,
+                candidate_record_count=0,
+                sync_ambiguous=False,
+                ambiguity_type=None,
+                boundary_flag=False,
+                boundary_reason=None,
+            )
+            rows.append(base)
+            continue
+
         if not available:
             base.update(
                 match_status="TIMESTAMP_UNAVAILABLE",
+                match_block_reason="TIMESTAMP_UNAVAILABLE",
                 electrical_asset_id=None,
                 electrical_record_locator=None,
                 electrical_timestamp=None,
@@ -103,6 +124,7 @@ def align_frames(
         if tz_mismatch:
             base.update(
                 match_status="TIMEZONE_MISMATCH",
+                match_block_reason="TIMEZONE_MISMATCH",
                 electrical_asset_id=None,
                 electrical_record_locator=None,
                 electrical_timestamp=None,

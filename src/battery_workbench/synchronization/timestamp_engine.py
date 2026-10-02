@@ -106,7 +106,7 @@ def construct_asset_timestamps(
             strict=False,
         )
     ):
-        if anchor_dt is not None:
+        if anchor_dt is not None and anchor_status != "CONFLICTING":
             constructed = construct_timestamp(
                 anchor_dt.to_pydatetime(), float(elapsed), elapsed_at_anchor
             )
@@ -252,15 +252,12 @@ def build_ultrasound_timestamps(
         outputs.append(out)
         asset_results.append(diag)
         clock_models.append(_clock_model_for_asset(meta, config))
-        if diag.timestamp_available_count == 0:
-            warnings.append(f"asset {asset_id}: no anchor; timestamps unavailable")
-        elif meta.get("anchor_status") == "CONFLICTING":
-            # A conflicting but selected anchor still timestamps, but the
-            # conflict is propagated to the caller (BRW-009 §10).
+        if meta.get("anchor_status") == "CONFLICTING":
             warnings.append(
-                f"asset {asset_id}: anchor_status CONFLICTING; selected anchor used "
-                "with provisional-with-warning status"
+                f"asset {asset_id}: conflicting time evidence; absolute timestamps blocked"
             )
+        elif diag.timestamp_available_count == 0:
+            warnings.append(f"asset {asset_id}: no anchor; timestamps unavailable")
 
     # Concatenate outputs and restore the original frames row order.
     combined = pd.concat(outputs, ignore_index=True)

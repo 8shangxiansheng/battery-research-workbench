@@ -60,6 +60,63 @@ def test_candidate_count_invariant_3_t17b() -> None:
     assert count == 3
 
 
+def test_candidate_relation_identity_lookup_uses_asset_and_local_frame() -> None:
+    candidates = pd.DataFrame(
+        {
+            "frame_index_raw": [0, 0],
+            "ultrasound_asset_id": ["U001", "U002"],
+        }
+    )
+    lookup = {
+        ("U001", 0): ("CELL_X", "EXP_X", "U001"),
+        ("U002", 0): ("CELL_X", "EXP_X", "U002"),
+    }
+
+    relation = build_candidate_relation(candidates, identity_lookup=lookup)
+
+    assert relation["measurement_event_id"].tolist() == [
+        "ME::CELL_X::EXP_X::U001::0",
+        "ME::CELL_X::EXP_X::U002::0",
+    ]
+
+
+def test_candidate_relation_legacy_lookup_is_allowed_only_when_unambiguous() -> None:
+    candidate = pd.DataFrame({"frame_index_raw": [0]})
+    single_asset = {("U001", 0): ("CELL_X", "EXP_X", "U001")}
+    relation = build_candidate_relation(candidate, identity_lookup=single_asset)
+    assert relation["measurement_event_id"].tolist() == ["ME::CELL_X::EXP_X::U001::0"]
+
+    multi_asset = {
+        **single_asset,
+        ("U002", 0): ("CELL_X", "EXP_X", "U002"),
+    }
+    with pytest.raises(ValueError, match="ambiguous across Ultrasound DataAssets"):
+        build_candidate_relation(candidate, identity_lookup=multi_asset)
+
+
+def test_candidate_invariant_counts_same_local_frame_separately_by_asset() -> None:
+    from battery_workbench.multimodal.validation import validate_candidate_invariant
+
+    aligned = pd.DataFrame(
+        {
+            "battery_id": ["CELL_X", "CELL_X"],
+            "experiment_id": ["EXP_X", "EXP_X"],
+            "ultrasound_asset_id": ["U001", "U002"],
+            "frame_index_raw": [0, 0],
+            "match_status": ["MATCHED_AMBIGUOUS", "MATCHED_AMBIGUOUS"],
+            "candidate_record_count": [2, 1],
+        }
+    )
+    candidates = pd.DataFrame(
+        {
+            "frame_index_raw": [0, 0, 0],
+            "ultrasound_asset_id": ["U001", "U001", "U002"],
+        }
+    )
+
+    validate_candidate_invariant(aligned, candidates)
+
+
 def test_candidate_count_mismatch_failure_t18(tmp_path: Path) -> None:
     """T18: declared candidate_record_count != actual relation rows -> integrity failure."""
     # aligned declares 3 candidates but the relation table only has 2.

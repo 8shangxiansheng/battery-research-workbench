@@ -29,7 +29,7 @@ from battery_workbench.io.electrical.schemas import (
 from battery_workbench.io.electrical.validation import (
     ElectricalValidationError,
     is_fully_blank,
-    validate_non_decreasing_timestamps,
+    timestamp_order_diagnostic,
     validate_required_columns,
     validate_required_sheets,
     validate_required_values,
@@ -359,12 +359,15 @@ def parse_electrical_asset(
     )
     warnings.extend(sheet_warnings)
 
-    validate_non_decreasing_timestamps(
+    timestamp_warning = timestamp_order_diagnostic(
         records["timestamp"],
+        records["source_row_index"],
         asset_id=asset.asset_id,
         source_file=source_path,
         sheet="record",
     )
+    if timestamp_warning:
+        warnings.append(timestamp_warning)
     duplicate_count = int(records["timestamp"].duplicated().sum())
     if duplicate_count:
         warnings.append(
@@ -384,12 +387,15 @@ def parse_electrical_asset(
             source_file=source_path,
         )
         warnings.extend(sheet_warnings)
-        validate_non_decreasing_timestamps(
+        timestamp_warning = timestamp_order_diagnostic(
             aux_temperature["timestamp"],
+            aux_temperature["source_row_index"],
             asset_id=asset.asset_id,
             source_file=source_path,
             sheet="auxTemp",
         )
+        if timestamp_warning:
+            warnings.append(timestamp_warning)
 
     aux_voltage: pd.DataFrame | None = None
     if "auxVol" in workbook.sheets:
@@ -403,12 +409,15 @@ def parse_electrical_asset(
             source_file=source_path,
         )
         warnings.extend(sheet_warnings)
-        validate_non_decreasing_timestamps(
+        timestamp_warning = timestamp_order_diagnostic(
             aux_voltage["timestamp"],
+            aux_voltage["source_row_index"],
             asset_id=asset.asset_id,
             source_file=source_path,
             sheet="auxVol",
         )
+        if timestamp_warning:
+            warnings.append(timestamp_warning)
 
     source_hash_after = _sha256(source_path)
     if source_hash_after != source_hash_before:

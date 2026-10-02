@@ -2,7 +2,7 @@
 
 Selection is deterministic by priority:
 
-    MANUAL_OVERRIDE > MANIFEST_FILE_START > (no anchor)
+    MANUAL_OVERRIDE > M2K_CONFIG_DATE_ACQUIS > MANIFEST_FILE_START > (no anchor)
 
 Never falls back to ``experiment.start_time`` as a substitute anchor: a
 missing anchor stays missing (``anchor_status == UNVERIFIED``). Conflicts are
@@ -25,7 +25,11 @@ from battery_workbench.synchronization.schemas import (
 # Re-export so callers use a single anchor API surface.
 __all__ = ["collect_candidates"]
 
-_RESOLUTION_PRIORITY = ("MANUAL_OVERRIDE", "MANIFEST_FILE_START")
+_RESOLUTION_PRIORITY = (
+    "MANUAL_OVERRIDE",
+    "M2K_CONFIG_DATE_ACQUIS",
+    "MANIFEST_FILE_START",
+)
 
 
 class MissingTimeAnchorError(ValueError):
@@ -122,7 +126,12 @@ def build_assessment(
     """Assemble a per-asset assessment from candidates and evidence."""
     selected = select_anchor(candidates)
     conflicts = _conflicting_evidence(candidates, evidence)
-    anchor_status = selected.status if selected is not None else None
+    # A priority winner is not authoritative when independent time evidence
+    # disagrees. Preserve the selected candidate for audit, but mark the asset
+    # conflicting so downstream timestamp construction can block it.
+    anchor_status = (
+        "CONFLICTING" if conflicts else (selected.status if selected is not None else None)
+    )
     return AssetAnchorAssessment(
         asset_id=asset_id,
         modality=modality,
@@ -132,6 +141,7 @@ def build_assessment(
         selected_anchor_id=selected.anchor_id if selected is not None else None,
         anchor_status=anchor_status,
         coverage=None,  # filled by validation.assess_coverage
+        evidence=evidence,
         conflicts=conflicts,
         validated_sync=False,
     )

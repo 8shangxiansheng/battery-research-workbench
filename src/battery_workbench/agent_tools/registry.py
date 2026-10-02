@@ -374,6 +374,7 @@ def build_default_registry() -> AgentToolRegistry:
                 "battery_id": STR,
                 "experiment_id": STR,
                 "frame_index": INT,
+                "ultrasound_asset_id": STR,
                 "max_points": INT,
             },
             required=["battery_id", "experiment_id", "frame_index"],

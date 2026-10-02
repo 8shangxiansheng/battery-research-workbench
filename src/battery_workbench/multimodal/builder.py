@@ -51,13 +51,14 @@ _ENRICH_SOURCE: dict[str, str] = {
 
 def build_candidate_relation(
     candidates: pd.DataFrame,
-    identity_lookup: dict[int, tuple[str, str, str]] | None = None,
+    identity_lookup: dict[tuple[str, int], tuple[str, str, str]] | None = None,
 ) -> pd.DataFrame:
     """Attach ``measurement_event_id`` to BRW-010 candidate evidence.
 
     Adds the canonical event id for each candidate row using its frame identity.
-    ``identity_lookup`` maps ``frame_index_raw -> (battery_id, experiment_id,
-    ultrasound_asset_id)`` for candidate tables missing those columns. Does not
+    ``identity_lookup`` maps ``(ultrasound_asset_id, frame_index_raw) ->
+    (battery_id, experiment_id, ultrasound_asset_id)`` for candidate tables
+    missing identity columns. Does not
     recompute, reorder, or collapse candidates.
     """
     if candidates is None or candidates.empty:
@@ -74,8 +75,31 @@ def build_candidate_relation(
             battery = str(row["battery_id"])
             experiment = str(row["experiment_id"])
             asset = str(row["ultrasound_asset_id"])
-        elif identity_lookup is not None and frame in identity_lookup:
-            battery, experiment, asset = identity_lookup[frame]
+        elif identity_lookup is not None:
+            asset_id = row.get("ultrasound_asset_id")
+            key = (str(asset_id), frame) if asset_id is not None and pd.notna(asset_id) else None
+            if key is not None and key in identity_lookup:
+                battery, experiment, asset = identity_lookup[key]
+            elif key is None:
+                matches = [
+                    value
+                    for (asset, local_frame), value in identity_lookup.items()
+                    if local_frame == frame
+                ]
+                if len(matches) == 1:
+                    battery, experiment, asset = matches[0]
+                elif len(matches) > 1:
+                    raise ValueError(
+                        f"candidate frame {frame} is ambiguous across Ultrasound DataAssets"
+                    )
+                else:
+                    raise ValueError(
+                        f"candidate row for frame {frame} lacks a resolvable asset identity"
+                    )
+            else:
+                raise ValueError(
+                    f"candidate row for frame {frame} lacks a resolvable asset identity"
+                )
         else:
             raise ValueError(f"candidate row for frame {frame} lacks identity columns")
         ids.append(build_measurement_event_id(battery, experiment, asset, frame))
@@ -142,6 +166,7 @@ def _build_event(row: dict, cfg: MeasurementEventConfig) -> CanonicalMeasurement
         timezone_known=bool(row.get("timezone_known", False)),
         timezone_name=row.get("timezone_name"),
         match_status=status,
+        match_block_reason=row.get("match_block_reason"),
         sync_error_s=row.get("sync_error_s"),
         within_tolerance=within,
         candidate_timestamp_count=int(row.get("candidate_timestamp_count", 0) or 0),
@@ -157,7 +182,23 @@ def _build_event(row: dict, cfg: MeasurementEventConfig) -> CanonicalMeasurement
         anchor_status=row.get("anchor_status"),
         event_quality_status=quality,
         analysis_eligible=eligible,
-        event_quality_reason="" if eligible else f"match_status={status}",
+        event_quality_reason=(
+            ""
+            if eligible
+            else "; ".join(
+                value
+                for value in (
+                    f"match_status={status}",
+                    (
+                        f"match_block_reason={row.get('match_block_reason')}"
+                        if row.get("match_block_reason") is not None
+                        and pd.notna(row.get("match_block_reason"))
+                        else None
+                    ),
+                )
+                if value
+            )
+        ),
     )
 
 
@@ -233,7 +274,7 @@ def build_measurement_events(
     # Build candidate relation and enforce invariants.
     if candidates is not None and not candidates.empty:
         identity_lookup = {
-            int(row["frame_index_raw"]): (
+            (str(row["ultrasound_asset_id"]), int(row["frame_index_raw"])): (
                 str(row["battery_id"]),
                 str(row["experiment_id"]),
                 str(row["ultrasound_asset_id"]),

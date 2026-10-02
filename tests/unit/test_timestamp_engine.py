@@ -131,8 +131,8 @@ def test_row_count_and_order_preserved_t11(tmp_path: Path) -> None:
     assert out_df["frame_index_raw"].tolist() == [0, 1, 2, 3, 4, 5]
 
 
-def test_conflicting_selected_anchor_t06(tmp_path: Path) -> None:
-    """T06: a conflicting selected anchor still timestamps, with propagated warning."""
+def test_conflicting_selected_anchor_is_blocked_t06(tmp_path: Path) -> None:
+    """T06: conflict evidence remains inspectable but cannot create timestamps."""
     frames = tmp_path / "frames.parquet"
     anchors = tmp_path / "time_anchors.json"
     _write_frames(frames, [_frame(0, 0.031217)])
@@ -142,7 +142,6 @@ def test_conflicting_selected_anchor_t06(tmp_path: Path) -> None:
     _write_anchors(anchors, [asset])
 
     report = _run(frames, anchors, tmp_path / "out")
-    # Conflict is propagated but timestamp construction still proceeds.
     out_df = pd.read_parquet(
         tmp_path
         / "out"
@@ -151,8 +150,11 @@ def test_conflicting_selected_anchor_t06(tmp_path: Path) -> None:
         / "EXP_X"
         / "timestamped_ultrasound_frames.parquet"
     )
-    assert out_df["provisional_absolute_timestamp"].notna().all()
-    assert any("conflict" in w.lower() for w in report.warnings)
+    assert out_df["provisional_absolute_timestamp"].isna().all()
+    assert not out_df["timestamp_available"].any()
+    assert out_df["anchor_id"].notna().all()  # selected candidate remains auditable
+    assert out_df["anchor_status"].eq("CONFLICTING").all()
+    assert any("conflicting time evidence" in w.lower() for w in report.warnings)
 
 
 def test_duplicate_elapsed_not_deduped_t12(tmp_path: Path) -> None:
