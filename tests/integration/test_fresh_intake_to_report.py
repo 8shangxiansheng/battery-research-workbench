@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,6 +80,34 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
     assert ingest.status_code == 200, ingest.text
     assert ingest.json()["data"]["status"] == "SUCCEEDED"
 
+    # Provenance added to the synchronization contract must survive the real
+    # intake → parser → synchronization → MeasurementEvent → public API path.
+    aligned_path = (
+        processed
+        / "synchronization"
+        / battery_id
+        / experiment_id
+        / "aligned_ultrasound_frames.parquet"
+    )
+    aligned = pd.read_parquet(aligned_path)
+    assert {"source_file", "source_line_index"}.issubset(aligned.columns)
+    assert aligned["source_file"].notna().any()
+    assert aligned["source_line_index"].notna().any()
+    alignment = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/alignment-summary"
+    )
+    assert alignment.status_code == 200, alignment.text
+    assert alignment.json()["data"]["target_labels_available"] is False
+    assert alignment.json()["data"]["target_valid"]["soc_reference_percent"] == 0
+    samples = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/alignment-samples?filter=all&limit=1"
+    )
+    assert samples.status_code == 200, samples.text
+    sample = samples.json()["data"]["samples"][0]
+    assert sample["ultrasound_asset_id"]
+    assert sample["ultrasound_source_file"].endswith("/ultrasound.txt")
+    assert sample["ultrasound_source_line_index"] is not None
+    assert sample["electrical_source_file"].endswith("/electrical.xlsx")
     # Same instrument source as the existing verified CELL_001 record; the
     # value is explicitly user-supplied here and never inferred from cadence/filename.
     sampling = client.post(
@@ -118,6 +147,10 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
     assert dataset.status_code == 200, dataset.text
     dataset_data = dataset.json()["data"]
     assert dataset_data["status"] == "SUCCEEDED", json.dumps(dataset_data, default=str)
+    alignment_after_labels = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/alignment-summary"
+    )
+    assert alignment_after_labels.json()["data"]["target_labels_available"] is True
     dataset_manifests = list(
         (processed / "datasets" / battery_id / experiment_id).rglob("dataset_manifest.json")
     )

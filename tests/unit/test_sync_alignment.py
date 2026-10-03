@@ -33,6 +33,8 @@ def _elf(timestamps) -> pd.DataFrame:
             "event_order_index": list(range(n)),
             "anchor_id": ["U001-manifest"] * n,
             "anchor_status": ["PROVISIONAL"] * n,
+            "source_file": ["batteries/CELL_X/EXP_X/ultrasound/example.txt"] * n,
+            "source_line_index": [17] * n,
         }
     )
 
@@ -73,6 +75,11 @@ def test_preserve_ultrasound_row_order_count_t11() -> None:
     aligned = align_frames(u, _electrical(e), max_sync_error_s=1.0, tie_tolerance_s=1e-9)
     assert len(aligned) == len(u)
     assert aligned["frame_index_raw"].tolist() == [0, 1, 2]
+    assert aligned["source_file"].tolist() == [
+        "batteries/CELL_X/EXP_X/ultrasound/example.txt"
+    ] * 3
+    assert aligned["source_line_index"].tolist() == [17, 17, 17]
+    assert aligned["signed_time_delta_s"].tolist() == pytest.approx([-0.3, -0.3, -0.3])
 
 
 def test_timezone_mismatch_t14() -> None:
@@ -81,6 +88,67 @@ def test_timezone_mismatch_t14() -> None:
     e = _erecords([datetime(2024, 1, 6, 10, 0, 0)])
     aligned = align_frames(u, _electrical(e), max_sync_error_s=1.0, tie_tolerance_s=1e-9)
     assert aligned["match_status"].iloc[0] == "TIMEZONE_MISMATCH"
+
+
+def test_mixed_electrical_asset_clocks_block_without_sorting_error() -> None:
+    """Mixed naive/aware clocks across electrical assets are a data blocker, not a crash."""
+    from datetime import UTC
+
+    electrical = pd.DataFrame(
+        {
+            "timestamp": pd.Series(
+                [
+                    datetime(2024, 1, 6, 10, 0, 0),
+                    datetime(2024, 1, 6, 10, 0, 1, tzinfo=UTC),
+                ],
+                dtype=object,
+            ),
+            "source_row_index": [1, 1],
+            "electrical_asset_id": ["E001", "E002"],
+        }
+    )
+    ultrasound = _elf([datetime(2024, 1, 6, 10, 0, 0)])
+
+    aligned = align_frames(
+        ultrasound,
+        _electrical(electrical),
+        max_sync_error_s=1.0,
+        tie_tolerance_s=1e-9,
+    )
+
+    assert aligned["match_status"].iloc[0] == "TIMEZONE_MISMATCH"
+    assert aligned["match_block_reason"].iloc[0] == "ELECTRICAL_ASSETS_MIXED_TIMEZONES"
+    assert pd.isna(aligned["electrical_asset_id"].iloc[0])
+    assert pd.isna(aligned["electrical_record_locator"].iloc[0])
+
+
+def test_mixed_ultrasound_asset_clocks_block_only_incompatible_frames() -> None:
+    """A mixed acoustic clock column must not crash or block compatible frames."""
+    ultrasound = _elf(
+        [datetime(2024, 1, 6, 10, 0, 0), datetime(2024, 1, 6, 10, 0, 1)]
+    )
+    ultrasound["provisional_absolute_timestamp"] = pd.Series(
+        [
+            datetime(2024, 1, 6, 10, 0, 0),
+            datetime(2024, 1, 6, 10, 0, 1, tzinfo=UTC),
+        ],
+        dtype=object,
+    )
+    ultrasound["ultrasound_asset_id"] = ["U_NAIVE", "U_AWARE"]
+    electrical = _erecords(
+        [datetime(2024, 1, 6, 10, 0, 0), datetime(2024, 1, 6, 10, 0, 1)]
+    )
+
+    aligned = align_frames(
+        ultrasound,
+        _electrical(electrical),
+        max_sync_error_s=1.0,
+        tie_tolerance_s=1e-9,
+    )
+
+    assert aligned["match_status"].tolist() == ["MATCHED_UNIQUE", "TIMEZONE_MISMATCH"]
+    assert pd.isna(aligned["electrical_asset_id"].iloc[1])
+    assert aligned["match_block_reason"].iloc[1] == "TIMEZONE_MISMATCH"
 
 
 def test_naive_naive_allowed_t15() -> None:

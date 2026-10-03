@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -426,10 +427,94 @@ def test_alignment_samples_provenance_and_null_identity(client: TestClient) -> N
     row = unique.json()["data"]["samples"][0]
     assert row["electrical_asset_id"] == "E001"
     assert row["sync_error_s"] is not None
+    assert row["ultrasound_asset_id"] == "U001"
+    assert row["ultrasound_source_file"] == (
+        "batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
+    )
+    assert row["ultrasound_source_line_index"] == 1
+    electrical_manifest = json.loads(
+        (PROCESSED / "electrical/CELL_001/EXP_001/parser_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    ultrasound_manifest = json.loads(
+        (PROCESSED / "ultrasound/CELL_001/EXP_001/parser_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert row["electrical_source_sha256"] == electrical_manifest["source_sha256"]["E001"]
+    assert row["ultrasound_source_sha256"] == ultrasound_manifest["source_sha256"]["U001"]
+    assert row["electrical_source_file"].endswith("/electrical/小-1-1-264.xlsx")
     amb = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-samples?filter=ambiguous")
     for s in amb.json()["data"]["samples"]:
         assert s["electrical_asset_id"] is None  # never auto-selected
+        assert s["electrical_source_sha256"] is None
         assert s["sync_ambiguous"] is True
+        assert s["candidate_details_available"] is True
+        assert s["candidate_record_count"] == len(s["electrical_candidates"])
+        assert s["candidate_record_count"] >= 2
+        assert all(candidate["electrical_asset_id"] for candidate in s["electrical_candidates"])
+        assert all(candidate["electrical_record_locator"] for candidate in s["electrical_candidates"])
+        assert all(candidate["electrical_source_file"] for candidate in s["electrical_candidates"])
+        assert all(candidate["electrical_source_sha256"] for candidate in s["electrical_candidates"])
+
+
+def test_alignment_samples_returns_raw_ultrasound_locator(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import features_v2
+
+    timestamp = pd.Timestamp("2024-01-01T00:00:00")
+    joined = pd.DataFrame(
+        [
+            {
+                "measurement_event_id": "CELL_X::EXP_X::U_TEST::7",
+                "frame_index_raw": 7,
+                "ultrasound_asset_id": "U_TEST",
+                "source_file": "batteries/CELL_X/EXP_X/ultrasound/test.txt",
+                "source_line_index": 8,
+                "provisional_absolute_timestamp": timestamp,
+                "electrical_asset_id": "E_TEST",
+                "electrical_record_locator": "E_TEST:4",
+                "electrical_timestamp": timestamp,
+                "match_status": "MATCHED_UNIQUE",
+                "sync_ambiguous": False,
+                "sync_error_s": 0.0,
+                "within_tolerance": True,
+                "analysis_eligible": True,
+                "soc_reference_percent": 42.0,
+                "temperature_c": None,
+                "soh_capacity_reference_percent": None,
+                "voltage_v": 3.7,
+                "current_a": 1.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(features_v2, "_alignment_events_joined", lambda *_: (joined, False))
+    monkeypatch.setattr(
+        features_v2,
+        "_parser_source_assets",
+        lambda *_: {
+            "electrical": {"E_TEST": {"sha256": "b" * 64}},
+            "ultrasound": {"U_TEST": {"sha256": "a" * 64}},
+        },
+    )
+    response = client.get(
+        "/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible"
+    )
+    row = response.json()["data"]["samples"][0]
+    assert row["ultrasound_asset_id"] == "U_TEST"
+    assert row["ultrasound_source_file"].endswith("/ultrasound/test.txt")
+    assert row["ultrasound_source_line_index"] == 8
+    assert row["ultrasound_source_sha256"] == "a" * 64
+    joined.loc[0, "electrical_source_file"] = "batteries/CELL_X/EXP_X/electrical/test.xlsx"
+    # The source file comes from the selected composite electrical record.
+    response = client.get(
+        "/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible"
+    )
+    row = response.json()["data"]["samples"][0]
+    assert row["electrical_source_file"].endswith("/electrical/test.xlsx")
+    assert row["electrical_source_sha256"] == "b" * 64
 
 
 def test_alignment_exclusions_grouped_by_reason(client: TestClient) -> None:

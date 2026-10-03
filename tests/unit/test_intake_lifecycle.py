@@ -225,6 +225,41 @@ class TestUpload:
         )
         assert resp.status_code == 400
 
+    def test_unicode_and_spaced_scientific_filenames_are_allowed(
+        self, env: tuple[TestClient, Path, Path]
+    ) -> None:
+        client, _, _ = env
+        _create_experiment(client, "EXP_001")
+        sid = client.post("/api/v1/experiments/CELL_001/EXP_001/intake-sessions").json()["data"][
+            "session_id"
+        ]
+        for filename, role in (
+            ("小-1-1-269.xlsx", "ELECTRICAL"),
+            ("export - 2024.01.11 - 20.46.45.txt", "ULTRASOUND"),
+        ):
+            response = client.post(
+                f"/api/v1/intake-sessions/{sid}/assets",
+                files={"file": (filename, b"scientific data", "application/octet-stream")},
+                data={"role": role},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()["data"]
+            assert data["original_filename"] == filename
+            assert data["stored_filename"] != filename
+
+    def test_windows_reserved_filename_rejected(self, env: tuple[TestClient, Path, Path]) -> None:
+        client, _, _ = env
+        _create_experiment(client, "EXP_001")
+        sid = client.post("/api/v1/experiments/CELL_001/EXP_001/intake-sessions").json()["data"][
+            "session_id"
+        ]
+        response = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("CON.txt", b"x", "text/plain")},
+            data={"role": "AUXILIARY"},
+        )
+        assert response.status_code == 400
+
     def test_t13_sha256_recorded(self, env: tuple[TestClient, Path, Path]) -> None:
         import hashlib
 
@@ -293,6 +328,47 @@ class TestUpload:
         assert resp.status_code == 200  # staged as a distinct record; conflict surfaces at commit
         assets = client.get(f"/api/v1/intake-sessions/{sid}/assets").json()["data"]["assets"]
         assert len(assets) == 3
+
+    def test_removing_ultrasound_cascades_bound_time_evidence_and_allows_reupload(
+        self, env: tuple[TestClient, Path, Path]
+    ) -> None:
+        client, _, _ = env
+        _create_experiment(client, "EXP_001")
+        sid = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/intake-sessions"
+        ).json()["data"]["session_id"]
+        ultrasound = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("scan.txt", b"waveform", "text/plain")},
+            data={"role": "ULTRASOUND"},
+        ).json()["data"]
+        evidence = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("M2kConfig.xml", b'<M2kData dateAcquis="06-01-2024 09:52:31" />', "application/xml")},
+            data={"role": "EXPERIMENT_METADATA", "anchor_for_asset_id": ultrasound["intake_asset_id"]},
+        ).json()["data"]
+
+        removed = client.delete(
+            f"/api/v1/intake-sessions/{sid}/assets/{ultrasound['intake_asset_id']}"
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["data"]["assets"] == []
+        assert removed.json()["data"]["detections"] == []
+        remaining = client.get(f"/api/v1/intake-sessions/{sid}/assets").json()["data"]["assets"]
+        assert remaining == []
+
+        replacement = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("scan-replacement.txt", b"replacement waveform", "text/plain")},
+            data={"role": "ULTRASOUND"},
+        ).json()["data"]
+        replacement_evidence = client.post(
+            f"/api/v1/intake-sessions/{sid}/assets",
+            files={"file": ("M2kConfig.xml", b'<M2kData dateAcquis="06-01-2024 09:52:31" />', "application/xml")},
+            data={"role": "EXPERIMENT_METADATA", "anchor_for_asset_id": replacement["intake_asset_id"]},
+        )
+        assert replacement_evidence.status_code == 200, replacement_evidence.text
+        assert replacement_evidence.json()["data"]["intake_asset_id"] != evidence["intake_asset_id"]
 
 
 # ---------- adapter detection (T18-T23) ----------

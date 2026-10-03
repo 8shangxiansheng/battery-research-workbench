@@ -19,6 +19,7 @@ class MeasurementEvent(BaseModel):
     electrical_timestamp: datetime | None = None
 
     sync_error_s: float | None = None
+    signed_time_delta_s: float | None = None
     sync_quality: str | None = None
     boundary_flag: bool = False
 

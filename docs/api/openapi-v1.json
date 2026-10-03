@@ -3,6 +3,17 @@
     "schemas": {
       "Body_upload_asset_api_v1_intake_sessions__session_id__assets_post": {
         "properties": {
+          "anchor_for_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor For Asset Id"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
@@ -29,13 +40,6 @@
               }
             ],
             "title": "File Start Time"
-          },
-          "anchor_for_asset_id": {
-            "anyOf": [
-              { "type": "string" },
-              { "type": "null" }
-            ],
-            "title": "Anchor For Asset Id"
           },
           "role": {
             "enum": [
@@ -4377,6 +4381,60 @@
           }
         },
         "summary": "Upload Asset",
+        "tags": [
+          "intake",
+          "experiments"
+        ]
+      }
+    },
+    "/api/v1/intake-sessions/{session_id}/assets/{intake_asset_id}": {
+      "delete": {
+        "operationId": "remove_session_asset_api_v1_intake_sessions__session_id__assets__intake_asset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "intake_asset_id",
+            "required": true,
+            "schema": {
+              "title": "Intake Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Remove Session Asset Api V1 Intake Sessions  Session Id  Assets  Intake Asset Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Session Asset",
         "tags": [
           "intake",
           "experiments"

@@ -68,7 +68,7 @@ class ScientificGuardConfig(BaseModel):
 
 
 class MeasurementEventConfig(BaseModel):
-    version: str = "0.1.0"
+    version: str = "0.3.0"
     quality: QualityConfig = Field(default_factory=QualityConfig)
     electrical_enrichment: ElectricalEnrichmentConfig = Field(
         default_factory=ElectricalEnrichmentConfig
@@ -109,6 +109,7 @@ class CanonicalMeasurementEvent(BaseModel):
     match_status: MatchStatus
     match_block_reason: str | None = None
     sync_error_s: float | None = None
+    signed_time_delta_s: float | None = None
     within_tolerance: bool = False
     candidate_timestamp_count: int = 0
     candidate_record_count: int = 0
@@ -125,6 +126,7 @@ class CanonicalMeasurementEvent(BaseModel):
     # Selected electrical identity (null for ambiguous/OOT/unavailable).
     electrical_asset_id: str | None = None
     electrical_record_locator: str | None = None
+    electrical_source_file: str | None = None
     electrical_row_index: int | None = None
     electrical_timestamp: datetime | None = None
 
@@ -164,6 +166,7 @@ class MeasurementEventCandidate(BaseModel):
     electrical_row_index: int | None = None
     electrical_asset_id: str | None = None
     sync_error_s: float | None = None
+    signed_time_delta_s: float | None = None
     within_tolerance: bool = False
     candidate_timestamp_rank: int = 1
     candidate_record_rank: int = 1
@@ -174,7 +177,7 @@ class MeasurementEventCandidate(BaseModel):
 
 class MeasurementEventManifest(BaseModel):
     builder_name: str = "measurement_event_builder"
-    builder_version: str = "0.1.0"
+    builder_version: str = "0.3.0"
     battery_id: str
     experiment_id: str
     input_paths: dict[str, str] = Field(default_factory=dict)

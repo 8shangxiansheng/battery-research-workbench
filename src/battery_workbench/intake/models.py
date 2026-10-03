@@ -125,6 +125,7 @@ class LifecycleEvent(BaseModel):
         "EXPERIMENT_CREATED",
         "INTAKE_STARTED",
         "ASSET_UPLOADED",
+        "ASSET_REMOVED",
         "ADAPTER_DETECTED",
         "VALIDATION_COMPLETED",
         "INTAKE_COMMITTED",

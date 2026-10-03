@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def _aligned_row(idx: int, status: str, locator=None, err: float = 0.03) -> dict
         "timezone_name": None,
         "match_status": status,
         "sync_error_s": err,
+        "signed_time_delta_s": -0.3 if status == "MATCHED_UNIQUE" else None,
         "within_tolerance": status == "MATCHED_UNIQUE",
         "candidate_timestamp_count": 1,
         "candidate_record_count": 1,
@@ -62,6 +64,7 @@ def _records() -> pd.DataFrame:
             "source_row_index": [1, 2, 3],
             "record_index_raw": [1, 2, 3],
             "electrical_asset_id": ["E1"] * 3,
+            "source_file": ["batteries/CELL_X/EXP_X/electrical/e.xlsx"] * 3,
             "timestamp": pd.to_datetime(
                 [
                     datetime(2024, 1, 6, 10, 0, 0),
@@ -108,6 +111,7 @@ def _candidate_for(a: pd.DataFrame):
                     "frame_index_raw": r["frame_index_raw"],
                     "electrical_record_locator": str(r["electrical_record_locator"]),
                     "sync_error_s": r["sync_error_s"],
+                    "signed_time_delta_s": r["signed_time_delta_s"],
                     "within_tolerance": r["within_tolerance"],
                 }
             )
@@ -122,8 +126,15 @@ def test_unique_exact_enrichment_t03(tmp_path: Path) -> None:
     row = out.iloc[0]
     assert row["voltage_v"] == 3.0
     assert row["current_a"] == 1.0
+    assert row["electrical_source_file"] == "batteries/CELL_X/EXP_X/electrical/e.xlsx"
     assert row["event_quality_status"] == "READY"
+    assert row["signed_time_delta_s"] == pytest.approx(-0.3)
     assert bool(row["analysis_eligible"]) is True
+    manifest_path = (
+        tmp_path / "multimodal" / "CELL_X" / "EXP_X" / "measurement_event_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["builder_version"] == "0.3.0"
 
 
 def test_oot_event_preserved_t07(tmp_path: Path) -> None:

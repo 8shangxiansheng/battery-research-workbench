@@ -168,6 +168,7 @@ def _build_event(row: dict, cfg: MeasurementEventConfig) -> CanonicalMeasurement
         match_status=status,
         match_block_reason=row.get("match_block_reason"),
         sync_error_s=row.get("sync_error_s"),
+        signed_time_delta_s=row.get("signed_time_delta_s"),
         within_tolerance=within,
         candidate_timestamp_count=int(row.get("candidate_timestamp_count", 0) or 0),
         candidate_record_count=int(row.get("candidate_record_count", 0) or 0),
@@ -230,6 +231,7 @@ def _apply_electrical(
         setattr(event, field, value)
     event.electrical_asset_id = str(asset_id)
     event.electrical_record_locator = str(locator)
+    event.electrical_source_file = record.get("source_file")
     event.electrical_row_index = record.get("record_index_raw")
     event.electrical_timestamp = record.get("timestamp")
     return event

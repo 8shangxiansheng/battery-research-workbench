@@ -17,6 +17,8 @@ def _aligned() -> pd.DataFrame:
             "battery_id": ["CELL_X", "CELL_X"],
             "experiment_id": ["EXP_X", "EXP_X"],
             "ultrasound_asset_id": ["U001", "U001"],
+            "source_file": ["batteries/CELL_X/EXP_X/ultrasound/u.txt"] * 2,
+            "source_line_index": [1, 2],
             "frame_index_raw": [0, 1],
             "waveform_group": ["U001/waveform"] * 2,
             "waveform_row_index": [0, 1],
@@ -25,6 +27,7 @@ def _aligned() -> pd.DataFrame:
             ),
             "match_status": ["MATCHED_UNIQUE", "MATCHED_UNIQUE"],
             "sync_error_s": [0.3, 0.3],
+            "signed_time_delta_s": [-0.3, -0.3],
             "within_tolerance": [True, True],
             "sync_ambiguous": [False, False],
             "ambiguity_type": ["NONE", "NONE"],
@@ -41,6 +44,7 @@ def _candidates() -> pd.DataFrame:
             "electrical_record_locator": ["E1:100"],
             "electrical_timestamp": pd.to_datetime([datetime(2024, 1, 6, 10, 0, 0)]),
             "sync_error_s": [0.3],
+            "signed_time_delta_s": [-0.3],
             "within_tolerance": [True],
         }
     )
@@ -114,3 +118,11 @@ def test_aligned_and_candidates_written_t19(tmp_path: Path) -> None:
     # Row counts preserved in the written files.
     aligned = pd.read_parquet(sync_dir / "aligned_ultrasound_frames.parquet")
     assert len(aligned) == 2
+    assert aligned["signed_time_delta_s"].tolist() == [-0.3, -0.3]
+    candidates = pd.read_parquet(sync_dir / "synchronization_candidates.parquet")
+    assert candidates["signed_time_delta_s"].tolist() == [-0.3]
+    assert aligned["source_file"].tolist() == [
+        "batteries/CELL_X/EXP_X/ultrasound/u.txt",
+        "batteries/CELL_X/EXP_X/ultrasound/u.txt",
+    ]
+    assert aligned["source_line_index"].tolist() == [1, 2]

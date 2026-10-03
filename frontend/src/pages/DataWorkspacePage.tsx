@@ -139,8 +139,8 @@ export function DataWorkspacePage() {
                 <li>
                   match_state: <Badge tone={sync.data.data.match_state === "MATCHED_UNIQUE" ? "success" : "warning"}>{sync.data.data.match_state}</Badge>
                 </li>
-                <li>matched frames: {sync.data.data.matches_frames ?? "—"}</li>
-                <li>ambiguous frames: {(sync.data.data.ambiguous_frames as unknown[]).length}</li>
+                <li>超声帧：{sync.data.data.total_frames ?? "—"}；对齐产物行数：{sync.data.data.aligned_rows ?? "—"}；产物记录为有候选：{sync.data.data.candidate_matched_frames ?? "未知"}</li>
+                <li>唯一匹配：{sync.data.data.match_counts.matched_unique ?? "未知"}；歧义：{sync.data.data.match_counts.matched_ambiguous}；阻断/无候选：{sync.data.data.match_counts.out_of_tolerance + sync.data.data.match_counts.timestamp_unavailable + sync.data.data.match_counts.no_candidate + sync.data.data.match_counts.timezone_mismatch}</li>
                 <li>sync tolerance: {sync.data.data.sync_tolerance_s ?? "—"} s</li>
                 <li>
                   validated_sync: <strong>{String(sync.data.data.validated_sync)}</strong>
@@ -149,8 +149,19 @@ export function DataWorkspacePage() {
                   timebase: <Badge tone="info">{sync.data.data.timebase_status}</Badge>
                 </li>
               </ul>
+              <h3>逐资产时间锚点</h3>
+              {sync.data.data.time_anchors.length === 0 ? <p>没有时间锚点记录；当前匹配不能视为可靠声电关联。</p> : (
+                <ul>{sync.data.data.time_anchors.map((anchor) => (
+                  <li key={anchor.asset_id}>
+                    <strong>{anchor.asset_id}</strong>：{anchor.anchor_status}；来源 {anchor.source_type ?? "未知"}；
+                    {anchor.anchor_datetime ?? "无锚点时间"}；时区 {anchor.timezone_known ? "已知" : "未知"}。
+                    {anchor.conflicts.length > 0 && <span role="alert"> 冲突证据 {anchor.conflicts.length} 条：{anchor.conflicts.map((item) => item.source_ref ?? item.source_type).join("、")}</span>}
+                    {anchor.evidence.length > 0 && <small> 证据：{anchor.evidence.map((item) => item.source_ref ?? item.source_type).join("、")}</small>}
+                  </li>
+                ))}</ul>
+              )}
               <p>
-                <small>{sync.data.data.note}</small>
+                <small>{sync.data.data.note}；唯一最近时间匹配不代表时间基准已验证，且不得据 Cycle 推断跨文件对应。</small>
               </p>
             </div>
           ) : null}

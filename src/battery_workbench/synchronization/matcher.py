@@ -31,6 +31,7 @@ class ElectricalIndex:
     record_count: int
     original_rows: pd.DataFrame = field(repr=False, default=None)  # type: ignore[assignment]
     locator_col: str = "source_row_index"
+    timezone_mixed: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -67,7 +68,11 @@ def build_electrical_index(
         }
         group_map.setdefault(ts_val.to_pydatetime(), []).append(record)
 
-    sorted_ts = sorted(group_map.keys())
+    timezone_kinds = {timestamp.tzinfo is not None for timestamp in group_map}
+    timezone_mixed = len(timezone_kinds) > 1
+    # Naive wall-clock values cannot be ordered against offset-aware instants.
+    # Keep the records for diagnostics, but do not build a misleading index.
+    sorted_ts = [] if timezone_mixed else sorted(group_map.keys())
     duplicate_set = {t for t, recs in group_map.items() if len(recs) > 1}
     record_counts = {t: len(recs) for t, recs in group_map.items()}
     return ElectricalIndex(
@@ -79,6 +84,7 @@ def build_electrical_index(
         record_count=len(records),
         original_rows=records,
         locator_col=locator_col,
+        timezone_mixed=timezone_mixed,
     )
 
 
@@ -88,6 +94,7 @@ class NearestMatchResult:
 
     best_timestamp: datetime | None
     sync_error_s: float | None
+    signed_time_delta_s: float | None
     candidate_counts: list[int]
     candidate_timestamps: list[datetime]
     candidate_record_count: int
@@ -139,6 +146,7 @@ def find_nearest_candidates(
         return NearestMatchResult(
             best_timestamp=None,
             sync_error_s=None,
+            signed_time_delta_s=None,
             candidate_counts=[],
             candidate_timestamps=[],
             candidate_record_count=0,
@@ -163,6 +171,7 @@ def find_nearest_candidates(
         return NearestMatchResult(
             best_timestamp=None,
             sync_error_s=None,
+            signed_time_delta_s=None,
             candidate_counts=[],
             candidate_timestamps=[],
             candidate_record_count=0,
@@ -182,10 +191,12 @@ def find_nearest_candidates(
         recs = index.record_lists[ts_val]
         duplicate_count = len(recs)
         record_total += duplicate_count
+        signed_delta = (pd.Timestamp(ts_val) - target).total_seconds()
         candidates.append(
             NearestCandidate(
                 electrical_timestamp=ts_val,
-                sync_error_s=dist(ts_val),
+                sync_error_s=abs(signed_delta),
+                signed_time_delta_s=signed_delta,
                 candidate_timestamp_rank=rank_ts,
                 candidate_record_rank=1,
                 within_tolerance=False,
@@ -197,6 +208,9 @@ def find_nearest_candidates(
     return NearestMatchResult(
         best_timestamp=min(tied, key=dist),
         sync_error_s=min_err,
+        signed_time_delta_s=(
+            (pd.Timestamp(tied[0]) - target).total_seconds() if len(tied) == 1 else None
+        ),
         candidate_counts=counts,
         candidate_timestamps=sorted(tied),
         candidate_record_count=record_total,
@@ -228,6 +242,7 @@ def candidates_for_frame(
                     "electrical_asset_id": rec["asset_id"],
                     "electrical_timestamp_duplicate_count": cand.electrical_timestamp_duplicate_count,
                     "sync_error_s": cand.sync_error_s,
+                    "signed_time_delta_s": cand.signed_time_delta_s,
                     "candidate_timestamp_rank": ts_rank,
                     "candidate_record_rank": rec_rank,
                 }

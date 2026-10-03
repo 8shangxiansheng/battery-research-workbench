@@ -100,6 +100,7 @@ def test_nearest_previous_t02() -> None:
         datetime(2024, 1, 6, 10, 0, 0, 300000), idx, tie_tolerance_s=1e-9
     )
     assert result.sync_error_s == pytest.approx(0.3)
+    assert result.signed_time_delta_s == pytest.approx(-0.3)
     assert result.best_timestamp == datetime(2024, 1, 6, 10, 0, 0)
 
 
@@ -111,6 +112,7 @@ def test_nearest_next_t03() -> None:
         datetime(2024, 1, 6, 10, 0, 0, 900000), idx, tie_tolerance_s=1e-9
     )
     assert result.sync_error_s == pytest.approx(0.1)
+    assert result.signed_time_delta_s == pytest.approx(0.1)
     assert result.best_timestamp == datetime(2024, 1, 6, 10, 0, 1)
 
 
@@ -123,6 +125,11 @@ def test_equidistant_ambiguous_t04() -> None:
     )
     assert result.candidate_timestamp_count == 2
     assert result.ambiguity_type == "EQUIDISTANT_TIMESTAMPS"
+    assert result.signed_time_delta_s is None
+    assert [candidate.signed_time_delta_s for candidate in result.nearest_candidates] == [
+        pytest.approx(-0.5),
+        pytest.approx(0.5),
+    ]
 
 
 def test_duplicate_timestamp_ambiguous_t05() -> None:

@@ -32,12 +32,9 @@ _LOCATOR_COL = "source_row_index"
 _ASSET_COL = "electrical_asset_id"
 
 
-def _timezone_kind(series: pd.Series) -> str:
-    """Return 'naive' or 'aware' based on the series timezone."""
-    try:
-        return "aware" if series.dt.tz is not None else "naive"
-    except Exception:  # noqa: BLE001 - non-datetime series should read as naive
-        return "naive"
+def _timestamp_is_aware(value: object) -> bool:
+    """Inspect one timestamp without collapsing mixed per-asset clocks."""
+    return pd.Timestamp(value).tzinfo is not None
 
 
 def align_frames(
@@ -55,12 +52,14 @@ def align_frames(
     uts_col = "provisional_absolute_timestamp"
     avail_col = "timestamp_available"
 
-    # Timezone compatibility is decided once for the whole frame set.
-    ultra_aware = _timezone_kind(ultrasound[uts_col])
-    elec_aware = "naive"
-    if index.record_count > 0 and index.sorted_timestamps:
-        elec_aware = "aware" if index.sorted_timestamps[0].tzinfo is not None else "naive"
-    tz_mismatch = ultra_aware != elec_aware
+    # Electrical assets share one comparable clock domain only when their
+    # timestamp awareness is homogeneous. Ultrasound compatibility is checked
+    # per frame because different DataAssets may carry different clock forms.
+    elec_aware = (
+        index.sorted_timestamps[0].tzinfo is not None
+        if index.record_count > 0 and index.sorted_timestamps
+        else None
+    )
 
     rows: list[dict] = []
     for _, urow in ultrasound.iterrows():
@@ -71,6 +70,10 @@ def align_frames(
             "experiment_id": urow.get("experiment_id"),
             "ultrasound_asset_id": urow.get("ultrasound_asset_id"),
             "frame_index_raw": urow.get("frame_index_raw"),
+            # Preserve the ultrasound-side raw locator alongside the matched
+            # electrical composite identity for end-to-end provenance.
+            "source_file": urow.get("source_file"),
+            "source_line_index": urow.get("source_line_index"),
             "waveform_group": urow.get("waveform_group"),
             "waveform_row_index": urow.get("waveform_row_index"),
             "provisional_absolute_timestamp": ts,
@@ -91,6 +94,7 @@ def align_frames(
                 electrical_record_locator=None,
                 electrical_timestamp=None,
                 sync_error_s=None,
+                signed_time_delta_s=None,
                 within_tolerance=False,
                 candidate_timestamp_count=0,
                 candidate_record_count=0,
@@ -102,7 +106,7 @@ def align_frames(
             rows.append(base)
             continue
 
-        if not available:
+        if not available or pd.isna(ts):
             base.update(
                 match_status="TIMESTAMP_UNAVAILABLE",
                 match_block_reason="TIMESTAMP_UNAVAILABLE",
@@ -110,6 +114,7 @@ def align_frames(
                 electrical_record_locator=None,
                 electrical_timestamp=None,
                 sync_error_s=None,
+                signed_time_delta_s=None,
                 within_tolerance=False,
                 candidate_timestamp_count=0,
                 candidate_record_count=0,
@@ -121,14 +126,23 @@ def align_frames(
             rows.append(base)
             continue
 
-        if tz_mismatch:
+        frame_tz_mismatch = index.timezone_mixed or (
+            elec_aware is not None and _timestamp_is_aware(ts) != elec_aware
+        )
+        if frame_tz_mismatch:
+            timezone_block_reason = (
+                "ELECTRICAL_ASSETS_MIXED_TIMEZONES"
+                if index.timezone_mixed
+                else "TIMEZONE_MISMATCH"
+            )
             base.update(
                 match_status="TIMEZONE_MISMATCH",
-                match_block_reason="TIMEZONE_MISMATCH",
+                match_block_reason=timezone_block_reason,
                 electrical_asset_id=None,
                 electrical_record_locator=None,
                 electrical_timestamp=None,
                 sync_error_s=None,
+                signed_time_delta_s=None,
                 within_tolerance=False,
                 candidate_timestamp_count=0,
                 candidate_record_count=0,
@@ -178,6 +192,7 @@ def align_frames(
             electrical_record_locator=selected_locator,
             electrical_timestamp=selected_ts,
             sync_error_s=result.sync_error_s,
+            signed_time_delta_s=result.signed_time_delta_s,
             within_tolerance=bool(within),
             candidate_timestamp_count=result.candidate_timestamp_count,
             candidate_record_count=result.candidate_record_count,

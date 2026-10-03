@@ -373,6 +373,21 @@ def list_session_assets(request: Request, session_id: str) -> dict[str, Any]:
     }
 
 
+@router.delete("/intake-sessions/{session_id}/assets/{intake_asset_id}")
+def remove_session_asset(
+    request: Request, session_id: str, intake_asset_id: str
+) -> dict[str, Any]:
+    validate_id(session_id, "session_id")
+    validate_id(intake_asset_id, "intake_asset_id")
+    engine = _engine(request)
+    session = _session_or_404(engine, session_id)
+    try:
+        session = engine.remove_asset(session, intake_asset_id)
+    except IntakePolicyError as exc:
+        raise _policy_error(exc) from exc
+    return {"data": _session_payload(engine, session), "meta": {}}
+
+
 @router.get("/intake-sessions/{session_id}/assets/{intake_asset_id}/preview")
 def preview_asset(request: Request, session_id: str, intake_asset_id: str) -> dict[str, Any]:
     validate_id(session_id, "session_id")

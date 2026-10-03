@@ -306,7 +306,8 @@ class TimeAnchorNode(WorkflowNode):
         experiment = next(
             e
             for e in load_experiments(Path(ctx.raw_root) / "manifests" / "experiments.csv")
-            if e.experiment_id == plan.project.experiment_id
+            if e.battery_id == plan.project.battery_id
+            and e.experiment_id == plan.project.experiment_id
         )
         state = TimeAnchorState(
             battery_id=plan.project.battery_id,
@@ -456,6 +457,7 @@ class SynchronizationNode(WorkflowNode):
 
 class MeasurementEventsNode(WorkflowNode):
     node_type = "MEASUREMENT_EVENTS"
+    node_version = "0.2.0"
 
     def requirements(self, plan, inputs):
         return ArtifactRequirements(

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Query, Request
 from scipy.signal import hilbert
 
@@ -1015,6 +1016,116 @@ def _events_labels_joined(request: Request, battery_id: str, experiment_id: str)
     return joined
 
 
+def _alignment_events_joined(request: Request, battery_id: str, experiment_id: str):
+    """Load canonical events for alignment QA, with labels only when available."""
+    processed_root = get_service(request).processed_root
+    experiment_dir = processed_root / "multimodal" / battery_id / experiment_id
+    events_path = experiment_dir / "measurement_events.parquet"
+    if not events_path.is_file():
+        raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
+
+    import pandas as pd
+
+    events = pd.read_parquet(events_path)
+    labels_path = processed_root / "labels" / battery_id / experiment_id / "event_labels.parquet"
+    if not labels_path.is_file():
+        return events, False
+    labels = pd.read_parquet(labels_path)
+    return events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label")), True
+
+
+def _parser_source_assets(processed_root: Path, battery_id: str, experiment_id: str):
+    """Load parser-recorded source identity, keyed by DataAsset ID."""
+    assets: dict[str, dict[str, dict[str, str]]] = {"electrical": {}, "ultrasound": {}}
+    for modality in assets:
+        path = (
+            processed_root
+            / modality
+            / battery_id
+            / experiment_id
+            / "parser_manifest.json"
+        )
+        if not path.is_file():
+            continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{modality} parser source manifest is unreadable",
+                {"manifest": path.name},
+            ) from exc
+        raw_hashes = manifest.get("source_sha256", {})
+        source_files: dict[str, str] = {}
+        if modality == "electrical":
+            source_files = {
+                str(item["asset_id"]): str(item["relative_path"])
+                for item in manifest.get("source_asset_details", [])
+                if item.get("asset_id") and item.get("relative_path")
+            }
+        else:
+            source_files = {
+                str(item["asset_id"]): str(item["source_file"])
+                for item in manifest.get("assets", [])
+                if item.get("asset_id") and item.get("source_file")
+            }
+        if isinstance(raw_hashes, dict):
+            assets[modality] = {
+                str(asset_id): {
+                    "sha256": str(value),
+                    **(
+                        {"source_file": source_files[str(asset_id)]}
+                        if str(asset_id) in source_files
+                        else {}
+                    ),
+                }
+                for asset_id, value in raw_hashes.items()
+                if isinstance(value, str) and len(value) == 64
+            }
+    return assets
+
+
+def _ultrasound_line_fallbacks(
+    processed_root: Path, battery_id: str, experiment_id: str, rows: Any
+) -> dict[tuple[str, int], int]:
+    """Resolve unique raw TXT line locators from parsed frames for legacy events."""
+    needed = {
+        (str(row["ultrasound_asset_id"]), int(row["frame_index_raw"]))
+        for _, row in rows.iterrows()
+        if pd.notna(row.get("ultrasound_asset_id"))
+        and pd.notna(row.get("frame_index_raw"))
+        and pd.isna(row.get("source_line_index"))
+    }
+    if not needed:
+        return {}
+    frames_path = (
+        processed_root / "ultrasound" / battery_id / experiment_id / "frames.parquet"
+    )
+    if not frames_path.is_file():
+        return {}
+    frames = pd.read_parquet(frames_path)
+    required = {"ultrasound_asset_id", "frame_index_raw", "source_line_index"}
+    if not required.issubset(frames.columns):
+        return {}
+    frames = frames[["ultrasound_asset_id", "frame_index_raw", "source_line_index"]]
+    frames = frames.dropna(subset=["ultrasound_asset_id", "frame_index_raw", "source_line_index"])
+    frames["_asset_key"] = frames["ultrasound_asset_id"].astype(str)
+    frames["_frame_key"] = frames["frame_index_raw"].astype(int)
+    frame_keys = pd.MultiIndex.from_frame(frames[["_asset_key", "_frame_key"]])
+    matches = frames[frame_keys.isin(needed)]
+    counts = matches.groupby(["_asset_key", "_frame_key"])["source_line_index"].nunique()
+    unique_keys = set(counts[counts == 1].index.tolist())
+    matched_keys = pd.MultiIndex.from_frame(matches[["_asset_key", "_frame_key"]])
+    return {
+        (str(asset), int(frame)): int(line)
+        for asset, frame, line in matches[
+            matched_keys.isin(unique_keys)
+        ][["_asset_key", "_frame_key", "source_line_index"]]
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    }
+
+
 @router.get("/experiments/{battery_id}/{experiment_id}/targets")
 def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     """Target definitions with source/coverage/readiness from canonical artifacts."""
@@ -1133,7 +1244,7 @@ def alignment_summary(request: Request, battery_id: str, experiment_id: str) -> 
     """Alignment funnel: frames → matched/ambiguous/unmatched → target-valid → eligible."""
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
-    joined = _events_labels_joined(request, battery_id, experiment_id)
+    joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
     total = len(joined)
     matched_unique = int((joined["match_status"] == "MATCHED_UNIQUE").sum())
     ambiguous = int((joined["match_status"] == "MATCHED_AMBIGUOUS").sum())
@@ -1167,6 +1278,7 @@ def alignment_summary(request: Request, battery_id: str, experiment_id: str) -> 
             "ambiguous": ambiguous,
             "unmatched": unmatched,
             "target_valid": {"soc_reference_percent": _valid("soc_reference_percent")},
+            "target_labels_available": labels_available,
             "eligible": eligible,
             "excluded": total - eligible,
             "sync_quality": {
@@ -1196,7 +1308,7 @@ _EXCLUSION_REASONS = {
 def alignment_exclusions(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
-    joined = _events_labels_joined(request, battery_id, experiment_id)
+    joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
     groups: list[dict[str, Any]] = []
     for reason, pred in _EXCLUSION_REASONS.items():
         mask = pred(joined)
@@ -1210,7 +1322,10 @@ def alignment_exclusions(request: Request, battery_id: str, experiment_id: str) 
     groups.append({"reason": "TARGET_MISSING", "count": 0, "measurement_event_ids": []})
     return {
         "data": {"exclusions": groups},
-        "meta": {"note": "ambiguous/unmatched rows never auto-select an electrical record"},
+        "meta": {
+            "note": "ambiguous/unmatched rows never auto-select an electrical record",
+            "target_labels_available": labels_available,
+        },
     }
 
 
@@ -1231,7 +1346,58 @@ def alignment_samples(
     validate_id(experiment_id, "experiment_id")
     import pandas as row_pd
 
-    joined = _events_labels_joined(request, battery_id, experiment_id)
+    joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
+    service = get_service(request)
+    source_assets = _parser_source_assets(
+        service.processed_root, battery_id, experiment_id
+    )
+    candidate_path = (
+        service.processed_root
+        / "multimodal"
+        / battery_id
+        / experiment_id
+        / "measurement_event_candidates.parquet"
+    )
+    candidates_by_event: dict[str, list[dict[str, Any]]] = {}
+    if candidate_path.is_file():
+        candidate_frame = row_pd.read_parquet(candidate_path)
+        for _, candidate in candidate_frame.iterrows():
+            event_id = str(candidate.get("measurement_event_id", ""))
+            if not event_id:
+                continue
+            asset_id = (
+                str(candidate.get("electrical_asset_id"))
+                if row_pd.notna(candidate.get("electrical_asset_id"))
+                else None
+            )
+            source = source_assets["electrical"].get(asset_id or "", {})
+            timestamp = candidate.get("electrical_timestamp")
+            candidates_by_event.setdefault(event_id, []).append(
+                {
+                    "electrical_asset_id": asset_id,
+                    "electrical_source_file": source.get("source_file"),
+                    "electrical_source_sha256": source.get("sha256"),
+                    "electrical_record_locator": str(candidate.get("electrical_record_locator"))
+                    if row_pd.notna(candidate.get("electrical_record_locator"))
+                    else None,
+                    "electrical_row_index": int(candidate["electrical_row_index"])
+                    if row_pd.notna(candidate.get("electrical_row_index"))
+                    else None,
+                    "electrical_timestamp": str(timestamp) if row_pd.notna(timestamp) else None,
+                    "sync_error_s": float(candidate["sync_error_s"])
+                    if row_pd.notna(candidate.get("sync_error_s"))
+                    else None,
+                    "signed_time_delta_s": float(candidate["signed_time_delta_s"])
+                    if row_pd.notna(candidate.get("signed_time_delta_s"))
+                    else None,
+                    "candidate_timestamp_rank": int(candidate["candidate_timestamp_rank"]),
+                    "candidate_record_rank": int(candidate["candidate_record_rank"]),
+                    "electrical_timestamp_duplicate_count": int(
+                        candidate["electrical_timestamp_duplicate_count"]
+                    ),
+                    "boundary_flag": bool(candidate.get("boundary_flag", False)),
+                }
+            )
     if filter == "eligible":
         rows = joined[joined["analysis_eligible"]]
     elif filter == "ambiguous":
@@ -1241,21 +1407,63 @@ def alignment_samples(
     else:
         rows = joined
     rows = rows.iloc[cursor : cursor + limit]
+    line_fallbacks = _ultrasound_line_fallbacks(
+        service.processed_root, battery_id, experiment_id, rows
+    )
     items = []
     for _, r in rows.iterrows():
         unique = r["match_status"] == "MATCHED_UNIQUE"
+        ultrasound_asset_id = (
+            str(r["ultrasound_asset_id"])
+            if row_pd.notna(r.get("ultrasound_asset_id"))
+            else None
+        )
+        electrical_asset_id = (
+            str(r["electrical_asset_id"])
+            if unique and row_pd.notna(r.get("electrical_asset_id"))
+            else None
+        )
+        ultrasound_source = source_assets["ultrasound"].get(ultrasound_asset_id or "", {})
+        electrical_source = source_assets["electrical"].get(electrical_asset_id or "", {})
+        frame_index = (
+            int(r["frame_index_raw"]) if row_pd.notna(r.get("frame_index_raw")) else None
+        )
+        event_id = str(r["measurement_event_id"])
+        declared_candidate_count = (
+            int(r["candidate_record_count"])
+            if row_pd.notna(r.get("candidate_record_count"))
+            else 0
+        )
+        event_candidates = candidates_by_event.get(event_id, [])
+        has_candidate_rows = str(r["match_status"]) in {
+            "MATCHED_AMBIGUOUS",
+            "OUT_OF_TOLERANCE",
+        }
+        source_line_index = (
+            int(r["source_line_index"])
+            if row_pd.notna(r.get("source_line_index"))
+            else line_fallbacks.get((ultrasound_asset_id or "", frame_index))
+            if frame_index is not None
+            else None
+        )
         items.append(
             {
                 "measurement_event_id": str(r["measurement_event_id"]),
-                "frame_index_raw": None
-                if row_pd.isna(r["frame_index_raw"])
-                else int(r["frame_index_raw"]),
+                "frame_index_raw": frame_index,
+                "ultrasound_asset_id": ultrasound_asset_id,
+                "ultrasound_source_file": str(r["source_file"])
+                if row_pd.notna(r.get("source_file"))
+                else ultrasound_source.get("source_file"),
+                "ultrasound_source_sha256": ultrasound_source.get("sha256"),
+                "ultrasound_source_line_index": source_line_index,
                 "ultrasound_timestamp": str(r["provisional_absolute_timestamp"])
                 if row_pd.notna(r["provisional_absolute_timestamp"])
                 else None,
-                "electrical_asset_id": str(r["electrical_asset_id"])
-                if unique and row_pd.notna(r["electrical_asset_id"])
-                else None,
+                "electrical_asset_id": electrical_asset_id,
+                "electrical_source_file": str(r["electrical_source_file"])
+                if unique and row_pd.notna(r.get("electrical_source_file"))
+                else electrical_source.get("source_file"),
+                "electrical_source_sha256": electrical_source.get("sha256"),
                 "electrical_record_locator": str(r["electrical_record_locator"])
                 if unique and row_pd.notna(r["electrical_record_locator"])
                 else None,
@@ -1264,8 +1472,30 @@ def alignment_samples(
                 else None,
                 "match_status": str(r["match_status"]),
                 "sync_ambiguous": bool(r["sync_ambiguous"]),
+                "ambiguity_type": str(r["ambiguity_type"])
+                if row_pd.notna(r.get("ambiguity_type"))
+                else None,
+                "candidate_timestamp_count": int(r["candidate_timestamp_count"])
+                if row_pd.notna(r.get("candidate_timestamp_count"))
+                else 0,
+                "candidate_record_count": int(r["candidate_record_count"])
+                if row_pd.notna(r.get("candidate_record_count"))
+                else 0,
+                "candidate_details_available": (
+                    not has_candidate_rows
+                    or (
+                        declared_candidate_count > 0
+                        and len(event_candidates) == declared_candidate_count
+                    )
+                ),
+                "electrical_candidates": event_candidates
+                if has_candidate_rows
+                else [],
                 "sync_error_s": float(r["sync_error_s"])
                 if row_pd.notna(r["sync_error_s"])
+                else None,
+                "signed_time_delta_s": float(r["signed_time_delta_s"])
+                if row_pd.notna(r.get("signed_time_delta_s"))
                 else None,
                 "within_tolerance": bool(r["within_tolerance"])
                 if row_pd.notna(r["within_tolerance"])
@@ -1293,7 +1523,12 @@ def alignment_samples(
     )
     return {
         "data": {"samples": items, "total": total},
-        "meta": {"filter": filter, "cursor": cursor, "limit": limit},
+        "meta": {
+            "filter": filter,
+            "cursor": cursor,
+            "limit": limit,
+            "target_labels_available": labels_available,
+        },
     }
 
 

@@ -414,9 +414,70 @@ export interface DataQuality {
 export interface SynchronizationSummary {
   battery_id: string;
   experiment_id: string;
+  total_frames: number | null;
+  aligned_rows: number | null;
+  candidate_matched_frames: number | null;
+  /** Deprecated historical row count; not a match-success count. */
   matches_frames: number | null;
-  match_state: "MATCHED_UNIQUE" | "AMBIGUOUS";
+  match_state: "MATCHED_UNIQUE" | "PARTIAL" | "BLOCKED_TIMEBASE" | "NO_MATCH" | "UNKNOWN";
+  match_counts: {
+    matched_unique: number | null;
+    matched_ambiguous: number;
+    out_of_tolerance: number;
+    timestamp_unavailable: number;
+    no_candidate: number;
+    timezone_mismatch: number;
+  };
   ambiguous_frames: unknown[];
+  time_anchors: {
+    asset_id: string;
+    modality: string | null;
+    elapsed_min_s: number | null;
+    elapsed_max_s: number | null;
+    anchor_status: string;
+    selected_anchor_id: string | null;
+    anchor_datetime: string | null;
+    source_type: string | null;
+    source_ref: string | null;
+    timezone_known: boolean;
+    timezone_name: string | null;
+    candidates: {
+      anchor_id: string | null; anchor_datetime: string | null; source_type: string | null;
+      source_ref: string | null; status: string | null; timezone_known: boolean; timezone_name: string | null;
+    }[];
+    evidence: {
+      source_type: string | null; source_ref: string | null; source_sha256: string | null;
+      raw_value: unknown; parsed_value: string | null; supports_candidate: boolean | null;
+      conflicts_with_candidate: boolean | null; message: string | null;
+    }[];
+    conflicts: {
+      source_type: string | null; source_ref: string | null; source_sha256: string | null;
+      raw_value: unknown; parsed_value: string | null; supports_candidate: boolean | null; message: string | null;
+    }[];
+  }[];
+  electrical_assets: {
+    electrical_asset_id: string;
+    record_count: number;
+    timestamp_min: string | null;
+    timestamp_max: string | null;
+    timestamp_representation: "NAIVE" | "OFFSET_AWARE" | "MIXED";
+    timezone_known: boolean;
+    timezone_name: string | null;
+    source_files: string[];
+    source_row_min: number | null;
+    source_row_max: number | null;
+  }[];
+  electrical_mixed_clock_assets: string[];
+  electrical_coverage_overlaps: {
+    asset_ids: string[];
+    overlap_seconds: number;
+    basis: "UTC_INSTANT" | "NAIVE_WALL_CLOCK";
+  }[];
+  electrical_incompatible_clock_pairs: string[][];
+  time_anchor_warnings: string[];
+  time_anchor_limitations: string[];
+  experiment_time_reference: Record<string, unknown> | null;
+  timebase_conflicts: string[];
   sync_tolerance_s: number | null;
   validated_sync: boolean;
   timebase_status: string;
@@ -704,6 +765,7 @@ export interface AlignmentSummaryResponse {
   ambiguous: number;
   unmatched: number;
   target_valid: Record<string, number>;
+  target_labels_available: boolean;
   eligible: number;
   excluded: number;
   sync_quality: {
@@ -719,13 +781,38 @@ export interface AlignmentSummaryResponse {
 export interface AlignmentSampleRow {
   measurement_event_id: string;
   frame_index_raw: number | null;
+  ultrasound_asset_id: string | null;
+  ultrasound_source_file: string | null;
+  ultrasound_source_sha256: string | null;
+  ultrasound_source_line_index: number | null;
   ultrasound_timestamp: string | null;
   electrical_asset_id: string | null;
+  electrical_source_file: string | null;
+  electrical_source_sha256: string | null;
   electrical_record_locator: string | null;
   electrical_timestamp: string | null;
   match_status: string;
   sync_ambiguous: boolean;
+  ambiguity_type?: string | null;
+  candidate_timestamp_count?: number;
+  candidate_record_count?: number;
+  candidate_details_available?: boolean;
+  electrical_candidates?: {
+    electrical_asset_id: string | null;
+    electrical_source_file: string | null;
+    electrical_source_sha256: string | null;
+    electrical_record_locator: string | null;
+    electrical_row_index: number | null;
+    electrical_timestamp: string | null;
+    sync_error_s: number | null;
+    signed_time_delta_s: number | null;
+    candidate_timestamp_rank: number;
+    candidate_record_rank: number;
+    electrical_timestamp_duplicate_count: number;
+    boundary_flag: boolean;
+  }[];
   sync_error_s: number | null;
+  signed_time_delta_s?: number | null;
   within_tolerance: boolean | null;
   analysis_eligible: boolean;
   targets: Record<string, number | null>;
@@ -1251,6 +1338,11 @@ export const client = {
   },
   listIntakeAssets: (sessionId: string) =>
     request<{ assets: IntakeAssetRecord[] }>(`/intake-sessions/${encodeURIComponent(sessionId)}/assets`),
+  removeIntakeAsset: (sessionId: string, intakeAssetId: string) =>
+    request<IntakeSessionDetail>(
+      `/intake-sessions/${encodeURIComponent(sessionId)}/assets/${encodeURIComponent(intakeAssetId)}`,
+      { method: "DELETE" },
+    ),
   getIntakeAssetPreview: (sessionId: string, intakeAssetId: string) =>
     request<Record<string, unknown>>(
       `/intake-sessions/${encodeURIComponent(sessionId)}/assets/${encodeURIComponent(intakeAssetId)}/preview`,

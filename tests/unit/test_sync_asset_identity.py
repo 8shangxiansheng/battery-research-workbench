@@ -119,6 +119,44 @@ def test_t04_candidate_identity_includes_asset() -> None:
     assert assets == {"E001", "E002"}
 
 
+def test_same_timestamp_across_electrical_assets_is_ambiguous_not_selected() -> None:
+    from battery_workbench.synchronization.sync_service import align_frames
+
+    timestamp = datetime(2024, 1, 1, 0, 0)
+    records = pd.DataFrame(
+        {
+            "electrical_asset_id": ["E001", "E002"],
+            "source_row_index": [10, 10],
+            "timestamp": [timestamp, timestamp],
+        }
+    )
+    index = build_sync_index(
+        records,
+        timestamp_col="timestamp",
+        locator_col="source_row_index",
+        asset_col="electrical_asset_id",
+    )
+    ultrasound = pd.DataFrame(
+        {
+            "battery_id": ["CELL_X"],
+            "experiment_id": ["EXP_X"],
+            "ultrasound_asset_id": ["U001"],
+            "frame_index_raw": [0],
+            "provisional_absolute_timestamp": [pd.Timestamp(timestamp)],
+            "anchor_status": ["PROVISIONAL"],
+            "timestamp_available": [True],
+        }
+    )
+
+    aligned = align_frames(ultrasound, index, max_sync_error_s=1.0, tie_tolerance_s=1e-9)
+    row = aligned.iloc[0]
+    assert row["match_status"] == "MATCHED_AMBIGUOUS"
+    assert row["candidate_record_count"] == 2
+    assert row["electrical_asset_id"] is None
+    assert row["electrical_record_locator"] is None
+    assert row["sync_error_s"] == 0.0
+
+
 def test_t05_composite_identity_roundtrip(tmp_path: Path) -> None:
     """aligned parquet roundtrip preserves composite identity."""
     from battery_workbench.synchronization.matcher import build_electrical_index as bsi
@@ -408,12 +446,12 @@ class TestOldSchemaNotReusable:
         )
         # 0.1.0 sync artifact does not satisfy the current node contract
         assert node.node_version != "0.1.0" or req.expected_version == node.node_version
-        # the new contract requires the composite-identity schema version
+        # the new contract requires the current provenance schema version
         from battery_workbench.synchronization.sync_schemas import (
             SYNCHRONIZATION_SCHEMA_VERSION,
         )
 
-        assert SYNCHRONIZATION_SCHEMA_VERSION == "0.2.0"
+        assert SYNCHRONIZATION_SCHEMA_VERSION == "0.4.0"
         assert manifest["schema_version"] != SYNCHRONIZATION_SCHEMA_VERSION
         # and the resolver must reject it via version mismatch
         assert ref is None

@@ -40,7 +40,6 @@ export function NewExperimentWizardPage() {
   const [committed, setCommitted] = useState<Record<string, unknown> | null>(null);
   const [ultrasoundStartTime, setUltrasoundStartTime] = useState("");
   const [anchorForAssetId, setAnchorForAssetId] = useState("");
-  const [uploaded, setUploaded] = useState<{ role: string; filename: string; size: number; sha256: string }[]>([]);
 
   const sessionQuery = useQuery({
     queryKey: ["intake-session", sessionId],
@@ -49,7 +48,10 @@ export function NewExperimentWizardPage() {
   });
 
   useEffect(() => {
-    if (sessionQuery.data?.data) setSession(sessionQuery.data.data);
+    if (sessionQuery.data?.data) {
+      setSession(sessionQuery.data.data);
+      setStep(1);
+    }
   }, [sessionQuery.data]);
 
   const createSession = useMutation({
@@ -91,19 +93,39 @@ export function NewExperimentWizardPage() {
     onSuccess: (r) => {
       setStepError(null);
       if (r.data.role === "EXPERIMENT_METADATA") setAnchorForAssetId("");
-      setUploaded((prev) => [
-        ...prev.filter((x) => x.filename !== r.data.original_filename),
-        {
-          role: r.data.role,
-          filename: r.data.original_filename,
-          size: r.data.size,
-          sha256: r.data.sha256,
-        },
-      ]);
-      void client.getIntakeSession(session!.session_id).then((resp) => setSession(resp.data));
+      return client.getIntakeSession(session!.session_id).then((resp) => setSession(resp.data));
     },
     onError: (e) => setStepError(e),
   });
+
+  const removeAsset = useMutation({
+    mutationFn: (assetId: string) => {
+      if (!session) throw new Error("no session");
+      return client.removeIntakeAsset(session.session_id, assetId);
+    },
+    onSuccess: (response) => {
+      setSession(response.data);
+      setDetections(response.data.detections);
+      setValidation(response.data.validation);
+      setStepError(null);
+    },
+    onError: (error) => setStepError(error),
+  });
+
+  const uploadSelectedFiles = async (
+    role: "ELECTRICAL" | "ULTRASOUND",
+    files: FileList | null,
+  ) => {
+    const selectedFiles = Array.from(files ?? []);
+    for (const [index, file] of selectedFiles.entries()) {
+      await upload.mutateAsync({
+        role,
+        file,
+        fileStartTime: role === "ULTRASOUND" && index === 0 ? ultrasoundStartTime : undefined,
+      });
+    }
+    if (role === "ULTRASOUND") setUltrasoundStartTime("");
+  };
 
   const detect = useMutation({
     mutationFn: () => client.detectIntakeSession(session!.session_id),
@@ -327,10 +349,15 @@ export function NewExperimentWizardPage() {
                     <input
                       type="file"
                       accept=".xlsx"
+                      multiple
                       data-testid="upload-electrical"
                       onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) upload.mutate({ role: "ELECTRICAL", file: f });
+                        const input = e.currentTarget;
+                        void uploadSelectedFiles("ELECTRICAL", input.files)
+                          .catch(() => undefined)
+                          .finally(() => {
+                          input.value = "";
+                        });
                       }}
                     />
                   </label>
@@ -344,18 +371,15 @@ export function NewExperimentWizardPage() {
                     <input
                       type="file"
                       accept=".txt"
+                      multiple
                       data-testid="upload-ultrasound"
                       onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) {
-                          upload.mutate({
-                            role: "ULTRASOUND",
-                            file: f,
-                            fileStartTime: ultrasoundStartTime,
-                          });
-                          setUltrasoundStartTime("");
-                          e.target.value = "";
-                        }
+                        const input = e.currentTarget;
+                        void uploadSelectedFiles("ULTRASOUND", input.files)
+                          .catch(() => undefined)
+                          .finally(() => {
+                          input.value = "";
+                        });
                       }}
                     />
                   </label>
@@ -372,9 +396,9 @@ export function NewExperimentWizardPage() {
                     onChange={(event) => setAnchorForAssetId(event.target.value)}
                   >
                     <option value="">请选择超声文件</option>
-                    {(session?.assets ?? []).filter((asset) => asset.role === "ULTRASOUND").map((asset) => (
+                    {(session?.assets ?? []).filter((asset) => asset.role === "ULTRASOUND").map((asset, index) => (
                       <option key={asset.intake_asset_id} value={asset.intake_asset_id}>
-                        {asset.original_filename}
+                        {asset.original_filename} · 超声资产 {index + 1}（{asset.intake_asset_id.slice(-6)}）
                       </option>
                     ))}
                   </select>{" "}
@@ -396,14 +420,38 @@ export function NewExperimentWizardPage() {
               </tr>
             </tbody>
           </table>
-          <h4>已上传（{uploaded.length}）</h4>
+          <h4>已上传（{session.assets.length}）</h4>
           <ul data-testid="uploaded-list">
-            {uploaded.length === 0 ? <li>暂无</li> : null}
-            {uploaded.map((u) => (
-              <li key={u.filename}>
-                <Badge tone="primary">{u.role}</Badge> {u.filename}（{fmtSize(u.size)}）sha256 {u.sha256.slice(0, 12)}…
+            {session.assets.length === 0 ? <li>暂无</li> : null}
+            {session.assets.map((asset) => {
+              const anchorTarget = asset.anchor_for_asset_id
+                ? session.assets.find((candidate) => candidate.intake_asset_id === asset.anchor_for_asset_id)
+                : null;
+              return <li key={asset.intake_asset_id}>
+                <Badge tone="primary">{asset.role}</Badge> {asset.original_filename}
+                <small> · 资产 {asset.intake_asset_id.slice(-6)} · {fmtSize(asset.size)} · sha256 {asset.sha256.slice(0, 12)}…</small>
+                {asset.role === "EXPERIMENT_METADATA" && <small>
+                  {anchorTarget
+                    ? ` · 已显式绑定：${anchorTarget.original_filename}（资产 ${anchorTarget.intake_asset_id.slice(-6)}）`
+                    : " · 未绑定超声资产"}
+                </small>}
+                <button
+                  type="button"
+                  data-testid={`remove-staged-asset-${asset.intake_asset_id}`}
+                  disabled={removeAsset.isPending || upload.isPending}
+                  onClick={() => {
+                    const cascadesEvidence = asset.role === "ULTRASOUND" && session.assets.some(
+                      (candidate) => candidate.role === "EXPERIMENT_METADATA"
+                        && candidate.anchor_for_asset_id === asset.intake_asset_id,
+                    );
+                    const message = cascadesEvidence
+                      ? `移除 ${asset.original_filename} 及其绑定的时间证据暂存副本？原始本地文件不会被修改。`
+                      : `移除 ${asset.original_filename} 的暂存副本？原始本地文件不会被修改。`;
+                    if (window.confirm(message)) removeAsset.mutate(asset.intake_asset_id);
+                  }}
+                >移除暂存</button>
               </li>
-            ))}
+            })}
           </ul>
           {upload.isPending ? <StatusText>上传中…</StatusText> : null}
           {stepError ? <ErrorBanner error={stepError} /> : null}

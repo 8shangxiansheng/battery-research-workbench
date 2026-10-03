@@ -14,7 +14,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import re
 import shutil
 import uuid
 from datetime import datetime
@@ -34,7 +33,14 @@ from battery_workbench.intake.models import (
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB per asset (§21)
 MAX_ASSETS_PER_SESSION = 20
-SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$")
+_WINDOWS_RESERVED_BASENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 ELECTRICAL_SUFFIXES = {".xlsx"}
 ULTRASOUND_SUFFIXES = {".txt"}
 IMMUTABLE_SESSION_STATES = {"COMMITTED", "CANCELLED", "EXPIRED", "FAILED"}
@@ -50,7 +56,21 @@ def sha256_file(path: Path) -> str:
 
 def safe_stored_filename(original: str, intake_asset_id: str) -> str:
     """Original filename stays metadata; the stored name is server-generated (§8)."""
-    if not SAFE_FILENAME.match(original) or ".." in original or "/" in original:
+    invalid = (
+        not original
+        or len(original) > 180
+        or Path(original).name != original
+        or "/" in original
+        or "\\" in original
+        or ".." in original
+        or original.endswith((" ", "."))
+        or any(
+            not (character.isalnum() or character in " ._-")
+            for character in original
+        )
+    )
+    basename = original.split(".", maxsplit=1)[0].rstrip(" .").upper()
+    if invalid or basename in _WINDOWS_RESERVED_BASENAMES:
         raise IntakePolicyError(f"unsafe filename rejected: {original!r}")
     suffix = Path(original).suffix.lower().lstrip(".")
     return f"{intake_asset_id}.{suffix}" if suffix else intake_asset_id
@@ -315,6 +335,44 @@ class IntakeEngine:
 
     def list_assets(self, session: IntakeSession) -> list[IntakeAssetRecord]:
         return list(session.assets)
+
+    def remove_asset(self, session: IntakeSession, intake_asset_id: str) -> IntakeSession:
+        """Remove a draft asset and any time evidence explicitly bound to it."""
+        self._require_mutatable(session)
+        target = next(
+            (asset for asset in session.assets if asset.intake_asset_id == intake_asset_id), None
+        )
+        if target is None:
+            raise IntakePolicyError(f"staged asset not found: {intake_asset_id}")
+
+        removed_ids = {target.intake_asset_id}
+        if target.role == "ULTRASOUND":
+            removed_ids.update(
+                asset.intake_asset_id
+                for asset in session.assets
+                if asset.role == "EXPERIMENT_METADATA"
+                and asset.anchor_for_asset_id == target.intake_asset_id
+            )
+        for asset in session.assets:
+            if asset.intake_asset_id in removed_ids:
+                self.staged_path(session, asset).unlink(missing_ok=True)
+
+        session.assets = [asset for asset in session.assets if asset.intake_asset_id not in removed_ids]
+        session.detections = [
+            detection
+            for detection in session.detections
+            if detection.intake_asset_id not in removed_ids
+        ]
+        session.validation = None
+        session.status = "ASSETS_RECEIVED" if session.assets else "DRAFT"
+        session.failure_reason = None
+        self.save_session(session)
+        self.append_event(
+            "ASSET_REMOVED",
+            session_id=session.session_id,
+            detail={"intake_asset_ids": sorted(removed_ids), "reason": "user_requested_staging_removal"},
+        )
+        return session
 
     def staged_path(self, session: IntakeSession, asset: IntakeAssetRecord) -> Path:
         return self.staging_dir(session.session_id) / asset.stored_filename

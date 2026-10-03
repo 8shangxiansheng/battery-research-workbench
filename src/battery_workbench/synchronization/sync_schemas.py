@@ -36,6 +36,9 @@ class NearestCandidate(BaseModel):
 
     electrical_timestamp: datetime
     sync_error_s: float
+    # electrical_timestamp - ultrasound_timestamp; positive means the
+    # electrical candidate occurs later. Null for a multi-timestamp tie.
+    signed_time_delta_s: float | None = None
     candidate_timestamp_rank: int = 1
     candidate_record_rank: int = 1
     within_tolerance: bool = False
@@ -70,11 +73,10 @@ class SyncScientificGuardConfig(BaseModel):
     allow_verified_sync_upgrade: bool = False
 
 
-# Persisted synchronization output schema version. Bumped 0.1.0 -> 0.2.0 by
-# BRW-010R: aligned rows now persist the composite selected electrical identity
-# (electrical_asset_id, electrical_record_locator, electrical_timestamp).
+# Persisted synchronization output schema version. Bumped when aligned rows
+# preserve ultrasound raw locators and candidate rows expose signed time delta.
 # Matching algorithm / policy version is unchanged.
-SYNCHRONIZATION_SCHEMA_VERSION = "0.2.0"
+SYNCHRONIZATION_SCHEMA_VERSION = "0.4.0"
 
 
 class SynchronizationConfig(BaseModel):

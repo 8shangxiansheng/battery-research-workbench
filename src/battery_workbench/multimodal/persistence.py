@@ -102,6 +102,7 @@ def write_measurement_event_payload(
     rec_path = electrical_records_path
 
     manifest = MeasurementEventManifest(
+        builder_version=config.version,
         battery_id=battery_id,
         experiment_id=experiment_id,
         input_paths={
