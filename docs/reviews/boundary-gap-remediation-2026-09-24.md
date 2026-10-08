@@ -133,5 +133,6 @@ has_independent_validation=false`。
 - 真实 CELL_001 目标工作流 E2E 暴露 `/feature-analyses` 只返回 `AVAILABLE`，未说明产物 freshness 或选择提交状态；UI/验收无法区分可读文件、可用于建模的已确认选择和旧产物。
 - 列表响应现在分开返回 `freshness_status` 与 `commit_status`：输出 checksum 不匹配/缺失时 fail-closed 为 `INTEGRITY_BLOCKED`；引用的数据集或 split 不存在/身份冲突时标为 `STALE_SOURCE`；缺少可验证 source fingerprint 的历史分析标为 `LEGACY`。文件存在不再被解释为 `CURRENT` 或“可用于建模”。
 - CELL_001 当前历史分析缺 source checksum，因此如实标记为 `LEGACY`；`WAITING_FOR_USER`、`NO_SELECTION` 等提交状态独立展示，不提升为已确认选择。
-- 验证：freshness helper 单测覆盖 checksum 损坏、源数据缺失和 legacy；真实 CELL_001 target workflow E2E 16/16 通过。慢 API 场景显式配置测试超时；raw 与 processed 输入只读，运行输出位于临时 sandbox。
-- 限制：要得到 `CURRENT`，后续分析物化器必须写入并可复核 source fingerprint；本阶段没有重算旧分析，也不改变任何科学数值或模型资格。
+- 验证：freshness helper 单测覆盖 checksum 损坏、源数据缺失、source 更新后 stale 及 legacy；真实 CELL_001 新 intake→dataset→split→TRAIN-only analysis→report 集成测试断言 freshness=`CURRENT`、commit=`CONFIRMED`、`usable_for_modeling=true` 并通过；历史 CELL_001 target workflow E2E 16/16 通过且 legacy 不会被升级。慢 API 场景显式配置测试超时；raw 与 processed 输入只读，运行输出位于临时 sandbox。
+- 当前判定：新物化分析会记录实际使用的 dataset manifest / Parquet 与 split manifest / assignments checksums；API 逐项复核并与 source 自身 checksum 对账，一致才标 `CURRENT`。源版本变化标 `STALE_SOURCE`，源 artifact 自身 checksum 不一致标 `INTEGRITY_BLOCKED`。
+- 限制：旧 CELL_001 分析不会被自动重算/升级，仍为 `LEGACY`；即使 freshness 为 `CURRENT`，只有 `TRAIN_ONLY_ML_SAFE` 且 selection `CONFIRMED` 并含非空特征才可报告 `usable_for_modeling=true`。本阶段不改变科学数值或模型资格。

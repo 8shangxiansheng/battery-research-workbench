@@ -25,6 +25,69 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n")
 
 
+def _source_input_checksums(
+    *,
+    output_root: Path,
+    battery_id: str,
+    experiment_id: str,
+    dataset_id: str,
+    split_id: str | None,
+) -> dict[str, str]:
+    """Fingerprint exact dataset/split inputs used by a TRAIN-only analysis."""
+    if not dataset_id or dataset_id == "EXPLORATORY" or Path(dataset_id).name != dataset_id:
+        return {}
+    dataset_root = output_root / "datasets" / battery_id / experiment_id
+    manifests = list(dataset_root.glob(f"*/{dataset_id}/dataset_manifest.json"))
+    if len(manifests) != 1:
+        return {}
+    dataset_manifest_path = manifests[0]
+    dataset_dir = dataset_manifest_path.parent
+    dataset_path = dataset_dir / "dataset.parquet"
+    try:
+        dataset_manifest = json.loads(dataset_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    dataset_checksum = _sha256_file(dataset_path)
+    if (
+        dataset_manifest.get("dataset_id") != dataset_id
+        or dataset_manifest.get("dataset_status") in {"STALE_SOURCE", "INTEGRITY_BLOCKED", "INVALID"}
+        or not dataset_checksum
+        or dataset_manifest.get("output_checksum") != dataset_checksum
+    ):
+        return {}
+    checksums = {
+        "dataset_manifest": _sha256_file(dataset_manifest_path),
+        "dataset_parquet": dataset_checksum,
+    }
+    if split_id is None:
+        return checksums
+    if Path(split_id).name != split_id:
+        return {}
+    split_dir = output_root / "splits" / battery_id / experiment_id / dataset_id / split_id
+    split_manifest_path = split_dir / "split_manifest.json"
+    assignments_path = split_dir / "split_assignments.parquet"
+    try:
+        split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    assignments_checksum = _sha256_file(assignments_path)
+    if (
+        split_manifest.get("split_id") != split_id
+        or split_manifest.get("dataset_id") != dataset_id
+        or not assignments_checksum
+        or (split_manifest.get("output_checksums") or {}).get("split_assignments")
+        != assignments_checksum
+    ):
+        return {}
+    checksums.update(
+        {
+            "split_manifest": _sha256_file(split_manifest_path),
+            "split_assignments": assignments_checksum,
+        }
+    )
+    return checksums
+
+
 def write_analysis_payload(
     *,
     spec: FeatureAnalysisSpec,
@@ -102,6 +165,13 @@ def write_analysis_payload(
         "split_id": spec.split_id,
         "fold_index": spec.fold_index,
         "dataset_id": dataset_id,
+        "input_checksums": _source_input_checksums(
+            output_root=output_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            dataset_id=dataset_id,
+            split_id=spec.split_id,
+        ),
         "methods": spec.methods,
         "subgroup_by": spec.subgroup_by,
         "redundancy_policy_version": REDUNDANCY_POLICY_VERSION,

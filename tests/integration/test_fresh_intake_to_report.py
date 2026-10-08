@@ -244,6 +244,29 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
     final_run = client.get(f"/api/v1/runs/{run['run_id']}").json()["data"]
     assert final_run["status"] == "SUCCEEDED"
 
+    analysis_manifests = list(
+        (processed / "feature_analysis" / battery_id / experiment_id).rglob(
+            "analysis_manifest.json"
+        )
+    )
+    assert analysis_manifests
+    analysis_manifest = json.loads(analysis_manifests[-1].read_text(encoding="utf-8"))
+    assert set(analysis_manifest["input_checksums"]) == {
+        "dataset_manifest",
+        "dataset_parquet",
+        "split_manifest",
+        "split_assignments",
+    }
+    listed_analyses = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/feature-analyses"
+    ).json()["data"]["analyses"]
+    listed = next(
+        item for item in listed_analyses if item["analysis_id"] == analysis_manifest["analysis_id"]
+    )
+    assert listed["freshness_status"] == "CURRENT"
+    assert listed["commit_status"] == "CONFIRMED"
+    assert listed["usable_for_modeling"] is True
+
     report = client.post(
         "/api/v1/reports",
         json={"battery_id": battery_id, "experiment_id": experiment_id},

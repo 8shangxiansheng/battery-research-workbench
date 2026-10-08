@@ -1016,7 +1016,13 @@ def _analysis_freshness_status(
     if len(dataset_manifests) != 1:
         return "STALE_SOURCE"
     dataset_manifest_path = dataset_manifests[0]
-    if dataset_manifest_path.is_symlink() or dataset_manifest_path.parent.is_symlink():
+    try:
+        if (
+            dataset_manifest_path.is_symlink()
+            or not dataset_manifest_path.resolve().is_relative_to(dataset_root.resolve())
+        ):
+            return "INTEGRITY_BLOCKED"
+    except OSError:
         return "INTEGRITY_BLOCKED"
     try:
         dataset_manifest = json.loads(dataset_manifest_path.read_text(encoding="utf-8"))
@@ -1026,8 +1032,20 @@ def _analysis_freshness_status(
         "STALE_SOURCE", "INTEGRITY_BLOCKED", "INVALID"
     }:
         return "STALE_SOURCE"
+    dataset_path = dataset_manifest_path.parent / "dataset.parquet"
+    dataset_digest = (
+        hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+        if dataset_path.is_file() and not dataset_path.is_symlink()
+        else ""
+    )
+    if not dataset_digest or dataset_manifest.get("output_checksum") != dataset_digest:
+        return "INTEGRITY_BLOCKED"
 
     split_id = manifest.get("split_id")
+    current_inputs = {
+        "dataset_manifest": hashlib.sha256(dataset_manifest_path.read_bytes()).hexdigest(),
+        "dataset_parquet": dataset_digest,
+    }
     if split_id:
         if not isinstance(split_id, str) or Path(split_id).name != split_id:
             return "INTEGRITY_BLOCKED"
@@ -1038,15 +1056,39 @@ def _analysis_freshness_status(
         if not split_manifest_path.is_file() or split_manifest_path.is_symlink():
             return "STALE_SOURCE"
         try:
+            if not split_manifest_path.resolve().is_relative_to(
+                (processed_root / "splits" / battery_id / experiment_id).resolve()
+            ):
+                return "INTEGRITY_BLOCKED"
+        except OSError:
+            return "INTEGRITY_BLOCKED"
+        try:
             split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return "INTEGRITY_BLOCKED"
         if split_manifest.get("split_id") != split_id or split_manifest.get("dataset_id") != dataset_id:
             return "INTEGRITY_BLOCKED"
+        assignments_path = split_manifest_path.parent / "split_assignments.parquet"
+        assignments_digest = (
+            hashlib.sha256(assignments_path.read_bytes()).hexdigest()
+            if assignments_path.is_file() and not assignments_path.is_symlink()
+            else ""
+        )
+        if not assignments_digest:
+            return "INTEGRITY_BLOCKED"
+        if (split_manifest.get("output_checksums") or {}).get("split_assignments") != assignments_digest:
+            return "INTEGRITY_BLOCKED"
+        current_inputs["split_manifest"] = hashlib.sha256(split_manifest_path.read_bytes()).hexdigest()
+        current_inputs["split_assignments"] = assignments_digest
 
-    # Existing analysis outputs do not persist source checksums. Even if
-    # referenced IDs still exist, currentness cannot be proven from IDs alone.
-    return "LEGACY"
+    input_checksums = manifest.get("input_checksums")
+    if not isinstance(input_checksums, dict) or not input_checksums:
+        return "LEGACY"
+    if set(input_checksums) != set(current_inputs) or any(
+        not isinstance(value, str) or len(value) != 64 for value in input_checksums.values()
+    ):
+        return "INTEGRITY_BLOCKED"
+    return "CURRENT" if input_checksums == current_inputs else "STALE_SOURCE"
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/feature-analyses")
