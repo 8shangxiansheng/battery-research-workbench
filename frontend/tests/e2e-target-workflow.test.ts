@@ -29,6 +29,12 @@ beforeAll(async () => {
       if (r.ok) { available = true; break; }
     } catch { await new Promise(r => setTimeout(r, 250)); }
   }
+  if (!available) {
+    proc.kill();
+    sandbox.dispose();
+    sandbox = null;
+    throw new Error("CELL_001 Target Workflow E2E API did not become ready; refusing to silently skip scenarios.");
+  }
 });
 afterAll(() => {
   proc?.kill();

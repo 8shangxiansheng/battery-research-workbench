@@ -39,6 +39,12 @@ beforeAll(async () => {
       await new Promise((r) => setTimeout(r, 250));
     }
   }
+  if (!available) {
+    server?.close();
+    sandbox.dispose();
+    sandbox = null;
+    throw new Error("CELL_001 Happy Path E2E API did not become ready; refusing to silently skip scenarios.");
+  }
 });
 
 afterAll(() => {
