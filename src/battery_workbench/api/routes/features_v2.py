@@ -972,6 +972,83 @@ def list_split_folds(
 # ---------- materialized feature analyses (read-only list) ----------
 
 
+def _analysis_freshness_status(
+    manifest: dict[str, Any],
+    analysis_dir: Path,
+    processed_root: Path,
+    battery_id: str,
+    experiment_id: str,
+) -> str:
+    """Fail closed when analysis output integrity or source identity is unverifiable."""
+    expected_root = processed_root / "feature_analysis" / battery_id / experiment_id
+    try:
+        if analysis_dir.is_symlink() or not analysis_dir.resolve().is_relative_to(expected_root.resolve()):
+            return "INTEGRITY_BLOCKED"
+    except OSError:
+        return "INTEGRITY_BLOCKED"
+    if manifest.get("analysis_id") and manifest["analysis_id"] != analysis_dir.name:
+        return "INTEGRITY_BLOCKED"
+
+    output_checksums = manifest.get("output_checksums")
+    if not isinstance(output_checksums, dict) or not output_checksums:
+        return "LEGACY"
+
+    for artifact, expected in output_checksums.items():
+        if (
+            not isinstance(artifact, str)
+            or Path(artifact).name != artifact
+            or not isinstance(expected, str)
+            or len(expected) != 64
+        ):
+            return "INTEGRITY_BLOCKED"
+        artifact_path = analysis_dir / f"{artifact}.parquet"
+        if artifact_path.is_symlink() or not artifact_path.is_file():
+            return "INTEGRITY_BLOCKED"
+        digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        if digest != expected:
+            return "INTEGRITY_BLOCKED"
+
+    dataset_id = manifest.get("dataset_id")
+    if not isinstance(dataset_id, str) or Path(dataset_id).name != dataset_id:
+        return "LEGACY"
+    dataset_root = processed_root / "datasets" / battery_id / experiment_id
+    dataset_manifests = list(dataset_root.glob(f"*/{dataset_id}/dataset_manifest.json"))
+    if len(dataset_manifests) != 1:
+        return "STALE_SOURCE"
+    dataset_manifest_path = dataset_manifests[0]
+    if dataset_manifest_path.is_symlink() or dataset_manifest_path.parent.is_symlink():
+        return "INTEGRITY_BLOCKED"
+    try:
+        dataset_manifest = json.loads(dataset_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "INTEGRITY_BLOCKED"
+    if dataset_manifest.get("dataset_id") != dataset_id or dataset_manifest.get("dataset_status") in {
+        "STALE_SOURCE", "INTEGRITY_BLOCKED", "INVALID"
+    }:
+        return "STALE_SOURCE"
+
+    split_id = manifest.get("split_id")
+    if split_id:
+        if not isinstance(split_id, str) or Path(split_id).name != split_id:
+            return "INTEGRITY_BLOCKED"
+        split_manifest_path = (
+            processed_root / "splits" / battery_id / experiment_id / str(dataset_id)
+            / str(split_id) / "split_manifest.json"
+        )
+        if not split_manifest_path.is_file() or split_manifest_path.is_symlink():
+            return "STALE_SOURCE"
+        try:
+            split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return "INTEGRITY_BLOCKED"
+        if split_manifest.get("split_id") != split_id or split_manifest.get("dataset_id") != dataset_id:
+            return "INTEGRITY_BLOCKED"
+
+    # Existing analysis outputs do not persist source checksums. Even if
+    # referenced IDs still exist, currentness cannot be proven from IDs alone.
+    return "LEGACY"
+
+
 @router.get("/experiments/{battery_id}/{experiment_id}/feature-analyses")
 def list_feature_analyses(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
@@ -986,6 +1063,9 @@ def list_feature_analyses(request: Request, battery_id: str, experiment_id: str)
             except (OSError, json.JSONDecodeError):
                 continue
             selection = data.get("selection") or {}
+            freshness_status = _analysis_freshness_status(
+                data, manifest.parent, service.processed_root, battery_id, experiment_id
+            )
             items.append(
                 {
                     "analysis_id": data.get("analysis_id", manifest.parent.name),
@@ -997,6 +1077,14 @@ def list_feature_analyses(request: Request, battery_id: str, experiment_id: str)
                     "candidate_features": data.get("candidate_features", []),
                     "selected_features": selection.get("selected_features", []),
                     "selection_basis": selection.get("selection_basis"),
+                    "commit_status": selection.get("commit_status", "LEGACY"),
+                    "freshness_status": freshness_status,
+                    "usable_for_modeling": (
+                        data.get("analysis_mode") == "TRAIN_ONLY_ML_SAFE"
+                        and selection.get("commit_status") == "CONFIRMED"
+                        and bool(selection.get("selected_features"))
+                        and freshness_status == "CURRENT"
+                    ),
                     "status": "AVAILABLE",
                 }
             )

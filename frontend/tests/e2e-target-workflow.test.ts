@@ -14,6 +14,7 @@ const api = `http://127.0.0.1:${port}/api/v1`;
 let proc: ChildProcess | null = null;
 let sandbox: E2EDataSandbox | null = null;
 let available = false;
+let startupOutput = "";
 
 beforeAll(async () => {
   const repoRoot = resolve(new URL(import.meta.url).pathname, "../../..");
@@ -21,8 +22,10 @@ beforeAll(async () => {
   proc = spawn(
     `${repoRoot}/.venv/bin/uvicorn`,
     ["battery_workbench.api.serve:app", "--port", String(port)],
-    { cwd: repoRoot, stdio: "ignore", env: sandbox.env },
+    { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"], env: sandbox.env },
   );
+  proc.stdout?.on("data", (chunk: Buffer) => { startupOutput += chunk.toString(); });
+  proc.stderr?.on("data", (chunk: Buffer) => { startupOutput += chunk.toString(); });
   for (let i = 0; i < 40; i++) {
     try {
       const r = await fetch(`${api}/health`);
@@ -33,7 +36,7 @@ beforeAll(async () => {
     proc.kill();
     sandbox.dispose();
     sandbox = null;
-    throw new Error("CELL_001 Target Workflow E2E API did not become ready; refusing to silently skip scenarios.");
+    throw new Error(`CELL_001 Target Workflow E2E API did not become ready; refusing to silently skip scenarios.\n${startupOutput}`);
   }
 }, 30_000);
 afterAll(() => {
@@ -135,7 +138,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
       expect(Object.keys(row.values)).toEqual(["SWA", "BOTTOM_AMP", "TOF_XCORR"]);
       expect(row.target).not.toBeNull();
     }
-  });
+  }, 30_000);
 
   it("G: Row provenance in preview rows — event→electrical→sync", async (ctx) => {
     if (!available) ctx.skip();
@@ -146,7 +149,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     expect(row.measurement_event_id).toBeTruthy();
     expect(row.electrical_asset_id).toBe("E001");
     expect(row.sync_error_s).not.toBeNull();
-  });
+  }, 30_000);
 
   it("H: SOC exploratory ranking — Pearson/Spearman overall", async (ctx) => {
     if (!available) ctx.skip();
@@ -160,7 +163,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
       expect(entry.status).toBe("VALID");
       expect(Math.abs(entry.pearson_overall)).toBeLessThanOrEqual(1);
     }
-  });
+  }, 30_000);
 
   it("I: Charge/Discharge views — direction-dependent SOC relationship", async (ctx) => {
     if (!available) ctx.skip();
@@ -172,7 +175,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     expect(swa.pearson_charge).toBeGreaterThan(0);
     expect(swa.pearson_discharge).toBeLessThan(0);
     expect(swa.direction_dependent).toBe(true);
-  });
+  }, 30_000);
 
   it("J: Switch to Temperature — distinguish exploratory relationships from unsupported modeling", async (ctx) => {
     if (!available) ctx.skip();
@@ -185,7 +188,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     const after: any = d(await get(`/experiments/${B}/${E}/alignment-summary`));
     expect(after.total_frames).toBe(before.total_frames);
     expect(after.matched_unique).toBe(before.matched_unique);
-  });
+  }, 30_000);
 
   it("K: SOH limited — group summary only, no frame-level leaderboard", async (ctx) => {
     if (!available) ctx.skip();
@@ -197,7 +200,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     expect(data.group_summary.length).toBe(2);
     const sohValues = new Set(data.group_summary.map((g: any) => g.soh_percent));
     expect(sohValues.size).toBe(2);
-  });
+  }, 30_000);
 
   it("L: Build exploratory feature table — idempotent deterministic create", async (ctx) => {
     if (!available) ctx.skip();
@@ -246,8 +249,10 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     for (const a of mlSafe) {
       expect(a.split_id).toBeTruthy();
       expect(["STALE_SOURCE", "INTEGRITY_BLOCKED", "LEGACY", "CURRENT"]).toContain(a.freshness_status);
+      expect(["CONFIRMED", "WAITING_FOR_USER", "NO_SELECTION", "LEGACY"]).toContain(a.commit_status);
+      expect(a.usable_for_modeling).toBe(false);
     }
-  });
+  }, 30_000);
 
   it("O: Preview X/y — target provenance + eligible/excluded + readiness", async (ctx) => {
     if (!available) ctx.skip();
@@ -259,7 +264,7 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     expect(table.target_readiness).toBe("READY_FOR_LIMITED_EVALUATION");
     expect(table.summary.eligible_rows).toBeGreaterThan(0);
     expect(table.summary.excluded_by_reason["AMBIGUOUS_SYNC"]).toBe(4);
-  });
+  }, 30_000);
 
   it("P: Build dataset → model handoff — split + models endpoints", async (ctx) => {
     if (!available) ctx.skip();

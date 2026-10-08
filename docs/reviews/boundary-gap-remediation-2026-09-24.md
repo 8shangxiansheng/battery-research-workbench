@@ -127,3 +127,11 @@ has_independent_validation=false`。
 - 追踪确认现有 DatasetNode 对所选 gated feature 通过 `resolved_gate_bounds()` 取得冻结窗口，并调用 `selected_feature_series()` 重新计算；gate calibration identity 也参与 dataset identity 与复用失效判断。原缺口是端到端验收只检查 manifest 中有 calibration ID，没有证明窗口实际影响数值。
 - 扩展 `test_fresh_intake_to_report`：导入真实 CELL_001 raw 文件到临时实验，冻结 `SWA_SURFACE_GATE=[80,230)`，从导出的 feature artifact 与 Zarr raw waveform 独立重算每条 `SWA`，逐行与 dataset parquet 对照，并确认该值与 source template 计算确实不同。
 - 真实数据端到端测试通过（仅生成临时目录输出，没有修改 `data/raw/` 或主工作区数据）；警告中 MLP convergence warning 与本 Gate 验收无关。此阶段没有改变科学公式，仅补齐对已有冻结窗口行为的 golden acceptance 证据。
+
+## K. Feature Analysis 历史产物 freshness 标注（2026-10-08）
+
+- 真实 CELL_001 目标工作流 E2E 暴露 `/feature-analyses` 只返回 `AVAILABLE`，未说明产物 freshness 或选择提交状态；UI/验收无法区分可读文件、可用于建模的已确认选择和旧产物。
+- 列表响应现在分开返回 `freshness_status` 与 `commit_status`：输出 checksum 不匹配/缺失时 fail-closed 为 `INTEGRITY_BLOCKED`；引用的数据集或 split 不存在/身份冲突时标为 `STALE_SOURCE`；缺少可验证 source fingerprint 的历史分析标为 `LEGACY`。文件存在不再被解释为 `CURRENT` 或“可用于建模”。
+- CELL_001 当前历史分析缺 source checksum，因此如实标记为 `LEGACY`；`WAITING_FOR_USER`、`NO_SELECTION` 等提交状态独立展示，不提升为已确认选择。
+- 验证：freshness helper 单测覆盖 checksum 损坏、源数据缺失和 legacy；真实 CELL_001 target workflow E2E 16/16 通过。慢 API 场景显式配置测试超时；raw 与 processed 输入只读，运行输出位于临时 sandbox。
+- 限制：要得到 `CURRENT`，后续分析物化器必须写入并可复核 source fingerprint；本阶段没有重算旧分析，也不改变任何科学数值或模型资格。
