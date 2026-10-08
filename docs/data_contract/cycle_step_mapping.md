@@ -5,7 +5,7 @@ Electrical `(DataAsset, cycle_index_raw, step_index_raw)` identities to
 experiment-level canonical Cycle/Step indices.
 
 File: `data/annotations/{battery_id}/{experiment_id}/cycle-step-mapping.csv`.
-Use the [blank template](../templates/cycle-step-mapping.csv). It is separate
+Use the [blank template](../../frontend/public/cycle-step-mapping.csv). It is separate
 from immutable `data/raw/` and does not modify parser outputs.
 
 ## Contract

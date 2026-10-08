@@ -79,6 +79,11 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
           }}
         />
       </label>
+      <Button asChild variant="outline">
+        <a href="/cycle-step-mapping.csv" download="cycle-step-mapping.csv">
+          下载空白 CSV 模板
+        </a>
+      </Button>
       <Button
         type="button"
         disabled={!file || file.size > MAX_BYTES || preflight.isPending || save.isPending}

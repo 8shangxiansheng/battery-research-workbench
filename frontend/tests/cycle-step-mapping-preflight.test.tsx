@@ -74,6 +74,10 @@ describe("Cycle-Step mapping preflight", () => {
     });
     mount();
 
+    const templateLink = screen.getByRole("link", { name: "下载空白 CSV 模板" });
+    expect(templateLink).toHaveAttribute("href", "/cycle-step-mapping.csv");
+    expect(templateLink).toHaveAttribute("download", "cycle-step-mapping.csv");
+
     await user.upload(
       screen.getByLabelText("选择 Cycle-Step 映射 CSV"),
       new File(["contract_version,mapping_id\n"], "mapping.csv", { type: "text/csv" }),
