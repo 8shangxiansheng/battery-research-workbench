@@ -18,6 +18,7 @@ export type ApiErrorCode =
   | "SCIENTIFIC_READINESS_BLOCKED"
   | "INTEGRITY_ERROR"
   | "UNSUPPORTED_OPERATION"
+  | "UPLOAD_TOO_LARGE"
   | "INTERNAL_ERROR";
 
 export interface ApiErrorBody {
@@ -822,6 +823,23 @@ export interface AlignmentExclusionsResponse {
   exclusions: { reason: string; count: number; measurement_event_ids: string[] }[];
 }
 
+export interface CycleStepMappingPreflightResult {
+  status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED";
+  contract_version: string;
+  mapping_id: string | null;
+  battery_id: string;
+  experiment_id: string;
+  mapping_sha256: string;
+  parser_manifest_sha256: string;
+  source_cycle_count: number;
+  source_step_count: number;
+  canonical_cycle_count: number;
+  review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED";
+  mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE";
+  label_generation_authorized: false;
+  scientific_cycle_continuity: "NOT_ASSESSED";
+}
+
 export interface FeatureLabelPreviewRow {
   measurement_event_id: string;
   ultrasound_asset_id: string | null;
@@ -1469,6 +1487,11 @@ export const client = {
     ),
   getAlignmentExclusions: (batteryId: string, experimentId: string) =>
     request<AlignmentExclusionsResponse>(`/experiments/${batteryId}/${experimentId}/alignment-exclusions`),
+  preflightCycleStepMapping: (batteryId: string, experimentId: string, mappingCsv: string) =>
+    request<CycleStepMappingPreflightResult>(
+      `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/preflight`,
+      { method: "POST", body: JSON.stringify({ mapping_csv: mappingCsv }) },
+    ),
   postFeatureLabelPreview: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; limit?: number; split_id?: string; fold_index?: string }) =>
     request<FeatureLabelPreviewResponse>(`/experiments/${batteryId}/${experimentId}/feature-label-preview`, {
       method: "POST", body: JSON.stringify(body),
@@ -1763,6 +1786,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-summary" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-label-preview" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },

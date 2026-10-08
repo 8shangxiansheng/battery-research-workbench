@@ -10,6 +10,7 @@ import {
 import {
   AlignmentSummary, AlignmentSamplesPanel, AlignmentExclusionsPanel,
 } from "../../components/workbench/AlignmentPanels";
+import { CycleStepMappingPreflight } from "../../components/workbench/CycleStepMappingPreflight";
 import { FeatureLabelTablePreview, TARGET_LABELS } from "../../components/workbench/FeatureLabelTable";
 import { FeatureRankingTable } from "../../components/workbench/FeatureTargetWorkbench";
 import { DatasetBuildButtons } from "../../components/workbench/DatasetXYPreview";
@@ -182,6 +183,7 @@ export function AnalysisWorkbench() {
       <h2 className="text-xl">Synchronization & Alignment / 同步对齐</h2>
       <p className="muted text-sm mt-1">所有映射来自 canonical MeasurementEvent；禁止 gate/cycle/timestamp 重新匹配。</p>
       <AlignmentSummary batteryId={batteryId} experimentId={experimentId} targetId={targetId} />
+      <CycleStepMappingPreflight batteryId={batteryId} experimentId={experimentId} />
       <AlignmentSamplesPanel batteryId={batteryId} experimentId={experimentId} />
       <AlignmentExclusionsPanel batteryId={batteryId} experimentId={experimentId} />
       <div className="mt-5 flex gap-3">
