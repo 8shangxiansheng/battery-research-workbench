@@ -2222,6 +2222,60 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/source-inventory": {
+      "get": {
+        "description": "Return verified source pairs without proposing canonical assignments.",
+        "operationId": "get_cycle_step_mapping_source_inventory_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_source_inventory_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Cycle Step Mapping Source Inventory Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Source Inventory Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Cycle Step Mapping Source Inventory",
+        "tags": [
+          "scientific-resources"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/data-quality": {
       "get": {
         "operationId": "data_quality_api_v1_experiments__battery_id___experiment_id__data_quality_get",

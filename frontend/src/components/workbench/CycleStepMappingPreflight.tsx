@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE, ApiError, client } from "../../api/client";
 import { Button } from "../ui/button";
+import { CycleStepMappingEditor } from "./CycleStepMappingEditor";
 
 const MAX_BYTES = 4_000_000;
 
@@ -12,14 +13,22 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
   const [file, setFile] = useState<File | null>(null);
   const [confirmReviewed, setConfirmReviewed] = useState(false);
   const [showRevisionHistory, setShowRevisionHistory] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+  const [preflightCsv, setPreflightCsv] = useState("");
+  const [mappingInputError, setMappingInputError] = useState("");
   const queryClient = useQueryClient();
   const activeMapping = useQuery({
     queryKey: ["cycle-step-mapping", batteryId, experimentId],
     queryFn: () => client.getCycleStepMappingStatus(batteryId, experimentId),
   });
   const preflight = useMutation({
-    mutationFn: async (selected: File) =>
-      client.preflightCycleStepMapping(batteryId, experimentId, await selected.text()),
+    mutationFn: (mappingCsv: string) =>
+      client.preflightCycleStepMapping(batteryId, experimentId, mappingCsv),
+  });
+  const sourceInventory = useQuery({
+    queryKey: ["cycle-step-mapping-source-inventory", batteryId, experimentId],
+    queryFn: () => client.getCycleStepMappingSourceInventory(batteryId, experimentId),
+    enabled: showEditor,
   });
   const revisions = useQuery({
     queryKey: ["cycle-step-mapping-revisions", batteryId, experimentId],
@@ -27,8 +36,8 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     enabled: showRevisionHistory,
   });
   const save = useMutation({
-    mutationFn: async (selected: File) => client.saveCycleStepMapping(batteryId, experimentId, {
-      mapping_csv: await selected.text(),
+    mutationFn: (mappingCsv: string) => client.saveCycleStepMapping(batteryId, experimentId, {
+      mapping_csv: mappingCsv,
       confirm_reviewed: true,
       expected_active_sha256: activeMapping.data?.data.active_mapping_sha256 ?? null,
     }),
@@ -71,6 +80,9 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
 
   function selectFile(selected: File | null) {
     setFile(selected);
+    setMappingInputError("");
+    setShowEditor(false);
+    setPreflightCsv("");
     preflight.reset();
     save.reset();
     setConfirmReviewed(false);
@@ -81,6 +93,26 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     save.reset();
     setConfirmReviewed(false);
     void activeMapping.refetch();
+  }
+
+  function runPreflight(mappingCsv: string) {
+    if (new Blob([mappingCsv]).size > MAX_BYTES) {
+      setMappingInputError("映射 CSV 超过 4 MB；请减少条目后重试。");
+      return;
+    }
+    setMappingInputError("");
+    setPreflightCsv(mappingCsv);
+    setConfirmReviewed(false);
+    save.reset();
+    preflight.mutate(mappingCsv);
+  }
+
+  function invalidatePreflight() {
+    setPreflightCsv("");
+    setMappingInputError("");
+    setConfirmReviewed(false);
+    preflight.reset();
+    save.reset();
   }
 
   return <section className="feature-card mt-5" data-testid="cycle-step-mapping-preflight">
@@ -194,13 +226,58 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       </Button>
       <Button
         type="button"
+        variant="outline"
+        aria-expanded={showEditor}
+        data-testid="cycle-step-mapping-toggle-editor"
+        onClick={() => {
+          setFile(null);
+          setPreflightCsv("");
+          setConfirmReviewed(false);
+          preflight.reset();
+          save.reset();
+          setShowEditor(value => !value);
+        }}
+      >
+        {showEditor ? "关闭工作台映射编辑器" : "在工作台填写映射"}
+      </Button>
+      <Button
+        type="button"
         disabled={!file || file.size > MAX_BYTES || preflight.isPending || save.isPending}
-        onClick={() => file && preflight.mutate(file)}
+        onClick={() => {
+          if (!file) return;
+          void file.text().then(runPreflight).catch(() => {
+            setPreflightCsv("");
+            setMappingInputError("浏览器无法读取所选 CSV；请重新选择文件后重试。");
+            preflight.reset();
+          });
+        }}
         data-testid="cycle-step-mapping-run-preflight"
       >
         {preflight.isPending ? "正在预检…" : "预检映射"}
       </Button>
     </div>
+    {showEditor && <div className="mt-3">
+      {sourceInventory.isLoading && <p role="status" className="muted text-sm">正在读取 parser source inventory…</p>}
+      {sourceInventory.isError && <div role="alert" className="text-sm text-destructive">
+        <p>{sourceInventory.error instanceof ApiError
+          ? String(sourceInventory.error.details.reason ?? sourceInventory.error.message)
+          : "当前 parser source inventory 不可用，请确认 Electrical 解析已完成。"}</p>
+        <Button type="button" variant="outline" size="sm" className="mt-2"
+          disabled={sourceInventory.isFetching} onClick={() => void sourceInventory.refetch()}>
+          {sourceInventory.isFetching ? "正在重试…" : "重试读取 source inventory"}
+        </Button>
+      </div>}
+      {sourceInventory.data?.data.source_steps.length === 0 && <p role="status" className="muted text-sm">
+        当前没有已解析的 source step，无法建立映射。
+      </p>}
+      {sourceInventory.data && sourceInventory.data.data.source_steps.length > 0 && <CycleStepMappingEditor
+        key={`${batteryId}:${experimentId}:${sourceInventory.data.data.source_steps[0]?.parser_manifest_sha256 ?? "unknown"}`}
+        sourceSteps={sourceInventory.data.data.source_steps}
+        isPending={preflight.isPending || save.isPending}
+        onPreflight={runPreflight}
+        onChange={invalidatePreflight}
+      />}
+    </div>}
     <p className="muted text-xs mt-2">
       草稿只从当前 parser 输出预填 source identity 与原始文件 SHA-256；canonical Cycle/Step、审核人和理由保持空白。
       它不会推断跨文件关系，也不能直接通过预检。原始文件摘要仅用于来源追溯，不证明物理循环连续。
@@ -211,6 +288,7 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     {file && file.size > MAX_BYTES && <p role="alert" className="text-sm text-destructive mt-2">
       文件超过 4 MB。请缩小 CSV 后重试。
     </p>}
+    {mappingInputError && <p role="alert" className="text-sm text-destructive mt-2">{mappingInputError}</p>}
     {preflight.isError && <div role="alert" className="notice mt-3 text-sm" data-testid="cycle-step-mapping-error">
       <strong>映射未通过预检</strong>
       <p className="mt-1">{errorReason}</p>
@@ -240,8 +318,8 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       <Button
         type="button"
         className="mt-3"
-        disabled={!file || !confirmReviewed || activeMapping.isLoading || activeMapping.isError || save.isPending}
-        onClick={() => file && save.mutate(file)}
+        disabled={!preflightCsv || !confirmReviewed || activeMapping.isLoading || activeMapping.isError || save.isPending}
+        onClick={() => preflightCsv && save.mutate(preflightCsv)}
         data-testid="cycle-step-mapping-save"
       >
         {save.isPending ? "正在保存版本…" : "保存已审核映射"}

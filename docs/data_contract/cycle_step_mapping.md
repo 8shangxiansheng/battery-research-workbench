@@ -71,6 +71,11 @@ rationale blank. It never proposes cross-asset equivalence, and the draft must
 fail preflight until a researcher completes and reviews it. The copied raw
 workbook checksum is lineage evidence only; it does not prove physical cycle
 continuity or substitute for an experiment record supporting the mapping.
+The workbench's in-page editor consumes the same inventory, keeps all canonical
+fields blank until an operator enters them, and invalidates a previous preflight
+whenever a field changes. A save can only use the exact CSV bytes that passed
+the latest preflight; it still requires separate confirmation and server-side
+revalidation.
 
 If API status returns `INTEGRITY_ERROR` for revision history, saving and
 replacement remain blocked; the application does not rewrite or discard a

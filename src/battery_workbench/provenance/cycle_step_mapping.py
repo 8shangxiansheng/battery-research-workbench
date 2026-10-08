@@ -294,18 +294,17 @@ def _read_mapping(path: Path) -> tuple[list[dict[str, str]], str]:
     return rows, hashlib.sha256(raw).hexdigest()
 
 
-def build_cycle_step_mapping_draft_csv(
+def build_cycle_step_mapping_source_inventory(
     *,
     raw_root: str | Path,
     processed_root: str | Path,
     battery_id: str,
     experiment_id: str,
-) -> str:
-    """Build an unreviewed inventory draft from current parser provenance.
+) -> list[dict[str, str]]:
+    """基于当前 parser provenance 生成 source identity 清单。
 
-    Source identity and checksums are copied from verified manifests/artifacts.
-    Canonical indices and human-review fields intentionally remain blank; this
-    function never proposes cross-asset Cycle/Step equivalence.
+    DataAsset、source pair 和 checksum 来自已校验的 manifest/artifact；canonical
+    indices 与人工审核字段保持空白，本函数不会提出跨 asset Cycle/Step 对应建议。
     """
     raw = Path(raw_root).resolve()
     processed = Path(processed_root).resolve()
@@ -316,7 +315,10 @@ def build_cycle_step_mapping_draft_csv(
         battery_id=battery_id,
         experiment_id=experiment_id,
     )
-    steps = pd.read_parquet(electrical_dir / "steps.parquet")
+    try:
+        steps = pd.read_parquet(electrical_dir / "steps.parquet")
+    except Exception as exc:
+        raise CycleStepMappingError("current parser steps artifact cannot be read") from exc
     step_keys = _source_keys(
         steps, artifact="steps", battery_id=battery_id, experiment_id=experiment_id
     )
@@ -325,21 +327,25 @@ def build_cycle_step_mapping_draft_csv(
         for item in manifest["source_asset_details"]
     }
     source_hashes = manifest["source_sha256"]
+    unknown_assets = {asset_id for asset_id, _, _ in step_keys} - set(source_details)
+    if unknown_assets:
+        raise CycleStepMappingError(
+            "steps artifact references DataAssets missing from parser provenance: "
+            + ", ".join(sorted(unknown_assets))
+        )
     parser_manifest_sha256 = _sha256(manifest_path)
 
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=CYCLE_STEP_MAPPING_FIELDS, lineterminator="\n")
-    writer.writeheader()
+    rows: list[dict[str, str]] = []
     for asset_id, cycle_index, step_index in sorted(step_keys):
-        writer.writerow(
+        rows.append(
             {
                 "contract_version": CYCLE_STEP_MAPPING_VERSION,
                 "mapping_id": "",
                 "battery_id": battery_id,
                 "experiment_id": experiment_id,
                 "electrical_asset_id": asset_id,
-                "cycle_index_raw": cycle_index,
-                "step_index_raw": step_index,
+                "cycle_index_raw": str(cycle_index),
+                "step_index_raw": str(step_index),
                 "canonical_cycle_index": "",
                 "canonical_step_index": "",
                 "parser_manifest_sha256": parser_manifest_sha256,
@@ -351,6 +357,27 @@ def build_cycle_step_mapping_draft_csv(
                 "rationale": "",
             }
         )
+    return rows
+
+
+def build_cycle_step_mapping_draft_csv(
+    *,
+    raw_root: str | Path,
+    processed_root: str | Path,
+    battery_id: str,
+    experiment_id: str,
+) -> str:
+    """将已校验的 source inventory 序列化为未审核 CSV 草稿。"""
+    rows = build_cycle_step_mapping_source_inventory(
+        raw_root=raw_root,
+        processed_root=processed_root,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=CYCLE_STEP_MAPPING_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
     return output.getvalue()
 
 

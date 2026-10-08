@@ -16,6 +16,7 @@ from battery_workbench.api.service import validate_id
 from battery_workbench.provenance.cycle_step_mapping import (
     CycleStepMappingError,
     build_cycle_step_mapping_draft_csv,
+    build_cycle_step_mapping_source_inventory,
     validate_cycle_step_mapping,
 )
 from battery_workbench.provenance.cycle_step_mapping_store import (
@@ -43,6 +44,33 @@ class CycleStepMappingSaveRequest(CycleStepMappingPreflightRequest):
     expected_active_sha256: str | None
 
 
+@router.get("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/source-inventory")
+def get_cycle_step_mapping_source_inventory(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    """返回已校验的 source pair 清单，不提出 canonical 对应关系。"""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    try:
+        rows = build_cycle_step_mapping_source_inventory(
+            raw_root=service.raw_root,
+            processed_root=service.processed_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+    except CycleStepMappingError as exc:
+        raise APIError(
+            ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+            "Current parser source inventory is unavailable",
+            {"reason": str(exc)},
+        ) from exc
+    return {
+        "data": {"source_steps": rows},
+        "meta": {"read_only": True, "scientific_assignments_inferred": False},
+    }
+
+
 @router.get(
     "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft",
     response_class=Response,
@@ -51,7 +79,7 @@ class CycleStepMappingSaveRequest(CycleStepMappingPreflightRequest):
 def download_cycle_step_mapping_draft(
     request: Request, battery_id: str, experiment_id: str
 ) -> Response:
-    """Download source inventory with all scientific mapping decisions blank."""
+    """下载未审核来源清单，所有科学映射决策保持空白。"""
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     service = get_service(request)

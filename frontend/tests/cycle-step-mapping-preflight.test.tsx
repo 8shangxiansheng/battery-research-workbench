@@ -370,4 +370,106 @@ describe("Cycle-Step mapping preflight", () => {
       expected_active_sha256: "c".repeat(64),
     });
   });
+
+  it("工作台编辑器要求人工填写 source 对应并在编辑后撤销旧预检", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(client, "getCycleStepMappingSourceInventory").mockResolvedValue({
+      data: {
+        source_steps: [{
+          contract_version: "cycle-step-mapping/1.0",
+          mapping_id: "",
+          battery_id: "CELL_A",
+          experiment_id: "EXP_A",
+          electrical_asset_id: "E001",
+          cycle_index_raw: "4",
+          step_index_raw: "2",
+          canonical_cycle_index: "",
+          canonical_step_index: "",
+          parser_manifest_sha256: "b".repeat(64),
+          evidence_relative_path: "assets/E001.xlsx",
+          evidence_sha256: "c".repeat(64),
+          review_status: "",
+          reviewer: "",
+          reviewed_at: "",
+          rationale: "",
+        }],
+      },
+      meta: { read_only: true, scientific_assignments_inferred: false },
+    });
+    const preflight = vi.spyOn(client, "preflightCycleStepMapping").mockResolvedValue({
+      data: {
+        status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
+        contract_version: "cycle-step-mapping/1.0",
+        mapping_id: "CSM::MANUAL_1",
+        battery_id: "CELL_A",
+        experiment_id: "EXP_A",
+        mapping_sha256: "a".repeat(64),
+        parser_manifest_sha256: "b".repeat(64),
+        source_cycle_count: 1,
+        source_step_count: 1,
+        canonical_cycle_count: 1,
+        review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
+        mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE",
+        label_generation_authorized: false,
+        scientific_cycle_continuity: "NOT_ASSESSED",
+      },
+      meta: { read_only: true },
+    });
+    const save = vi.spyOn(client, "saveCycleStepMapping").mockResolvedValue({
+      data: {
+        status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
+        contract_version: "cycle-step-mapping/1.0",
+        mapping_id: "CSM::MANUAL_1",
+        battery_id: "CELL_A",
+        experiment_id: "EXP_A",
+        mapping_sha256: "a".repeat(64),
+        parser_manifest_sha256: "b".repeat(64),
+        source_cycle_count: 1,
+        source_step_count: 1,
+        canonical_cycle_count: 1,
+        review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
+        mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE",
+        label_generation_authorized: false,
+        scientific_cycle_continuity: "NOT_ASSESSED",
+        save_status: "SAVED",
+        previous_mapping_sha256: null,
+        revision_count: 1,
+        active_mapping_relative_path: "annotations/CELL_A/EXP_A/cycle-step-mapping.csv",
+      },
+      meta: { read_only: false },
+    });
+    mount();
+    await user.click(screen.getByTestId("cycle-step-mapping-toggle-editor"));
+    await screen.findByTestId("cycle-step-mapping-editor");
+
+    const canonicalCycle = screen.getByLabelText("Canonical Cycle E001 4/2");
+    const canonicalStep = screen.getByLabelText("Canonical Step E001 4/2");
+    expect(canonicalCycle).toHaveValue(null);
+    expect(screen.getByTestId("cycle-step-mapping-editor-preflight")).toBeDisabled();
+    await user.type(canonicalCycle, "2");
+    await user.type(canonicalStep, "1");
+    await user.type(screen.getByLabelText("映射 ID"), "CSM::MANUAL_1");
+    await user.type(screen.getByLabelText("审核人声明"), "researcher-1");
+    await user.type(screen.getByLabelText("审核时间（ISO-8601，必须带时区）"), "2026-10-08T10:00:00+08:00");
+    await user.type(screen.getByLabelText("映射依据 / 理由"), "实验日志确认文件分段");
+    await user.click(screen.getByRole("checkbox", { name: /我已依据可追溯实验记录/ }));
+    await user.click(screen.getByTestId("cycle-step-mapping-editor-preflight"));
+
+    const result = await screen.findByTestId("cycle-step-mapping-result");
+    expect(preflight).toHaveBeenCalledTimes(1);
+    const mappingCsv = preflight.mock.lastCall?.[2] ?? "";
+    expect(mappingCsv).toContain('"CSM::MANUAL_1"');
+    expect(mappingCsv).toContain('"E001","4","2","2","1"');
+    expect(mappingCsv).toContain('"ACCEPTED","researcher-1","2026-10-08T10:00:00+08:00"');
+    expect(result).toHaveTextContent("结构与字节校验通过");
+    await user.click(screen.getByTestId("cycle-step-mapping-confirm-reviewed"));
+    await user.click(screen.getByTestId("cycle-step-mapping-save"));
+    expect(await screen.findByTestId("cycle-step-mapping-saved")).toBeInTheDocument();
+    expect(save.mock.lastCall?.[2].mapping_csv).toBe(mappingCsv);
+
+    await user.clear(canonicalCycle);
+    await user.type(canonicalCycle, "3");
+    expect(screen.queryByTestId("cycle-step-mapping-result")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cycle-step-mapping-save")).not.toBeInTheDocument();
+  });
 });

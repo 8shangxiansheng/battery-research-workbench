@@ -552,6 +552,13 @@ def test_cycle_step_mapping_draft_prefills_provenance_but_not_scientific_decisio
         if path.is_file()
     }
 
+    inventory_response = client.get(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/source-inventory"
+    )
+    assert inventory_response.status_code == 200
+    assert inventory_response.json()["meta"]["scientific_assignments_inferred"] is False
+    assert len(inventory_response.json()["data"]["source_steps"]) == 4
+
     response = client.get("/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/draft")
 
     assert response.status_code == 200
@@ -586,6 +593,37 @@ def test_cycle_step_mapping_draft_prefills_provenance_but_not_scientific_decisio
         for path in raw_root.rglob("*")
         if path.is_file()
     }
+
+
+def test_cycle_step_mapping_source_inventory_blocks_unregistered_parser_asset(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    electrical_dir = Path(inputs["processed_root"]) / "electrical" / "CELL_A" / "EXP_A"
+    steps_path = electrical_dir / "steps.parquet"
+    steps = pd.read_parquet(steps_path)
+    steps.loc[0, "electrical_asset_id"] = "E999"
+    steps.to_parquet(steps_path, index=False)
+    parser_manifest_path = electrical_dir / "parser_manifest.json"
+    parser_manifest = json.loads(parser_manifest_path.read_text(encoding="utf-8"))
+    parser_manifest["output_checksums"]["steps"] = _content_sha256(steps_path)
+    parser_manifest_path.write_text(json.dumps(parser_manifest), encoding="utf-8")
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+
+    response = client.get(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/source-inventory"
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "SCIENTIFIC_READINESS_BLOCKED"
+    assert "E999" in error["details"]["reason"]
 
 
 def test_cycle_step_mapping_preflight_api_returns_typed_invalid_response(
