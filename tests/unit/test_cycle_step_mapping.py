@@ -645,6 +645,33 @@ def test_cycle_step_mapping_save_is_versioned_and_uses_optimistic_concurrency(
     assert stale.json()["error"]["code"] == "CONFLICT"
     assert active.read_text(encoding="utf-8") == changed
 
+    revision_list = client.get(f"{endpoint}/revisions")
+    assert revision_list.status_code == 200
+    revisions_by_hash = {
+        revision["sha256"]: revision
+        for revision in revision_list.json()["data"]["revisions"]
+    }
+    assert revisions_by_hash[first_data["mapping_sha256"]]["is_active"] is False
+    assert revisions_by_hash[second_data["mapping_sha256"]]["is_active"] is True
+    assert revisions_by_hash[first_data["mapping_sha256"]]["size_bytes"] == len(
+        content.encode("utf-8")
+    )
+
+    historical = client.get(
+        f"{endpoint}/revisions/{first_data['mapping_sha256']}"
+    )
+    current = client.get(f"{endpoint}/revisions/{second_data['mapping_sha256']}")
+    assert historical.status_code == 200
+    assert historical.text == content
+    assert historical.headers["x-content-sha256"] == first_data["mapping_sha256"]
+    assert current.status_code == 200
+    assert current.text == changed
+
+    missing_revision = client.get(f"{endpoint}/revisions/" + "0" * 64)
+    assert missing_revision.status_code == 404
+    invalid_revision = client.get(f"{endpoint}/revisions/not-a-sha")
+    assert invalid_revision.status_code == 400
+
 
 def test_saved_mapping_sidecar_is_consumed_by_reference_labels_workflow_node(
     mapping_case, tmp_path: Path
@@ -857,6 +884,10 @@ def test_mapping_api_fails_closed_when_revision_history_is_corrupted(
     revision.write_text("corrupted revision", encoding="utf-8")
 
     status = client.get(endpoint)
+    revision_list = client.get(f"{endpoint}/revisions")
+    corrupt_download = client.get(
+        f"{endpoint}/revisions/{saved.json()['data']['mapping_sha256']}"
+    )
     replacement = client.put(
         endpoint,
         json={
@@ -868,6 +899,10 @@ def test_mapping_api_fails_closed_when_revision_history_is_corrupted(
 
     assert status.status_code == 409
     assert status.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert revision_list.status_code == 409
+    assert revision_list.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert corrupt_download.status_code == 409
+    assert corrupt_download.json()["error"]["code"] == "INTEGRITY_ERROR"
     assert replacement.status_code == 409
     assert replacement.json()["error"]["code"] == "INTEGRITY_ERROR"
     assert active.read_bytes() == original_active

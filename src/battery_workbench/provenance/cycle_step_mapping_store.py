@@ -127,6 +127,123 @@ def _annotation_paths(
     return active_path, revisions_dir, resolved_annotation_root
 
 
+def _existing_revision_paths(
+    raw_root: str | Path, battery_id: str, experiment_id: str
+) -> tuple[Path, Path] | None:
+    """Resolve annotation history for read-only access without creating paths."""
+    _validate_ids(battery_id, experiment_id)
+    raw = Path(raw_root).resolve()
+    data_root = raw.parent
+    annotation_root = data_root / "annotations"
+    if annotation_root.is_symlink():
+        raise CycleStepMappingStoreError("annotations root must not be a symlink")
+    if not annotation_root.exists():
+        return None
+    resolved_root = annotation_root.resolve()
+    try:
+        resolved_root.relative_to(data_root)
+    except ValueError:
+        raise CycleStepMappingStoreError("annotations root escapes the data directory")
+    try:
+        resolved_root.relative_to(raw)
+    except ValueError:
+        pass
+    else:
+        raise CycleStepMappingStoreError(
+            "annotations root must be separate from immutable raw data"
+        )
+
+    battery_dir = annotation_root / battery_id
+    experiment_dir = battery_dir / experiment_id
+    for directory, boundary in (
+        (battery_dir, resolved_root),
+        (experiment_dir, resolved_root),
+    ):
+        if directory.is_symlink():
+            raise CycleStepMappingStoreError("annotation directories must not be symlinks")
+        if not directory.exists():
+            return None
+        if not directory.is_dir():
+            raise CycleStepMappingStoreError("annotation path is not a regular directory")
+        try:
+            directory.resolve(strict=True).relative_to(boundary)
+        except (OSError, ValueError) as exc:
+            raise CycleStepMappingStoreError(
+                "annotation directory escapes its root"
+            ) from exc
+
+    active_path = experiment_dir / "cycle-step-mapping.csv"
+    revisions_dir = experiment_dir / "cycle-step-mapping.revisions"
+    if active_path.is_symlink() or revisions_dir.is_symlink():
+        raise CycleStepMappingStoreError("mapping sidecar paths must not be symlinks")
+    if revisions_dir.exists():
+        if not revisions_dir.is_dir():
+            raise CycleStepMappingStoreError("mapping revisions path is not a regular directory")
+        try:
+            revisions_dir.resolve(strict=True).relative_to(experiment_dir.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise CycleStepMappingStoreError(
+                "mapping revisions directory escapes its root"
+            ) from exc
+    return active_path, revisions_dir
+
+
+def list_cycle_step_mapping_revisions(
+    *, raw_root: str | Path, battery_id: str, experiment_id: str
+) -> list[dict[str, Any]]:
+    """Return verified immutable revision metadata, newest-independent by hash."""
+    paths = _existing_revision_paths(raw_root, battery_id, experiment_id)
+    if paths is None:
+        return []
+    active_path, revisions_dir = paths
+    active_digest: str | None = None
+    if active_path.exists():
+        if not active_path.is_file():
+            raise CycleStepMappingStoreError("active mapping path is not a regular file")
+        active_digest = _sha256_bytes(active_path.read_bytes())
+    if not revisions_dir.exists():
+        return []
+
+    revisions: list[dict[str, Any]] = []
+    for path in sorted(revisions_dir.glob("*.csv"), key=lambda item: item.stem):
+        if path.is_symlink() or not path.is_file():
+            raise CycleStepMappingStoreError("mapping revision is not a regular file")
+        content = path.read_bytes()
+        if not _SHA256_RE.fullmatch(path.stem) or _sha256_bytes(content) != path.stem:
+            raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
+        revisions.append(
+            {
+                "sha256": path.stem,
+                "size_bytes": len(content),
+                "is_active": path.stem == active_digest,
+            }
+        )
+    return revisions
+
+
+def read_cycle_step_mapping_revision(
+    revision_sha256: str, *, raw_root: str | Path, battery_id: str, experiment_id: str
+) -> bytes:
+    """Read a revision only when its path and content-address checksum are valid."""
+    if not _SHA256_RE.fullmatch(revision_sha256):
+        raise CycleStepMappingError("revision_sha256 must be a lowercase SHA-256")
+    paths = _existing_revision_paths(raw_root, battery_id, experiment_id)
+    if paths is None:
+        raise FileNotFoundError("Cycle/Step mapping revision not found")
+    _, revisions_dir = paths
+    revision_path = revisions_dir / f"{revision_sha256}.csv"
+    if revision_path.is_symlink():
+        raise CycleStepMappingStoreError("mapping revision must not be a symlink")
+    if not revision_path.exists():
+        raise FileNotFoundError("Cycle/Step mapping revision not found")
+    if not revision_path.is_file():
+        raise CycleStepMappingStoreError("mapping revision is not a regular file")
+    content = revision_path.read_bytes()
+    if _sha256_bytes(content) != revision_sha256:
+        raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
+    return content
+
+
 def get_cycle_step_mapping_status(
     *,
     raw_root: str | Path,

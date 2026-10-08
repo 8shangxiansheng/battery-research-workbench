@@ -221,6 +221,43 @@ describe("Cycle-Step mapping preflight", () => {
     );
   });
 
+  it("可查看并下载内容校验过的 Cycle-Step 映射历史版本", async () => {
+    const user = userEvent.setup();
+    const activeHash = "a".repeat(64);
+    const previousHash = "b".repeat(64);
+    vi.spyOn(client, "getCycleStepMappingStatus").mockResolvedValue({
+      data: {
+        status: "VALIDATED",
+        active_mapping_sha256: activeHash,
+        revision_count: 2,
+        reason: null,
+      },
+      meta: { read_only: true },
+    });
+    const listRevisions = vi.spyOn(client, "getCycleStepMappingRevisions").mockResolvedValue({
+      data: {
+        revisions: [
+          { sha256: activeHash, size_bytes: 500, is_active: true },
+          { sha256: previousHash, size_bytes: 450, is_active: false },
+        ],
+      },
+      meta: { read_only: true },
+    });
+    mount();
+
+    await user.click(await screen.findByTestId("cycle-step-mapping-toggle-history"));
+    expect(listRevisions).toHaveBeenCalledWith("CELL_A", "EXP_A");
+    const history = await screen.findByTestId("cycle-step-mapping-history");
+    expect(history).toHaveTextContent("当前活动版本");
+    expect(history).toHaveTextContent("不代表该历史版本仍匹配当前 parser/raw");
+    const download = screen.getAllByRole("link", { name: "下载 CSV" })[0];
+    expect(download).toHaveAttribute(
+      "href",
+      `/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/revisions/${activeHash}`,
+    );
+    expect(download).toHaveAttribute("download", `cycle-step-mapping-${activeHash}.csv`);
+  });
+
   it("保存冲突后清除旧审核确认并刷新版本状态", async () => {
     const user = userEvent.setup();
     const status = vi.spyOn(client, "getCycleStepMappingStatus");

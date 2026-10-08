@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from battery_workbench.api.dependencies import get_service
@@ -20,6 +21,8 @@ from battery_workbench.provenance.cycle_step_mapping_store import (
     CycleStepMappingConflict,
     CycleStepMappingStoreError,
     get_cycle_step_mapping_status,
+    list_cycle_step_mapping_revisions,
+    read_cycle_step_mapping_revision,
     save_cycle_step_mapping,
 )
 
@@ -57,6 +60,58 @@ def get_reviewed_cycle_step_mapping_status(
     except CycleStepMappingStoreError as exc:
         raise APIError(ErrorCode.INTEGRITY_ERROR, str(exc)) from exc
     return {"data": result, "meta": {"read_only": True}}
+
+
+@router.get("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions")
+def list_reviewed_cycle_step_mapping_revisions(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    """List content-addressed snapshots without interpreting their science."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    try:
+        revisions = list_cycle_step_mapping_revisions(
+            raw_root=service.raw_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+    except CycleStepMappingStoreError as exc:
+        raise APIError(ErrorCode.INTEGRITY_ERROR, str(exc)) from exc
+    return {"data": {"revisions": revisions}, "meta": {"read_only": True}}
+
+
+@router.get(
+    "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}"
+)
+def download_reviewed_cycle_step_mapping_revision(
+    request: Request, battery_id: str, experiment_id: str, revision_sha256: str
+) -> Response:
+    """Download a verified immutable CSV snapshot by its SHA-256 identity."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    try:
+        content = read_cycle_step_mapping_revision(
+            revision_sha256,
+            raw_root=service.raw_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+    except FileNotFoundError as exc:
+        raise APIError(ErrorCode.NOT_FOUND, str(exc)) from exc
+    except CycleStepMappingStoreError as exc:
+        raise APIError(ErrorCode.INTEGRITY_ERROR, str(exc)) from exc
+    except CycleStepMappingError as exc:
+        raise APIError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="cycle-step-mapping-{revision_sha256}.csv"',
+            "X-Content-SHA256": revision_sha256,
+        },
+    )
 
 
 @router.post("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight")

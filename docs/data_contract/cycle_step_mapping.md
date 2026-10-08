@@ -57,6 +57,12 @@ authenticated identity or a tamper-proof audit log. Because the API has no
 authentication by default, keep the workbench bound to localhost or behind a
 trusted authenticated proxy.
 
+The read-only API lists these revisions by SHA-256 and active status and serves
+the exact CSV bytes only after rechecking the digest. Historical snapshots are
+for review/recovery; their presence does not mean they remain valid against the
+current raw evidence or parser outputs. A digest mismatch blocks listing and
+download rather than silently repairing the snapshot.
+
 If API status returns `INTEGRITY_ERROR` for revision history, saving and
 replacement remain blocked; the application does not rewrite or discard a
 damaged snapshot. Preserve a copy of the full experiment annotation directory,

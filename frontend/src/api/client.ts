@@ -860,6 +860,12 @@ export interface CycleStepMappingSaveResult extends CycleStepMappingPreflightRes
   active_mapping_relative_path: string;
 }
 
+export interface CycleStepMappingRevision {
+  sha256: string;
+  size_bytes: number;
+  is_active: boolean;
+}
+
 export interface FeatureLabelPreviewRow {
   measurement_event_id: string;
   ultrasound_asset_id: string | null;
@@ -1516,6 +1522,10 @@ export const client = {
     request<CycleStepMappingStatus>(
       `/experiments/${batteryId}/${experimentId}/cycle-step-mapping`,
     ),
+  getCycleStepMappingRevisions: (batteryId: string, experimentId: string) =>
+    request<{ revisions: CycleStepMappingRevision[] }>(
+      `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/revisions`,
+    ),
   saveCycleStepMapping: (
     batteryId: string,
     experimentId: string,
@@ -1821,6 +1831,8 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}" },
   { method: "PUT", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-label-preview" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },

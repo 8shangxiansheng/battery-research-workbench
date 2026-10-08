@@ -2055,6 +2055,119 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions": {
+      "get": {
+        "description": "List content-addressed snapshots without interpreting their science.",
+        "operationId": "list_reviewed_cycle_step_mapping_revisions_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Reviewed Cycle Step Mapping Revisions Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Revisions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reviewed Cycle Step Mapping Revisions",
+        "tags": [
+          "scientific-resources"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}": {
+      "get": {
+        "description": "Download a verified immutable CSV snapshot by its SHA-256 identity.",
+        "operationId": "download_reviewed_cycle_step_mapping_revision_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_revisions__revision_sha256__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision_sha256",
+            "required": true,
+            "schema": {
+              "title": "Revision Sha256",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Reviewed Cycle Step Mapping Revision",
+        "tags": [
+          "scientific-resources"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/data-quality": {
       "get": {
         "operationId": "data_quality_api_v1_experiments__battery_id___experiment_id__data_quality_get",

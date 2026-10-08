@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, client } from "../../api/client";
+import { API_BASE, ApiError, client } from "../../api/client";
 import { Button } from "../ui/button";
 
 const MAX_BYTES = 4_000_000;
@@ -11,6 +11,7 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [confirmReviewed, setConfirmReviewed] = useState(false);
+  const [showRevisionHistory, setShowRevisionHistory] = useState(false);
   const queryClient = useQueryClient();
   const activeMapping = useQuery({
     queryKey: ["cycle-step-mapping", batteryId, experimentId],
@@ -20,22 +21,37 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     mutationFn: async (selected: File) =>
       client.preflightCycleStepMapping(batteryId, experimentId, await selected.text()),
   });
+  const revisions = useQuery({
+    queryKey: ["cycle-step-mapping-revisions", batteryId, experimentId],
+    queryFn: () => client.getCycleStepMappingRevisions(batteryId, experimentId),
+    enabled: showRevisionHistory,
+  });
   const save = useMutation({
     mutationFn: async (selected: File) => client.saveCycleStepMapping(batteryId, experimentId, {
       mapping_csv: await selected.text(),
       confirm_reviewed: true,
       expected_active_sha256: activeMapping.data?.data.active_mapping_sha256 ?? null,
     }),
-    onSuccess: () => queryClient.invalidateQueries({
-      queryKey: ["cycle-step-mapping", batteryId, experimentId],
-    }),
+    onSuccess: async () => Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["cycle-step-mapping", batteryId, experimentId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["cycle-step-mapping-revisions", batteryId, experimentId],
+      }),
+    ]),
     onError: error => {
       if (error instanceof ApiError && error.code === "CONFLICT") {
         preflight.reset();
         setConfirmReviewed(false);
-        void queryClient.invalidateQueries({
-          queryKey: ["cycle-step-mapping", batteryId, experimentId],
-        });
+        void Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["cycle-step-mapping", batteryId, experimentId],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["cycle-step-mapping-revisions", batteryId, experimentId],
+          }),
+        ]);
       }
     },
   });
@@ -106,6 +122,48 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     {activeMapping.data?.data.status === "INVALID" && <p className="muted text-xs mt-1" role="note">
       恢复方式：根据当前 parser/raw 证据修订映射，重新预检并确认后保存新版本；旧版本会保留在历史快照中。
     </p>}
+    {activeMapping.data && <div className="mt-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => setShowRevisionHistory(value => !value)}
+        aria-expanded={showRevisionHistory}
+        data-testid="cycle-step-mapping-toggle-history"
+      >
+        {showRevisionHistory ? "隐藏版本历史" : `查看版本历史（${activeMapping.data.data.revision_count}）`}
+      </Button>
+      {showRevisionHistory && <div className="mt-2 rounded-md border p-3" data-testid="cycle-step-mapping-history">
+        <p className="muted text-xs mb-2">历史列表按内容 SHA-256 标识；下载的是保存时的原始 CSV 字节，不代表该历史版本仍匹配当前 parser/raw。</p>
+        {revisions.isLoading && <p role="status" className="muted text-sm">正在读取版本历史…</p>}
+        {revisions.isError && <div role="alert" className="text-sm text-destructive">
+          <p>{revisions.error instanceof Error ? revisions.error.message : "无法读取版本历史。"}</p>
+          <Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => void revisions.refetch()}>
+            重试读取历史
+          </Button>
+        </div>}
+        {revisions.data && revisions.data.data.revisions.length === 0 && <p className="muted text-sm">暂无已保存快照。</p>}
+        {revisions.data && revisions.data.data.revisions.length > 0 && <ul className="space-y-2">
+          {revisions.data.data.revisions.map(revision => <li
+            key={revision.sha256}
+            className="flex flex-wrap items-center justify-between gap-2 text-xs"
+          >
+            <span>
+              <code>{revision.sha256}</code>
+              {` · ${revision.size_bytes} bytes`}
+              {revision.is_active ? <span className="ml-2">当前活动版本</span> : null}
+            </span>
+            <a
+              className="underline underline-offset-2"
+              href={`${API_BASE}/experiments/${encodeURIComponent(batteryId)}/${encodeURIComponent(experimentId)}/cycle-step-mapping/revisions/${revision.sha256}`}
+              download={`cycle-step-mapping-${revision.sha256}.csv`}
+            >
+              下载 CSV
+            </a>
+          </li>)}
+        </ul>}
+      </div>}
+    </div>}
     <div className="mt-3 flex flex-wrap items-end gap-3">
       <label className="text-sm">
         <span className="block mb-1">选择映射 CSV（≤ 4 MB）</span>
