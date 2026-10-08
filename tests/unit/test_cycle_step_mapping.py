@@ -450,6 +450,55 @@ def test_reference_labels_node_discovers_reviewed_mapping_sidecar(
     assert result["artifact_id"] == "LS::test"
 
 
+def test_reference_labels_node_rejects_symlinked_mapping_sidecar(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_root = tmp_path / "data"
+    raw_root = data_root / "raw"
+    mapping_path = (
+        data_root / "annotations" / "CELL_A" / "EXP_A" / "cycle-step-mapping.csv"
+    )
+    mapping_path.parent.mkdir(parents=True)
+    external_mapping = tmp_path / "external-mapping.csv"
+    external_mapping.write_text("mapping outside annotations", encoding="utf-8")
+    mapping_path.symlink_to(external_mapping)
+
+    def unexpected_build(**kwargs):
+        pytest.fail("labels must not consume a symlinked mapping")
+
+    monkeypatch.setattr(
+        "battery_workbench.labels.builder.build_reference_labels", unexpected_build
+    )
+    plan = SimpleNamespace(
+        project=SimpleNamespace(battery_id="CELL_A", experiment_id="EXP_A"),
+        label_producer_version=None,
+    )
+    ctx = SimpleNamespace(raw_root=raw_root, processed_root=data_root / "processed")
+
+    with pytest.raises(ValueError, match="must not be symlinks"):
+        ReferenceLabelsNode().run(plan, {}, ctx)
+
+    manifest_path = tmp_path / "label_manifest.json"
+    manifest_path.write_text(json.dumps({"input_checksums": {}}), encoding="utf-8")
+    ref = ArtifactRef(
+        artifact_type="LABEL_SET",
+        artifact_id="LS::test",
+        battery_id="CELL_A",
+        experiment_id="EXP_A",
+        path=str(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(
+        WorkflowNode,
+        "resolve_existing_output",
+        lambda self, current_plan, inputs, root: (ref, "cached label set"),
+    )
+    with pytest.raises(ValueError, match="must not be symlinks"):
+        ReferenceLabelsNode().resolve_existing_output(
+            plan, {}, data_root / "processed"
+        )
+
+
 def test_reference_labels_cache_is_invalidated_when_mapping_changes(
     monkeypatch, tmp_path: Path
 ) -> None:

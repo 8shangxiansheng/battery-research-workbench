@@ -140,6 +140,37 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _reviewed_cycle_step_mapping_path(
+    data_root: Path, battery_id: str, experiment_id: str
+) -> Path | None:
+    """只读解析映射 sidecar，拒绝沿途的符号链接。"""
+    annotation_root = Path(data_root).resolve() / "annotations"
+    battery_dir = annotation_root / battery_id
+    experiment_dir = battery_dir / experiment_id
+    mapping_path = experiment_dir / "cycle-step-mapping.csv"
+
+    for path in (annotation_root, battery_dir, experiment_dir, mapping_path):
+        if path.is_symlink():
+            raise ValueError("Cycle/Step mapping paths must not be symlinks")
+    if not annotation_root.exists():
+        return None
+    if not annotation_root.is_dir():
+        raise ValueError("Cycle/Step annotations root must be a directory")
+    if not battery_dir.exists() or not experiment_dir.exists():
+        return None
+    if not battery_dir.is_dir() or not experiment_dir.is_dir():
+        raise ValueError("Cycle/Step mapping identity paths must be directories")
+    if not mapping_path.exists():
+        return None
+    if not mapping_path.is_file():
+        raise ValueError("Cycle/Step mapping sidecar must be a regular file")
+    try:
+        mapping_path.resolve(strict=True).relative_to(annotation_root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Cycle/Step mapping sidecar escapes the annotations root") from exc
+    return mapping_path
+
+
 # --------------------------------------------------------------------------
 # Concrete nodes
 # --------------------------------------------------------------------------
@@ -631,10 +662,10 @@ class ReferenceLabelsNode(WorkflowNode):
         from battery_workbench.labels.builder import build_reference_labels
 
         b, e = plan.project.battery_id, plan.project.experiment_id
-        mapping_path = Path(ctx.raw_root).parent / "annotations" / b / e / "cycle-step-mapping.csv"
+        mapping_path = _reviewed_cycle_step_mapping_path(Path(ctx.raw_root).parent, b, e)
         mapping_kwargs = (
             {"cycle_step_mapping_path": mapping_path, "raw_root": Path(ctx.raw_root)}
-            if mapping_path.is_file()
+            if mapping_path is not None
             else {}
         )
         report = build_reference_labels(
@@ -671,16 +702,12 @@ class ReferenceLabelsNode(WorkflowNode):
             return ref, reason
         battery_id = plan.project.battery_id
         experiment_id = plan.project.experiment_id
-        mapping_path = (
-            Path(processed_root).parent
-            / "annotations"
-            / battery_id
-            / experiment_id
-            / "cycle-step-mapping.csv"
+        mapping_path = _reviewed_cycle_step_mapping_path(
+            Path(processed_root).parent, battery_id, experiment_id
         )
         manifest = _load_json(Path(ref.manifest_path)) or {}
         declared = (manifest.get("input_checksums") or {}).get("cycle_step_mapping")
-        if mapping_path.is_file():
+        if mapping_path is not None:
             from battery_workbench.labels.persistence import _sha256
 
             actual = _sha256(mapping_path)
