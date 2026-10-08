@@ -29,6 +29,15 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     onSuccess: () => queryClient.invalidateQueries({
       queryKey: ["cycle-step-mapping", batteryId, experimentId],
     }),
+    onError: error => {
+      if (error instanceof ApiError && error.code === "CONFLICT") {
+        preflight.reset();
+        setConfirmReviewed(false);
+        void queryClient.invalidateQueries({
+          queryKey: ["cycle-step-mapping", batteryId, experimentId],
+        });
+      }
+    },
   });
 
   const result = preflight.data?.data;
@@ -47,6 +56,13 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     setConfirmReviewed(false);
   }
 
+  function reloadCurrentMapping() {
+    preflight.reset();
+    save.reset();
+    setConfirmReviewed(false);
+    void activeMapping.refetch();
+  }
+
   return <section className="feature-card mt-5" data-testid="cycle-step-mapping-preflight">
     <h3 className="text-base">Cycle–Step 映射预检</h3>
     <p className="muted text-sm mt-1">
@@ -54,9 +70,19 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       系统不会根据文件名或循环编号推断对应关系。
     </p>
     {activeMapping.isLoading && <p role="status" className="muted text-xs mt-2">正在读取当前映射版本…</p>}
-    {activeMapping.isError && <p role="alert" className="text-sm text-destructive mt-2">
-      无法读取当前映射版本；为避免覆盖已有版本，暂不能保存。请重试或检查服务状态。
-    </p>}
+    {activeMapping.isError && <div role="alert" className="text-sm text-destructive mt-2">
+      <p>无法读取当前映射版本；为避免覆盖已有版本，暂不能保存。请重试或检查服务状态。</p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="ml-2"
+        disabled={activeMapping.isFetching}
+        onClick={() => void activeMapping.refetch()}
+      >
+        {activeMapping.isFetching ? "正在重试…" : "重试读取映射状态"}
+      </Button>
+    </div>}
     {activeMapping.data && <p className="muted text-xs mt-2" data-testid="cycle-step-mapping-current">
       {activeMapping.data.data.status === "MISSING" ? "当前没有已保存映射" :
         activeMapping.data.data.status === "VALIDATED" ? "当前映射结构与来源 checksum 已验证" :
@@ -64,6 +90,9 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       {` · 历史版本 ${activeMapping.data.data.revision_count}`}
       {activeMapping.data.data.active_mapping_sha256
         ? ` · 当前版本 ${activeMapping.data.data.active_mapping_sha256.slice(0, 12)}` : ""}
+    </p>}
+    {activeMapping.data?.data.status === "INVALID" && <p className="muted text-xs mt-1" role="note">
+      恢复方式：根据当前 parser/raw 证据修订映射，重新预检并确认后保存新版本；旧版本会保留在历史快照中。
     </p>}
     <div className="mt-3 flex flex-wrap items-end gap-3">
       <label className="text-sm">
@@ -135,9 +164,21 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
         {save.isPending ? "正在保存版本…" : "保存已审核映射"}
       </Button>
     </div>}
-    {save.isError && <p role="alert" className="text-sm text-destructive mt-3" data-testid="cycle-step-mapping-save-error">
-      {saveErrorReason}。当前版本未被覆盖；请刷新当前 checksum 后重试。
-    </p>}
+    {save.isError && <div role="alert" className="notice mt-3 text-sm" data-testid="cycle-step-mapping-save-error">
+      {save.error instanceof ApiError && save.error.code === "CONFLICT"
+        ? "检测到映射版本冲突；当前版本未被覆盖。系统已重新读取状态，请重新选择/预检文件并再次确认后保存。"
+        : `${saveErrorReason}。当前版本未被覆盖；请重新读取状态并再次预检。`}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-2"
+        disabled={activeMapping.isFetching}
+        onClick={reloadCurrentMapping}
+      >
+        {activeMapping.isFetching ? "正在刷新…" : "刷新状态并重新审核"}
+      </Button>
+    </div>}
     {save.data && <p role="status" className="notice mt-3 text-sm" data-testid="cycle-step-mapping-saved">
       {save.data.data.save_status === "ALREADY_CURRENT" ? "此映射版本已是当前版本。" : "映射已保存并创建不可变版本快照。"}
       {` 当前历史版本数：${save.data.data.revision_count}。`}

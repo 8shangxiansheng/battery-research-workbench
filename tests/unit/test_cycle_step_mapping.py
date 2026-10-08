@@ -702,6 +702,47 @@ def test_cycle_step_mapping_save_requires_explicit_review_confirmation(
     assert not (Path(inputs["raw_root"]).parent / "annotations").exists()
 
 
+def test_saved_mapping_is_reported_invalid_after_parser_manifest_changes(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+    endpoint = "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping"
+    content = Path(inputs["mapping_path"]).read_text(encoding="utf-8")
+    saved = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content,
+            "confirm_reviewed": True,
+            "expected_active_sha256": None,
+        },
+    )
+    assert saved.status_code == 200
+
+    parser_manifest = (
+        Path(inputs["processed_root"])
+        / "electrical"
+        / "CELL_A"
+        / "EXP_A"
+        / "parser_manifest.json"
+    )
+    parser_manifest.write_text(
+        parser_manifest.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
+    status = client.get(endpoint)
+
+    assert status.status_code == 200
+    assert status.json()["data"]["status"] == "INVALID"
+    assert status.json()["data"]["active_mapping_sha256"] == saved.json()["data"]["mapping_sha256"]
+    assert "parser manifest changed" in status.json()["data"]["reason"]
+
+
 def test_cycle_step_mapping_save_rejects_symlinked_battery_directory_without_escape(
     mapping_case, tmp_path: Path
 ) -> None:

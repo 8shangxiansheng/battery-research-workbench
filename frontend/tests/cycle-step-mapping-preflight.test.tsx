@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError, client } from "../src/api/client";
@@ -142,5 +142,155 @@ describe("Cycle-Step mapping preflight", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("文件超过 4 MB");
     expect(screen.getByRole("button", { name: "预检映射" })).toBeDisabled();
     expect(preflight).not.toHaveBeenCalled();
+  });
+
+  it("读取当前映射失败时可显式重试", async () => {
+    const user = userEvent.setup();
+    const status = vi.spyOn(client, "getCycleStepMappingStatus");
+    status
+      .mockRejectedValueOnce(new Error("service unavailable"))
+      .mockResolvedValueOnce({
+        data: {
+          status: "MISSING",
+          active_mapping_sha256: null,
+          revision_count: 0,
+          reason: null,
+        },
+        meta: { read_only: true },
+      });
+    mount();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法读取当前映射版本");
+    await user.click(screen.getByRole("button", { name: "重试读取映射状态" }));
+
+    expect(await screen.findByTestId("cycle-step-mapping-current")).toHaveTextContent(
+      "当前没有已保存映射",
+    );
+  });
+
+  it("过期映射显示重新审核的恢复路径", async () => {
+    vi.spyOn(client, "getCycleStepMappingStatus").mockResolvedValue({
+      data: {
+        status: "INVALID",
+        active_mapping_sha256: "d".repeat(64),
+        revision_count: 2,
+        reason: "parser manifest changed after review",
+      },
+      meta: { read_only: true },
+    });
+    mount();
+
+    expect(await screen.findByTestId("cycle-step-mapping-current")).toHaveTextContent(
+      "当前映射无效或过期：parser manifest changed after review",
+    );
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "修订映射，重新预检并确认后保存新版本",
+    );
+  });
+
+  it("保存冲突后清除旧审核确认并刷新版本状态", async () => {
+    const user = userEvent.setup();
+    const status = vi.spyOn(client, "getCycleStepMappingStatus");
+    status
+      .mockResolvedValueOnce({
+        data: {
+          status: "MISSING",
+          active_mapping_sha256: null,
+          revision_count: 0,
+          reason: null,
+        },
+        meta: { read_only: true },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          status: "VALIDATED",
+          active_mapping_sha256: "c".repeat(64),
+          revision_count: 1,
+          reason: null,
+        },
+        meta: { read_only: true },
+      });
+    vi.spyOn(client, "preflightCycleStepMapping").mockResolvedValue({
+      data: {
+        status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
+        contract_version: "cycle-step-mapping/1.0",
+        mapping_id: "CSM::REVIEW_001",
+        battery_id: "CELL_A",
+        experiment_id: "EXP_A",
+        mapping_sha256: "a".repeat(64),
+        parser_manifest_sha256: "b".repeat(64),
+        source_cycle_count: 1,
+        source_step_count: 1,
+        canonical_cycle_count: 1,
+        review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
+        mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE",
+        label_generation_authorized: false,
+        scientific_cycle_continuity: "NOT_ASSESSED",
+      },
+      meta: { read_only: true },
+    });
+    const save = vi.spyOn(client, "saveCycleStepMapping");
+    save
+      .mockRejectedValueOnce(new ApiError(409, {
+        error: {
+          code: "CONFLICT",
+          message: "active mapping changed",
+          details: {},
+          request_id: "req-conflict",
+        },
+      }))
+      .mockResolvedValueOnce({
+        data: {
+          status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
+          contract_version: "cycle-step-mapping/1.0",
+          mapping_id: "CSM::REVIEW_001",
+          battery_id: "CELL_A",
+          experiment_id: "EXP_A",
+          mapping_sha256: "a".repeat(64),
+          parser_manifest_sha256: "b".repeat(64),
+          source_cycle_count: 1,
+          source_step_count: 1,
+          canonical_cycle_count: 1,
+          review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
+          mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE",
+          label_generation_authorized: false,
+          scientific_cycle_continuity: "NOT_ASSESSED",
+          save_status: "SAVED",
+          previous_mapping_sha256: "c".repeat(64),
+          revision_count: 2,
+          active_mapping_relative_path: "annotations/CELL_A/EXP_A/cycle-step-mapping.csv",
+        },
+        meta: { read_only: false },
+      });
+    mount();
+    const file = new File(["mapping"], "mapping.csv", { type: "text/csv" });
+    const fileInput = screen.getByLabelText("选择 Cycle-Step 映射 CSV");
+    await user.upload(fileInput, file);
+    await user.click(screen.getByRole("button", { name: "预检映射" }));
+    await screen.findByTestId("cycle-step-mapping-result");
+    await user.click(screen.getByTestId("cycle-step-mapping-confirm-reviewed"));
+    await user.click(screen.getByTestId("cycle-step-mapping-save"));
+
+    expect(await screen.findByTestId("cycle-step-mapping-save-error")).toHaveTextContent(
+      "检测到映射版本冲突",
+    );
+    expect(screen.queryByTestId("cycle-step-mapping-result")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cycle-step-mapping-confirm-reviewed")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("cycle-step-mapping-current")).toHaveTextContent(
+      "当前版本 cccccccccccc",
+    ));
+
+    await user.upload(fileInput, file);
+    await user.click(screen.getByRole("button", { name: "预检映射" }));
+    await screen.findByTestId("cycle-step-mapping-result");
+    await user.click(screen.getByTestId("cycle-step-mapping-confirm-reviewed"));
+    await user.click(screen.getByTestId("cycle-step-mapping-save"));
+
+    expect(await screen.findByTestId("cycle-step-mapping-saved")).toBeInTheDocument();
+    expect(save).toHaveBeenLastCalledWith("CELL_A", "EXP_A", {
+      mapping_csv: "mapping",
+      confirm_reviewed: true,
+      expected_active_sha256: "c".repeat(64),
+    });
   });
 });
