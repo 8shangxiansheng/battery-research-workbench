@@ -1,7 +1,10 @@
-"""Read-only validation for explicitly reviewed source Cycle/Step mappings.
+"""Validate and project explicitly reviewed source Cycle/Step mappings.
 
-Validation proves declaration completeness and byte-level lineage only. The
-mapping is not consumed by label generation, dataset construction, or analysis.
+Validation proves declaration completeness and byte-level lineage only; it
+does not authenticate the reviewer or establish scientific Cycle continuity.
+The Label Builder can consume an explicitly supplied mapping after rechecking
+it and its current source/parser inputs. Dataset joins preserve the resulting
+canonical identity without treating mapping provenance as a predictor.
 """
 
 from __future__ import annotations
@@ -18,8 +21,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pandas as pd
-
-from battery_workbench.provenance.parser_manifest import invalid_parser_source_modalities
 
 CYCLE_STEP_MAPPING_VERSION = "cycle-step-mapping/1.0"
 CYCLE_STEP_MAPPING_FIELDS = (
@@ -53,6 +54,138 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _content_sha256(path: Path) -> str:
+    if path.is_file():
+        return _sha256(path)
+    if not path.is_dir():
+        raise CycleStepMappingError("parser output is missing or invalid")
+    digest = hashlib.sha256()
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        digest.update(str(child.relative_to(path)).encode("utf-8"))
+        with child.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+    return digest.hexdigest()
+
+
+def _raw_relative_file(raw_root: Path, value: str, *, field: str) -> Path:
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts or not value:
+        raise CycleStepMappingError(f"{field} must be raw-root-relative")
+    root = raw_root.resolve()
+    try:
+        resolved = root.joinpath(relative).resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CycleStepMappingError(f"{field} is missing or escapes raw root") from exc
+    if not resolved.is_file():
+        raise CycleStepMappingError(f"{field} must reference a file")
+    return resolved
+
+
+def _assert_parser_sources_current(
+    *, raw_root: Path, processed_root: Path, battery_id: str, experiment_id: str
+) -> tuple[dict[str, Any], Path]:
+    """Check parser output checksums and exact manifest-registered raw sources."""
+    raw = raw_root.resolve()
+    processed = processed_root.resolve()
+    electrical_dir = processed / "electrical" / battery_id / experiment_id
+    manifest_path = electrical_dir / "parser_manifest.json"
+    try:
+        resolved_dir = electrical_dir.resolve(strict=True)
+        resolved_dir.relative_to(processed)
+        resolved_manifest = manifest_path.resolve(strict=True)
+        resolved_manifest.relative_to(resolved_dir)
+        manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CycleStepMappingError(
+            "canonical Electrical parser manifest is missing/invalid"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise CycleStepMappingError("canonical Electrical parser manifest must be an object")
+    if manifest.get("battery_id") != battery_id or manifest.get("experiment_id") != experiment_id:
+        raise CycleStepMappingError("parser manifest Battery/Experiment identity mismatch")
+
+    expected_outputs = {
+        "records": "records.parquet",
+        "cycles": "cycles.parquet",
+        "steps": "steps.parquet",
+    }
+    output_files = manifest.get("output_files")
+    output_checksums = manifest.get("output_checksums")
+    if not isinstance(output_files, dict) or not isinstance(output_checksums, dict):
+        raise CycleStepMappingError("parser manifest output paths/checksums are required")
+    for key, filename in expected_outputs.items():
+        if output_files.get(key) != filename:
+            raise CycleStepMappingError(f"parser output path is invalid for {key}")
+        checksum = output_checksums.get(key)
+        if not isinstance(checksum, str) or not _SHA256_RE.fullmatch(checksum):
+            raise CycleStepMappingError(f"parser output checksum is missing for {key}")
+        output_path = resolved_dir / filename
+        try:
+            resolved_output = output_path.resolve(strict=True)
+            resolved_output.relative_to(resolved_dir)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise CycleStepMappingError(f"parser output is missing/invalid for {key}") from exc
+        if _content_sha256(resolved_output) != checksum.lower():
+            raise CycleStepMappingError(f"parser output checksum mismatch for {key}")
+
+    registry_path = _raw_relative_file(raw, "manifests/data_assets.csv", field="DataAsset manifest")
+    with registry_path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        headers = set(reader.fieldnames or ())
+        if not {"asset_id", "experiment_id", "modality", "relative_path"}.issubset(headers):
+            raise CycleStepMappingError("DataAsset manifest is missing required identity columns")
+        registered: dict[str, tuple[str, str]] = {}
+        for row_number, row in enumerate(reader, start=2):
+            if row.get("experiment_id", "").strip() != experiment_id:
+                continue
+            modality = row.get("modality", "").strip().lower()
+            if modality != "electrical":
+                continue
+            asset_id = row.get("asset_id", "").strip()
+            declared_battery = (row.get("battery_id") or "").strip()
+            relative_path = (row.get("relative_path") or "").strip()
+            if declared_battery and declared_battery != battery_id:
+                continue
+            if not declared_battery:
+                parts = Path(relative_path).parts
+                if len(parts) < 4 or parts[:3] != ("batteries", battery_id, experiment_id):
+                    continue
+            if not asset_id or asset_id in registered:
+                raise CycleStepMappingError(
+                    f"DataAsset manifest has blank/duplicate Electrical asset ID at row {row_number}"
+                )
+            source_path = _raw_relative_file(raw, relative_path, field="DataAsset relative_path")
+            registered[asset_id] = (relative_path, _sha256(source_path))
+
+    source_hashes = manifest.get("source_sha256")
+    source_details = manifest.get("source_asset_details")
+    if not isinstance(source_hashes, dict) or not isinstance(source_details, list):
+        raise CycleStepMappingError("parser manifest raw-source provenance is required")
+    details: dict[str, str] = {}
+    for item in source_details:
+        if not isinstance(item, dict):
+            raise CycleStepMappingError("parser manifest source_asset_details is invalid")
+        asset_id = str(item.get("asset_id", "")).strip()
+        relative_path = str(item.get("relative_path", "")).strip()
+        if not asset_id or asset_id in details:
+            raise CycleStepMappingError("parser manifest has blank/duplicate source asset details")
+        _raw_relative_file(raw, relative_path, field="parser source relative_path")
+        details[asset_id] = relative_path
+    if set(registered) != set(source_hashes) or set(registered) != set(details):
+        raise CycleStepMappingError(
+            "parser source assets differ from manifest-registered DataAssets"
+        )
+    for asset_id, (relative_path, current_hash) in registered.items():
+        expected_hash = source_hashes.get(asset_id)
+        if not isinstance(expected_hash, str) or current_hash != expected_hash.lower():
+            raise CycleStepMappingError(f"raw Electrical source changed after parsing: {asset_id}")
+        if details[asset_id] != relative_path:
+            raise CycleStepMappingError(f"parser DataAsset path changed after parsing: {asset_id}")
+    return manifest, resolved_manifest
 
 
 def _required(row: dict[str, str], field: str, row_number: int) -> str:
@@ -177,26 +310,14 @@ def validate_cycle_step_mapping(
     raw = Path(raw_root).resolve()
     processed = Path(processed_root).resolve()
     electrical_dir = processed / "electrical" / battery_id / experiment_id
-    manifest_path = electrical_dir / "parser_manifest.json"
     cycles_path = electrical_dir / "cycles.parquet"
     steps_path = electrical_dir / "steps.parquet"
-    try:
-        manifest_resolved = manifest_path.resolve(strict=True)
-        manifest_resolved.relative_to(electrical_dir.resolve(strict=True))
-        manifest = json.loads(manifest_resolved.read_text(encoding="utf-8"))
-    except (OSError, RuntimeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CycleStepMappingError(
-            "canonical Electrical parser manifest is missing/invalid"
-        ) from exc
-    if not isinstance(manifest, dict):
-        raise CycleStepMappingError("canonical Electrical parser manifest must be an object")
-    if manifest.get("battery_id") != battery_id or manifest.get("experiment_id") != experiment_id:
-        raise CycleStepMappingError("parser manifest Battery/Experiment identity mismatch")
-    invalid_modalities = invalid_parser_source_modalities(processed, raw, battery_id, experiment_id)
-    if "electrical" in invalid_modalities:
-        raise CycleStepMappingError(
-            "Electrical parser sources/outputs are not current/integrity-verified"
-        )
+    _, manifest_resolved = _assert_parser_sources_current(
+        raw_root=raw,
+        processed_root=processed,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
 
     rows, mapping_sha256 = _read_mapping(Path(mapping_csv))
     parser_manifest_sha256 = _sha256(manifest_resolved)
@@ -315,7 +436,7 @@ def validate_cycle_step_mapping(
         "source_step_count": len(source_keys),
         "canonical_cycle_count": len({cycle for cycle, _ in target_keys}),
         "review_status": "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
-        "mapping_application_status": "PROJECTION_AVAILABLE_NOT_INTEGRATED",
+        "mapping_application_status": "LABEL_BUILDER_CONSUMER_AVAILABLE",
         "label_generation_authorized": False,
         "scientific_cycle_continuity": "NOT_ASSESSED",
     }
@@ -421,11 +542,95 @@ def project_canonical_cycle_step(
     return projected
 
 
+def project_canonical_cycles(
+    frame: pd.DataFrame,
+    mapping_csv: str | Path,
+    *,
+    raw_root: str | Path,
+    processed_root: str | Path,
+    battery_id: str,
+    experiment_id: str,
+) -> pd.DataFrame:
+    """Attach reviewed canonical Cycle identity to source Cycle rows."""
+    validation = validate_cycle_step_mapping(
+        mapping_csv,
+        raw_root=raw_root,
+        processed_root=processed_root,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
+    required = {"battery_id", "experiment_id", "electrical_asset_id", "cycle_index_raw"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise CycleStepMappingError("cycle frame missing columns: " + ", ".join(missing))
+    if frame[list(required)].isna().any().any():
+        raise CycleStepMappingError("cycle frame has null source identity")
+    if set(frame["battery_id"].astype(str)) != {battery_id}:
+        raise CycleStepMappingError("cycle frame Battery identity mismatch")
+    if set(frame["experiment_id"].astype(str)) != {experiment_id}:
+        raise CycleStepMappingError("cycle frame Experiment identity mismatch")
+
+    rows, mapping_sha256 = _read_mapping(Path(mapping_csv))
+    if mapping_sha256 != validation["mapping_sha256"]:
+        raise CycleStepMappingError("mapping CSV changed during projection")
+    source_cycles: dict[tuple[str, int], tuple[int, set[str]]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        source = (
+            _required(row, "electrical_asset_id", row_number),
+            _integer(row.get("cycle_index_raw"), field="cycle_index_raw", row_number=row_number),
+        )
+        canonical_cycle = _integer(
+            row.get("canonical_cycle_index"),
+            field="canonical_cycle_index",
+            row_number=row_number,
+        )
+        evidence_sha256 = _required(row, "evidence_sha256", row_number).lower()
+        existing = source_cycles.get(source)
+        if existing is not None and existing[0] != canonical_cycle:
+            raise CycleStepMappingError("one source Cycle maps to multiple canonical Cycles")
+        if existing is None:
+            source_cycles[source] = (canonical_cycle, {evidence_sha256})
+        else:
+            existing[1].add(evidence_sha256)
+
+    canonical_cycles: list[int] = []
+    evidence_hashes: list[str] = []
+    for row_number, row in enumerate(
+        frame[["electrical_asset_id", "cycle_index_raw"]].itertuples(index=False, name=None),
+        start=1,
+    ):
+        asset_id, raw_cycle = row
+        source = (
+            str(asset_id).strip(),
+            _integer(raw_cycle, field="cycle_index_raw", row_number=row_number),
+        )
+        mapped = source_cycles.get(source)
+        if mapped is None:
+            raise CycleStepMappingError(
+                f"cycle row {row_number}: source Cycle is not in reviewed mapping"
+            )
+        canonical_cycles.append(mapped[0])
+        evidence_hashes.append(
+            hashlib.sha256(json.dumps(sorted(mapped[1])).encode("utf-8")).hexdigest()
+        )
+
+    projected = frame.copy(deep=True)
+    projected["canonical_cycle_index"] = canonical_cycles
+    projected["cycle_step_mapping_id"] = str(validation["mapping_id"])
+    projected["cycle_step_mapping_sha256"] = mapping_sha256
+    projected["cycle_step_mapping_parser_manifest_sha256"] = str(
+        validation["parser_manifest_sha256"]
+    )
+    projected["cycle_step_mapping_evidence_sha256"] = evidence_hashes
+    projected["cycle_step_mapping_review_status"] = "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED"
+    return projected
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Validate an explicit Cycle/Step mapping against current parser outputs. "
-            "Does not apply the mapping or authorize label generation."
+            "This preflight does not generate labels or authenticate scientific interpretation."
         )
     )
     parser.add_argument("mapping_csv", type=Path)

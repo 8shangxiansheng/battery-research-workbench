@@ -51,9 +51,54 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_source_cycle_identity(
+    events: pd.DataFrame, cycles: pd.DataFrame, steps: pd.DataFrame
+) -> None:
+    """Require reviewed canonical identities when multiple assets are present."""
+    assets: set[str] = set()
+    for frame in (events, cycles, steps):
+        if "electrical_asset_id" in frame:
+            assets.update(
+                str(value).strip()
+                for value in frame["electrical_asset_id"].dropna()
+                if str(value).strip()
+            )
+    event_assets: set[str] = set()
+    source_assets: set[str] = set()
+    if "electrical_asset_id" in events and "cycle_index_raw" in events:
+        event_assets = set(
+            events.loc[events["cycle_index_raw"].notna(), "electrical_asset_id"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+    for frame in (cycles, steps):
+        if "electrical_asset_id" in frame:
+            source_assets.update(frame["electrical_asset_id"].dropna().astype(str).str.strip())
+    if event_assets - source_assets:
+        raise ValueError(
+            "MeasurementEvents reference electrical assets missing from parsed Cycle/Step tables"
+        )
+    if len(assets) < 2:
+        return
+    for name, frame in (("cycles", cycles), ("steps", steps)):
+        required = {"battery_id", "experiment_id", "electrical_asset_id", "cycle_index_raw"}
+        if not required.issubset(frame.columns):
+            raise ValueError(
+                f"{name} must preserve DataAsset-scoped Cycle identity for multiple assets"
+            )
+        if frame["electrical_asset_id"].isna().any():
+            raise ValueError(f"{name} has missing electrical_asset_id for multiple assets")
+    raise ValueError(
+        "multiple Electrical DataAssets have source-local Cycle IDs; "
+        "explicit reviewed mapping is required"
+    )
+
+
 def _cycle_complete(steps: pd.DataFrame) -> dict[tuple, bool]:
     out: dict[tuple, bool] = {}
-    for key, sub in steps.groupby(["battery_id", "experiment_id", "cycle_index_raw"]):
+    cycle_column = "_label_cycle_index" if "_label_cycle_index" in steps else "cycle_index_raw"
+    for key, sub in steps.groupby(["battery_id", "experiment_id", cycle_column]):
         types = set(sub["step_type_raw"].dropna().unique())
         out[key] = ("恒流放电" in types) and ("恒流充电" in types or "恒压充电" in types)
     return out
@@ -62,11 +107,13 @@ def _cycle_complete(steps: pd.DataFrame) -> dict[tuple, bool]:
 def _charge_offsets(steps: pd.DataFrame) -> dict[tuple, float]:
     """Cumulative charged-since-empty at the START of each charge step."""
     offsets: dict[tuple, float] = {}
-    for key, sub in steps.groupby(["battery_id", "experiment_id", "cycle_index_raw"]):
-        ordered = sub.sort_values("step_index_raw")
+    cycle_column = "_label_cycle_index" if "_label_cycle_index" in steps else "cycle_index_raw"
+    step_column = "_label_step_index" if "_label_step_index" in steps else "step_index_raw"
+    for key, sub in steps.groupby(["battery_id", "experiment_id", cycle_column]):
+        ordered = sub.sort_values(step_column)
         running = 0.0
         for _, row in ordered.iterrows():
-            offsets[(key[0], key[1], row["cycle_index_raw"], row["step_index_raw"])] = running
+            offsets[(key[0], key[1], row[cycle_column], row[step_column])] = running
             if row["step_type_raw"] in ("恒流充电", "恒压充电"):
                 running += float(row["charge_capacity_ah"] or 0.0)
     return offsets
@@ -82,6 +129,8 @@ def build_reference_labels(
     output_root: Path,
     config: LabelConfig | None = None,
     supersedes_label_set_id: str | None = None,
+    cycle_step_mapping_path: Path | None = None,
+    raw_root: Path | None = None,
 ) -> LabelReport:
     """Build canonical V2 reference labels for one experiment."""
     from battery_workbench.labels.persistence import write_label_payload
@@ -94,16 +143,139 @@ def build_reference_labels(
     cycles = pd.read_parquet(cycles_path)
     steps = pd.read_parquet(steps_path)
 
+    mapping_provenance: dict[str, str] | None = None
+    if cycle_step_mapping_path is not None:
+        if raw_root is None:
+            raise ValueError("raw_root is required when cycle_step_mapping_path is supplied")
+        from battery_workbench.provenance.cycle_step_mapping import (
+            CycleStepMappingError,
+            project_canonical_cycle_step,
+            project_canonical_cycles,
+            validate_cycle_step_mapping,
+        )
+
+        battery_id = str(events["battery_id"].iloc[0]) if not events.empty else ""
+        experiment_id = str(events["experiment_id"].iloc[0]) if not events.empty else ""
+        validation = validate_cycle_step_mapping(
+            cycle_step_mapping_path,
+            raw_root=raw_root,
+            processed_root=Path(cycles_path).parents[3],
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+        cycles = project_canonical_cycles(
+            cycles,
+            cycle_step_mapping_path,
+            raw_root=raw_root,
+            processed_root=Path(cycles_path).parents[3],
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+        source_cycle_count = cycles.groupby(
+            ["battery_id", "experiment_id", "electrical_asset_id", "cycle_index_raw"],
+            dropna=False,
+        ).ngroups
+        canonical_cycle_count = cycles.groupby(
+            ["battery_id", "experiment_id", "canonical_cycle_index"], dropna=False
+        ).ngroups
+        if (
+            source_cycle_count != canonical_cycle_count
+            or cycles["canonical_cycle_index"].duplicated().any()
+        ):
+            raise CycleStepMappingError(
+                "label generation requires one complete source Cycle per canonical Cycle; "
+                "cross-asset or multi-source Cycle aggregation is not implemented"
+            )
+        steps = project_canonical_cycle_step(
+            steps,
+            cycle_step_mapping_path,
+            raw_root=raw_root,
+            processed_root=Path(cycles_path).parents[3],
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+        events = events.copy(deep=True)
+        has_cycle = events["cycle_index_raw"].notna()
+        has_step = events["step_index_raw"].notna()
+        if (has_cycle ^ has_step).any():
+            raise CycleStepMappingError(
+                "MeasurementEvents must carry both source Cycle and Step or neither"
+            )
+        mapped_events = has_cycle & has_step
+        if mapped_events.any() and events.loc[mapped_events, "electrical_asset_id"].isna().any():
+            raise CycleStepMappingError(
+                "mapped MeasurementEvents require electrical_asset_id source identity"
+            )
+        if mapped_events.any():
+            event_projection = project_canonical_cycle_step(
+                events.loc[mapped_events],
+                cycle_step_mapping_path,
+                raw_root=raw_root,
+                processed_root=Path(cycles_path).parents[3],
+                battery_id=battery_id,
+                experiment_id=experiment_id,
+            )
+            for column in (
+                "canonical_cycle_index",
+                "canonical_step_index",
+                "cycle_step_mapping_id",
+                "cycle_step_mapping_sha256",
+                "cycle_step_mapping_parser_manifest_sha256",
+                "cycle_step_mapping_evidence_sha256",
+                "cycle_step_mapping_review_status",
+            ):
+                events[column] = pd.NA
+                events.loc[mapped_events, column] = event_projection[column]
+        cycles["_label_cycle_index"] = cycles["canonical_cycle_index"]
+        steps["_label_cycle_index"] = steps["canonical_cycle_index"]
+        steps["_label_step_index"] = steps["canonical_step_index"]
+        events["_label_cycle_index"] = events.get(
+            "canonical_cycle_index", events["cycle_index_raw"]
+        )
+        events["_label_step_index"] = events.get("canonical_step_index", events["step_index_raw"])
+        mapping_provenance = {
+            "mapping_id": str(validation["mapping_id"]),
+            "mapping_sha256": str(validation["mapping_sha256"]),
+            "parser_manifest_sha256": str(validation["parser_manifest_sha256"]),
+        }
+    else:
+        _validate_source_cycle_identity(events, cycles, steps)
+        cycles["_label_cycle_index"] = cycles["cycle_index_raw"]
+        steps["_label_cycle_index"] = steps["cycle_index_raw"]
+        steps["_label_step_index"] = steps["step_index_raw"]
+        events["_label_cycle_index"] = events["cycle_index_raw"]
+        events["_label_step_index"] = events["step_index_raw"]
+
     # --- Cycle-level SOH labels (unchanged formula) ---
-    reference = select_reference_capacity(cycles, rpt_capacity_ah=config.soh.rpt_capacity_ah)
-    cycle_labels = build_cycle_soh_labels(cycles, reference=reference)
+    cycles_for_soh = cycles.copy(deep=True)
+    cycles_for_soh["cycle_index_raw"] = cycles_for_soh["_label_cycle_index"]
+    reference = select_reference_capacity(
+        cycles_for_soh, rpt_capacity_ah=config.soh.rpt_capacity_ah
+    )
+    cycle_labels = build_cycle_soh_labels(cycles_for_soh, reference=reference)
+    if mapping_provenance is not None:
+        cycle_labels["canonical_cycle_index"] = cycle_labels["cycle_index_raw"]
+        cycle_labels["cycle_index_raw"] = cycles["cycle_index_raw"].to_numpy()
+        cycle_labels["electrical_asset_id"] = cycles["electrical_asset_id"].to_numpy()
+        for column in (
+            "cycle_step_mapping_id",
+            "cycle_step_mapping_sha256",
+            "cycle_step_mapping_parser_manifest_sha256",
+            "cycle_step_mapping_evidence_sha256",
+            "cycle_step_mapping_review_status",
+        ):
+            cycle_labels[column] = cycles[column].to_numpy()
+        cycle_labels["_label_cycle_index"] = cycles["_label_cycle_index"].to_numpy()
+    else:
+        cycle_labels["_label_cycle_index"] = cycle_labels["cycle_index_raw"]
     cycle_complete_map = _cycle_complete(steps)
 
     # --- Segment denominators ---
     offsets = _charge_offsets(steps)
     charge_segment_total: dict[tuple, float] = {}
     discharge_segment_total: dict[tuple, float] = {}
-    for (b, e, c), sub in steps.groupby(["battery_id", "experiment_id", "cycle_index_raw"]):
+    cycle_column = "_label_cycle_index"
+    for (b, e, c), sub in steps.groupby(["battery_id", "experiment_id", cycle_column]):
         charge_rows = sub[sub["step_type_raw"].isin(("恒流充电", "恒压充电"))]
         discharge_rows = sub[sub["step_type_raw"] == "恒流放电"]
         if not charge_rows.empty:
@@ -114,7 +286,7 @@ def build_reference_labels(
             )
     # V1-style single reference (discharge capacity) kept for the diagnostic only.
     discharge_ref_for_diagnostic = {
-        (r["battery_id"], r["experiment_id"], r["cycle_index_raw"]): float(
+        (r["battery_id"], r["experiment_id"], r["_label_cycle_index"]): float(
             r["discharge_capacity_ah"]
         )
         for _, r in cycles.iterrows()
@@ -126,8 +298,8 @@ def build_reference_labels(
     for _, ev in events.iterrows():
         battery = str(ev["battery_id"])
         experiment = str(ev["experiment_id"])
-        cycle = ev["cycle_index_raw"]
-        step = ev["step_index_raw"]
+        cycle = ev["_label_cycle_index"]
+        step = ev["_label_step_index"]
         step_type = ev["step_type"] if pd.notna(ev["step_type"]) else None
         ctx_list.append(
             {
@@ -136,6 +308,8 @@ def build_reference_labels(
                 "experiment": experiment,
                 "cycle": cycle,
                 "step": step,
+                "source_cycle": ev["cycle_index_raw"],
+                "source_step": ev["step_index_raw"],
                 "key": (battery, experiment, cycle),
                 "direction": _STEP_TYPE_DIRECTION.get(str(step_type), "REST"),
                 "complete": cycle_complete_map.get((battery, experiment, cycle), False),
@@ -160,14 +334,14 @@ def build_reference_labels(
                 else None
             )
             # Experiment-initial charge start: no independent empty evidence.
-            first_cycle = events["cycle_index_raw"].dropna().min()
+            first_cycle = events["_label_cycle_index"].dropna().min()
             charge_rows_first = events[
-                (events["cycle_index_raw"] == first_cycle) & (events["step_type"] == "恒流充电")
+                (events["_label_cycle_index"] == first_cycle) & (events["step_type"] == "恒流充电")
             ]
             is_initial = (
                 ctx["cycle"] == first_cycle
                 and not charge_rows_first.empty
-                and ctx["step"] == charge_rows_first["step_index_raw"].min()
+                and ctx["step"] == charge_rows_first["_label_step_index"].min()
                 and base == 0.0
             )
             anchor_q = "ASSUMED_INITIAL_ANCHOR" if is_initial else "REFERENCE_PROTOCOL_ANCHOR"
@@ -265,7 +439,7 @@ def build_reference_labels(
             }
         )
 
-        cyc_row = cycle_labels[cycle_labels["cycle_index_raw"] == ctx["cycle"]]
+        cyc_row = cycle_labels[cycle_labels["_label_cycle_index"] == ctx["cycle"]]
         if not cyc_row.empty:
             cr = cyc_row.iloc[0]
             soh_pct = cr["soh_capacity_reference_percent"]
@@ -282,8 +456,8 @@ def build_reference_labels(
                 "measurement_event_id": ev["measurement_event_id"],
                 "battery_id": ctx["battery"],
                 "experiment_id": ctx["experiment"],
-                "cycle_index_raw": ctx["cycle"],
-                "step_index_raw": ctx["step"],
+                "cycle_index_raw": ctx["source_cycle"],
+                "step_index_raw": ctx["source_step"],
                 "event_order_index": ev["event_order_index"],
                 "soc_reference_percent": soc.soc_reference_percent,
                 "soc_reference_method": config.soc.method
@@ -311,6 +485,21 @@ def build_reference_labels(
                 **groups,
             }
         )
+        if mapping_provenance is not None:
+            rows[-1].update(
+                {
+                    "electrical_asset_id": ev["electrical_asset_id"],
+                    "canonical_cycle_index": ctx["cycle"],
+                    "canonical_step_index": ctx["step"],
+                    "cycle_step_mapping_id": ev["cycle_step_mapping_id"],
+                    "cycle_step_mapping_sha256": ev["cycle_step_mapping_sha256"],
+                    "cycle_step_mapping_parser_manifest_sha256": ev[
+                        "cycle_step_mapping_parser_manifest_sha256"
+                    ],
+                    "cycle_step_mapping_evidence_sha256": ev["cycle_step_mapping_evidence_sha256"],
+                    "cycle_step_mapping_review_status": ev["cycle_step_mapping_review_status"],
+                }
+            )
 
     event_labels = pd.DataFrame(rows)
     validate_no_ultrasound_features(list(event_labels.columns))
@@ -344,7 +533,7 @@ def build_reference_labels(
 
     # --- Apparent CE diagnostic ---
     ce_diag = {}
-    for (b, e, c), sub in steps.groupby(["battery_id", "experiment_id", "cycle_index_raw"]):
+    for (b, e, c), sub in steps.groupby(["battery_id", "experiment_id", cycle_column]):
         charge_rows = sub[sub["step_type_raw"].isin(("恒流充电", "恒压充电"))]
         discharge_rows = sub[sub["step_type_raw"] == "恒流放电"]
         qc = float(charge_rows["charge_capacity_ah"].sum()) if not charge_rows.empty else None
@@ -362,7 +551,7 @@ def build_reference_labels(
 
     # --- SOH readiness guard ---
     readiness = soh_model_readiness(
-        independent_state_count=int(cycle_labels["cycle_index_raw"].nunique()),
+        independent_state_count=int(cycle_labels["_label_cycle_index"].nunique()),
         frame_count=len(event_labels),
     )
 
@@ -385,16 +574,26 @@ def build_reference_labels(
     # --- Deterministic label_set_id (V2 config changes it automatically) ---
     from battery_workbench.labels.label_set_id import build_label_set_id
 
+    label_input_checksum = _sha256(measurement_events_path)
+    if mapping_provenance is not None:
+        label_input_checksum = hashlib.sha256(
+            (label_input_checksum + ":" + mapping_provenance["mapping_sha256"]).encode("utf-8")
+        ).hexdigest()
     label_set_id = build_label_set_id(
-        input_checksum=_sha256(measurement_events_path),
-        normalized_config=config.model_dump(mode="json"),
+        input_checksum=label_input_checksum,
+        normalized_config={
+            **config.model_dump(mode="json"),
+            **(
+                {"cycle_step_mapping": mapping_provenance} if mapping_provenance is not None else {}
+            ),
+        },
         label_definition_version=config.label_definition_version,
         reference_capacity_ah=reference.q_ref_ah,
     )
 
     return write_label_payload(
         event_labels=event_labels,
-        cycle_labels=cycle_labels,
+        cycle_labels=cycle_labels.drop(columns=["_label_cycle_index"]),
         tof=tof,
         battery_id=str(events["battery_id"].iloc[0]) if not events.empty else "",
         experiment_id=str(events["experiment_id"].iloc[0]) if not events.empty else "",
@@ -406,7 +605,7 @@ def build_reference_labels(
         ultrasound_manifest_path=Path(ultrasound_manifest_path),
         soc_valid_count=soc_valid,
         soc_ineligible_count=soc_ineligible,
-        soh_state_count=int(cycle_labels["cycle_index_raw"].nunique()),
+        soh_state_count=int(cycle_labels["_label_cycle_index"].nunique()),
         soh_readiness=readiness,
         reference=reference,
         vendor_diagnostic=vendor_diagnostic,
@@ -414,4 +613,6 @@ def build_reference_labels(
         config=config,
         output_root=output_root,
         supersedes_label_set_id=supersedes_label_set_id,
+        cycle_step_mapping_path=cycle_step_mapping_path,
+        cycle_step_mapping=mapping_provenance,
     )

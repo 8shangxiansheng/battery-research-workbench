@@ -34,6 +34,14 @@ _TARGET = frozenset({"soc_reference_percent", "soh_capacity_reference_percent"})
 _CONTEXT = frozenset(
     {
         "cycle_index_raw",
+        "canonical_cycle_index",
+        "canonical_step_index",
+        "electrical_asset_id",
+        "cycle_step_mapping_id",
+        "cycle_step_mapping_sha256",
+        "cycle_step_mapping_parser_manifest_sha256",
+        "cycle_step_mapping_evidence_sha256",
+        "cycle_step_mapping_review_status",
         "step_index_raw",
         "step_type",
         "voltage_v",

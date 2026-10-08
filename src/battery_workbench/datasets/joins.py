@@ -57,7 +57,15 @@ def exact_cycle_join(
     cycle_labels: pd.DataFrame,
 ) -> pd.DataFrame:
     """Attach cycle-level labels by the exact three-part cycle key."""
-    key_cols = ["battery_id", "experiment_id", "cycle_index_raw"]
+    if {
+        "canonical_cycle_index",
+        "electrical_asset_id",
+    }.issubset(events.columns) and "canonical_cycle_index" in cycle_labels.columns:
+        key_cols = ["battery_id", "experiment_id", "canonical_cycle_index"]
+    elif "electrical_asset_id" in events.columns and "electrical_asset_id" in cycle_labels.columns:
+        key_cols = ["battery_id", "experiment_id", "electrical_asset_id", "cycle_index_raw"]
+    else:
+        key_cols = ["battery_id", "experiment_id", "cycle_index_raw"]
     if cycle_labels[key_cols].duplicated().any():
         raise DatasetIntegrityError("non-unique cycle key in cycle_labels")
     # Drop cycle-label columns that would collide with event columns, but keep

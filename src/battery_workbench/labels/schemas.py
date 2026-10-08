@@ -98,6 +98,14 @@ class EventLabel(BaseModel):
     experiment_id: str
     cycle_index_raw: float | None = None
     step_index_raw: float | None = None
+    electrical_asset_id: str | None = None
+    canonical_cycle_index: int | None = None
+    canonical_step_index: int | None = None
+    cycle_step_mapping_id: str | None = None
+    cycle_step_mapping_sha256: str | None = None
+    cycle_step_mapping_parser_manifest_sha256: str | None = None
+    cycle_step_mapping_evidence_sha256: str | None = None
+    cycle_step_mapping_review_status: str | None = None
     event_order_index: int | None = None
 
     # SOC.
@@ -134,6 +142,13 @@ class CycleLabel(BaseModel):
     battery_id: str
     experiment_id: str
     cycle_index_raw: float
+    electrical_asset_id: str | None = None
+    canonical_cycle_index: int | None = None
+    cycle_step_mapping_id: str | None = None
+    cycle_step_mapping_sha256: str | None = None
+    cycle_step_mapping_parser_manifest_sha256: str | None = None
+    cycle_step_mapping_evidence_sha256: str | None = None
+    cycle_step_mapping_review_status: str | None = None
     cycle_complete: bool
 
     charge_capacity_measured_ah: float | None = None
@@ -171,12 +186,13 @@ class TofReadiness(BaseModel):
 
 class LabelManifest(BaseModel):
     label_engine_name: str = "reference_label_engine"
-    label_engine_version: str = "0.1.0"
+    label_engine_version: str = "0.2.0"
     label_set_id: str
     battery_id: str
     experiment_id: str
     input_paths: dict[str, str] = Field(default_factory=dict)
     input_checksums: dict[str, str] = Field(default_factory=dict)
+    cycle_step_mapping: dict[str, Any] | None = None
     soc_method: str | None = None
     soc_formula_version: str | None = None
     soc_temporality: str | None = "RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE"

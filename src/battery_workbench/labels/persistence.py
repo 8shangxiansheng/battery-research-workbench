@@ -94,6 +94,8 @@ def write_label_payload(
     config: LabelConfig,
     output_root: Path,
     supersedes_label_set_id: str | None = None,
+    cycle_step_mapping_path: Path | None = None,
+    cycle_step_mapping: dict[str, str] | None = None,
 ) -> LabelReport:
     output_root = Path(output_root)
     out_dir = output_root / "labels" / battery_id / experiment_id
@@ -121,13 +123,24 @@ def write_label_payload(
             "cycles": str(cycles_path),
             "steps": str(steps_path),
             "ultrasound_manifest": str(ultrasound_manifest_path),
+            **(
+                {"cycle_step_mapping": str(cycle_step_mapping_path)}
+                if cycle_step_mapping_path is not None
+                else {}
+            ),
         },
         input_checksums={
             "measurement_events": _sha256(measurement_events_path),
             "records": _sha256(records_path),
             "cycles": _sha256(cycles_path),
             "steps": _sha256(steps_path),
+            **(
+                {"cycle_step_mapping": _sha256(cycle_step_mapping_path)}
+                if cycle_step_mapping_path is not None
+                else {}
+            ),
         },
+        cycle_step_mapping=cycle_step_mapping,
         soc_method=config.soc.method,
         soc_formula_version=config.soc.formula_version,
         soc_temporality="RETROSPECTIVE_SEGMENT_NORMALIZED_REFERENCE",

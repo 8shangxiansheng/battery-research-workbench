@@ -606,6 +606,7 @@ class UltrasoundFeaturesNode(WorkflowNode):
 
 class ReferenceLabelsNode(WorkflowNode):
     node_type = "REFERENCE_LABELS"
+    node_version = "0.2.0"
 
     def requirements(self, plan, inputs):
         req = ArtifactRequirements(
@@ -630,6 +631,12 @@ class ReferenceLabelsNode(WorkflowNode):
         from battery_workbench.labels.builder import build_reference_labels
 
         b, e = plan.project.battery_id, plan.project.experiment_id
+        mapping_path = Path(ctx.raw_root).parent / "annotations" / b / e / "cycle-step-mapping.csv"
+        mapping_kwargs = (
+            {"cycle_step_mapping_path": mapping_path, "raw_root": Path(ctx.raw_root)}
+            if mapping_path.is_file()
+            else {}
+        )
         report = build_reference_labels(
             measurement_events_path=Path(ctx.processed_root)
             / "multimodal"
@@ -645,6 +652,7 @@ class ReferenceLabelsNode(WorkflowNode):
             / e
             / "parser_manifest.json",
             output_root=Path(ctx.processed_root),
+            **mapping_kwargs,
         )
         out_dir = Path(ctx.processed_root) / "labels" / b / e
         limitations = list(report.limitations) if hasattr(report, "limitations") else []
@@ -656,6 +664,31 @@ class ReferenceLabelsNode(WorkflowNode):
             "producer_version": report.label_engine_version,
             "limitations": limitations,
         }
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return ref, reason
+        battery_id = plan.project.battery_id
+        experiment_id = plan.project.experiment_id
+        mapping_path = (
+            Path(processed_root).parent
+            / "annotations"
+            / battery_id
+            / experiment_id
+            / "cycle-step-mapping.csv"
+        )
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        declared = (manifest.get("input_checksums") or {}).get("cycle_step_mapping")
+        if mapping_path.is_file():
+            from battery_workbench.labels.persistence import _sha256
+
+            actual = _sha256(mapping_path)
+            if declared != actual:
+                return None, "reviewed Cycle/Step mapping changed or was not bound to LabelSet"
+        elif declared:
+            return None, "reviewed Cycle/Step mapping is missing; LabelSet is stale"
+        return ref, reason
 
 
 class ParameterSetNode(WorkflowNode):
@@ -999,7 +1032,9 @@ class CanonicalTofNode(WorkflowNode):
                 f"{sorted(missing_identity)}"
             )
         if features["measurement_event_id"].astype(str).duplicated().any():
-            raise ValueError("ultrasound feature rows contain duplicate MeasurementEvent identities")
+            raise ValueError(
+                "ultrasound feature rows contain duplicate MeasurementEvent identities"
+            )
         features = features.sort_values("event_order_index", kind="stable").reset_index(drop=True)
         frames = load_waveform_frames(
             Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr", features

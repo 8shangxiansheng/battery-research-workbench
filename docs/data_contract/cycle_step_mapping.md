@@ -31,19 +31,31 @@ physical Cycle.
 <id> --experiment-id <id> --raw-root data/raw --processed-root data/processed`
 checks identity completeness, current Electrical parser outputs, parser
 manifest binding, raw evidence bytes, review metadata and one-to-one mapping
-structure. The `project_canonical_cycle_step` API can then add canonical keys
-to an in-memory step-level table while preserving `cycle_index_raw`,
-`step_index_raw`, DataAsset identity and source locators. Each projected row
-also carries the mapping ID/checksum, pinned parser-manifest checksum,
-row-specific evidence checksum, and unauthenticated review status. A
-successful preflight reports
+structure. The preflight itself is not authorization to generate labels. The
+`project_canonical_cycle_step` and `project_canonical_cycles` APIs can add
+canonical keys to in-memory tables while preserving source-local indices,
+DataAsset identity and source locators. Projected rows carry the mapping
+ID/checksum, pinned parser-manifest checksum, evidence checksum, and
+unauthenticated review status. The deterministic Label Builder independently
+revalidates the mapping when it is explicitly passed; the workflow node
+discovers `data/annotations/{battery_id}/{experiment_id}/cycle-step-mapping.csv`
+when present. A successful preflight reports
 `CYCLE_STEP_MAPPING_CONTRACT_VALIDATED`; it explicitly reports
-`mapping_application_status=PROJECTION_AVAILABLE_NOT_INTEGRATED`,
+`mapping_application_status=LABEL_BUILDER_CONSUMER_AVAILABLE`,
 `label_generation_authorized=false`, and scientific continuity
 `NOT_ASSESSED`.
 
-The projection is deliberately not wired into Reference Label generation, SOH
-aggregation, Dataset construction, or modeling, so those consumers continue to
-fail closed on ambiguous multi-asset source Cycle identities. A later stage
-must wire the reviewed mapping into each relevant scientific join and add
-multi-XLSX golden validation. Never edit processed Parquet to mimic a mapping.
+For label generation, V1 currently requires exactly one complete source Cycle
+per canonical Cycle. It supports distinct source assets whose raw Cycle
+numbers restart, provided the reviewed mapping assigns distinct canonical
+Cycle IDs. It rejects many-to-one source-cycle aggregation (for example,
+combining partial Cycle rows from multiple assets) because no capacity
+aggregation contract has been validated. Without a mapping, label generation
+fails closed for any Experiment with multiple Electrical DataAssets, even if
+their source-local raw Cycle numbers do not collide. Label manifests pin the mapping
+file checksum; event and cycle labels preserve source IDs and add canonical
+indices. Dataset Cycle joins prefer canonical identity when present and retain
+source DataAsset identity for legacy multi-asset outputs. This software path
+does not prove the operator's physical Cycle interpretation or enable real
+multi-XLSX labels until an accepted mapping and evidence file are provided.
+Never edit processed Parquet to mimic a mapping.
