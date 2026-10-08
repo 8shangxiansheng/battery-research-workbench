@@ -35,7 +35,7 @@ beforeAll(async () => {
     sandbox = null;
     throw new Error("CELL_001 Target Workflow E2E API did not become ready; refusing to silently skip scenarios.");
   }
-});
+}, 30_000);
 afterAll(() => {
   proc?.kill();
   sandbox?.dispose();
@@ -174,12 +174,13 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     expect(swa.direction_dependent).toBe(true);
   });
 
-  it("J: Switch to Temperature — reuse sync/features (no resync), honest readiness", async (ctx) => {
+  it("J: Switch to Temperature — distinguish exploratory relationships from unsupported modeling", async (ctx) => {
     if (!available) ctx.skip();
     const targets: any = d(await get(`/experiments/${B}/${E}/targets`));
     const temp = targets.targets.find((t: any) => t.target_id === "temperature_c");
-    expect(temp.readiness).toBe("UNAVAILABLE");
-    expect(temp.coverage.valid).toBe(0);
+    expect(temp.coverage.valid).toBeGreaterThan(0);
+    expect(temp.modeling_readiness).toBe("NOT_IMPLEMENTED");
+    expect(temp.limitation_zh).toContain("监督建模");
     const before: any = d(await get(`/experiments/${B}/${E}/alignment-summary`));
     const after: any = d(await get(`/experiments/${B}/${E}/alignment-summary`));
     expect(after.total_frames).toBe(before.total_frames);

@@ -400,7 +400,13 @@ def test_targets_endpoint_reads_real_capability(client: TestClient) -> None:
     assert soc["semantic_type"] == "DERIVED_REFERENCE_LABEL"
     assert "True SOC" not in json.dumps(soc) and "Ground Truth" not in json.dumps(soc)
     assert soc["coverage"]["valid"] == 3995  # real counts from artifacts
-    assert targets["temperature_c"]["readiness"] == "UNAVAILABLE"
+    temperature = targets["temperature_c"]
+    if temperature["coverage"]["valid"] and temperature["range"][1] - temperature["range"][0] >= 2.0:
+        assert temperature["readiness"] == "READY"
+        assert temperature["modeling_readiness"] == "NOT_IMPLEMENTED"
+        assert "探索性" in temperature["limitation_zh"]
+    else:
+        assert temperature["modeling_readiness"] == "BLOCKED_BY_DATA"
     soh = targets["soh_capacity_reference_percent"]
     assert soh["coverage"]["independent_states"] == 2
     assert soh["readiness"] == "NOT_READY"

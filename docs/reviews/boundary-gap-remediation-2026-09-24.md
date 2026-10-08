@@ -24,9 +24,10 @@ has_independent_validation=false`。
 - 验收：调参候选选择在折叠内完成的结构测试；HELD_OUT 目标在 tuner 代码路径不可达（签名级隔离，与 BRW-022 fit_model 同一手法）；UI 的"暂不支持调参"入口保持诚实直至门通过。
 
 ### A3. 温度通道
-- 性质：真实 events 有 `temperature_c` 列但有效读数=0、无观测方差 → 无信息通道。目标定义 `temperature_c` 已在 targets 列表中存在（定义 ≠ 可建模）。
-- 完善路径：①采集端保证温度与电学同资产时间对齐入库；②readiness 的 `TEMPERATURE_MODELING` 需要 measured>0、覆盖率审计与真实方差才翻 `PARTIALLY_READY`；③届时尚无特征-温度混杂控制前，温度只作诊断维度不作预测目标。
-- 验收：覆盖率/方差阈值全部由 `extension-readiness` 观测值驱动，禁止手工置 READY；UI 已按温度可用性分支（Analysis 关系视图已实现该分支）。
+- 初始快照性质：当时真实 events 有 `temperature_c` 列但有效读数=0、无观测方差。后续数据更新后，CELL_001 / EXP_001 已有 3995/3999 个有效读数，范围 23.2–25.3 °C；有效测量不等于独立设计的热工况。
+- 当前代码边界：temperature 可用于探索性特征—温度关系分析；温度监督数据集/建模尚未实现。`extension-readiness` 与 target catalogue 分别报告数据观测门和建模实现状态，不把数据门通过误报为模型 READY。
+- 后续完善：先有跨温度、受控/可审计的热工况与混杂评估方案，再实现明确的温度目标构建器及分组评估；此之前保持监督建模入口关闭。
+- 验收：覆盖率/方差由实际观测驱动；relationship readiness 与 modeling readiness 分开；温度 target 不创建误导性的 dataset spec 或落入 SOH builder。
 
 ### A4. 独立 SOH 状态能力
 - 性质：当前仅 2 个独立健康状态；契约规定帧行不算独立状态（3999 行 ≠ 3999 个电池）。目标 `soh_capacity_reference_percent` 已在 API 报告 `NOT_READY_INSUFFICIENT_SOH_STATES`（test_api_resources 断言在案）。

@@ -163,17 +163,19 @@ def build_extension_readiness(
         ),
         BoundaryReadiness(
             code="TEMPERATURE_MODELING",
-            status="READY" if temperature_ready else "BLOCKED_BY_DATA",
-            can_resolve_with_current_data=temperature_ready,
+            status="NOT_IMPLEMENTED" if temperature_ready else "BLOCKED_BY_DATA",
+            can_resolve_with_current_data=False,
             reason=(
-                "temperature target available"
+                "temperature measurement threshold is met, but the temperature target dataset/modeling workflow is not implemented; relationship analysis remains exploratory"
                 if temperature_ready
-                else "temperature channel absent or variation < 2 °C"
+                else "temperature channel absent or observed variation < 2 °C"
             ),
             requirements=[
                 "measured temperature channel",
                 "coverage audit",
                 "at least 2 °C observed variation",
+                "implemented temperature dataset/modeling workflow",
+                "independent thermal-condition and confounding review",
             ],
             future_contract="target-dataset/1.0",
         ),
@@ -266,6 +268,7 @@ def build_extension_readiness(
             "independent_soh_states": independent_soh_states,
             "temperature_valid_count": temperature_valid_count,
             "temperature_range_c": temperature_range_c,
+            "temperature_target_data_gate": temperature_ready,
             "model_beats_dummy": model_beats_dummy,
             "has_independent_validation": has_independent_validation,
             "independent_validation_evidence": independent_validation_evidence or {

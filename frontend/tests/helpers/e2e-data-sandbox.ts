@@ -14,10 +14,12 @@ export function createE2EDataSandbox(repoRoot: string): E2EDataSandbox {
   const rawRoot = join(root, "raw");
   const processedRoot = join(root, "processed");
   const runsRoot = join(root, "runs");
+  const sourceRawRoot = process.env.BRW_TEST_RAW_ROOT ?? join(repoRoot, "data", "raw");
+  const sourceProcessedRoot = process.env.BRW_TEST_PROCESSED_ROOT ?? join(repoRoot, "data", "processed");
 
   try {
-    cpSync(join(repoRoot, "data", "raw"), rawRoot, { recursive: true });
-    cpSync(join(repoRoot, "data", "processed"), processedRoot, { recursive: true });
+    cpSync(sourceRawRoot, rawRoot, { recursive: true });
+    cpSync(sourceProcessedRoot, processedRoot, { recursive: true });
     mkdirSync(runsRoot, { recursive: true });
   } catch (error) {
     rmSync(root, { recursive: true, force: true });

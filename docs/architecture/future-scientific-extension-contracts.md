@@ -16,7 +16,7 @@ GET /api/v1/experiments/{battery_id}/{experiment_id}/extension-readiness
 |---|---|---|
 | `cohort-dataset/1.0` | 已实现并启用；支持创建/读取不可变 harmonized SOC cohort，以及 Battery-grouped LOBO evaluation | 至少 2 个独立电池；来源 dataset、标签公式/temporality、特征定义和单位须兼容且通过 checksum 验证。当前 CELL_001 数据本身不满足跨电池证据门 |
 | `timebase-validation/1.0` | descriptor/readiness 已有；验证写入 endpoint 尚未实现 | 需要逐资产绝对时间锚点、时区、来源证据和误差审计。当前时间基准仍为 `PROVISIONAL` |
-| `target-dataset/1.0` | 通用写入 endpoint 尚未实现；已有 Reference SOC 工作流、温度目标数据门及 cycle-level SOH 标签构建/校验能力 | 当前 CELL_001 温度有 3995/3999 个有效读数，范围 23.2–25.3 °C，满足现有软件 readiness 阈值；但没有独立控制的热工况证据，温度关系仅宜探索/诊断。SOH 仍只有 2 个独立状态，需至少 3 个且具备 cycle/battery 粒度与容量来源 |
+| `target-dataset/1.0` | 通用写入 endpoint 尚未实现；已有 Reference SOC 工作流及 cycle-level SOH 标签构建/校验能力。温度关系分析可探索；温度监督数据集/建模尚未实现 | 当前 CELL_001 温度有 3995/3999 个有效读数，范围 23.2–25.3 °C；测量门通过不等于建模实现就绪。温度关系仅宜探索/诊断，监督建模状态为 `NOT_IMPLEMENTED`。SOH 仍只有 2 个独立状态，需至少 3 个且具备 cycle/battery 粒度与容量来源 |
 | `tuning-study/1.0` | 请求 schema/readiness descriptor、TRAIN-only 嵌套分组选择内核、`GROUP_HOLDOUT` 三角色物化和只读产物证据核验已有；`POST /api/v1/tuning-studies`、持久化与模型适配尚未实现 | readiness 仅接受 checksum、来源数据行/分组、身份均验证通过的 `TRAIN / VALIDATION / HELD_OUT` 产物；当前 CELL_001 历史 split 不满足条件。证据发现也不启用调参 API |
 | Dummy 优势评估 | 固定基线模型比较已实现，策略来自 `/api/v1/modeling/strategies` | 2026-10-08 当前 artifact 中 SVR MAE 27.69、Dummy MAE 30.72 个百分点；两循环 limited evaluation，仅说明该次有限比较，不等于可靠预测能力或泛化证据 |
 

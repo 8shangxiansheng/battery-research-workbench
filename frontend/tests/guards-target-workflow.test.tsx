@@ -322,6 +322,22 @@ describe("Target guards", () => {
     expect(screen.getByTestId("target-card-temperature_c").textContent).toContain("0 / 3,999");
   });
 
+  it("T03b temperature measurement can be exploratory while supervised modeling stays blocked", async () => {
+    const temp: TargetDefinition = {
+      ...socTarget, target_id: "temperature_c", display_name_en: "Temperature", display_name_zh: "温度",
+      semantic_type: "DIRECT_MEASUREMENT", coverage: { valid: 3995, total: 3999 },
+      range: [23.2, 25.3], readiness: "READY", modeling_readiness: "NOT_IMPLEMENTED",
+      limitation: "exploratory relationships only", limitation_zh: "温度关系可用于探索；温度监督建模尚未实现。",
+      unit: "celsius",
+    };
+    clientMock.listTargets.mockResolvedValue({ data: { targets: [temp] }, meta: {} });
+    const { TargetSelector } = await import("../src/components/workbench/TargetSelector");
+    renderPage(<TargetSelector batteryId="C" experimentId="E" selected={null} onSelect={() => {}} />);
+    await screen.findByTestId("target-modeling-unavailable-temperature_c");
+    expect(screen.getByTestId("target-ready-temperature_c")).toBeInTheDocument();
+    expect(screen.getByTestId("target-card-temperature_c").textContent).toContain("探索");
+  });
+
   it("T04 SOH independent-group count visible with Limited badge", async () => {
     const soh: TargetDefinition = { ...socTarget, target_id: "soh_capacity_reference_percent", display_name_en: "SOH", display_name_zh: "健康状态", semantic_type: "DERIVED_HEALTH_STATE", coverage: { valid: 3995, total: 3999, independent_states: 2 }, readiness: "NOT_READY", limitation: "only 2 independent SOH states", limitation_zh: "仅 2 个独立 SOH 状态；帧行是伪重复", unit: "percent" };
     clientMock.listTargets.mockResolvedValue({ data: { targets: [soh] }, meta: {} });

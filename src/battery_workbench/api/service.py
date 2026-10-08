@@ -1083,9 +1083,12 @@ class WorkbenchService:
                         ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
                         f"dataset target not ready: {target_name} — {temp_reason}",
                     )
-                # Passed the gate: materialize under its own family, never
-                # under "SOC" (mislabeled artifact risk).
-                family = "TEMPERATURE"
+                raise APIError(
+                    ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+                    "temperature target dataset/modeling is not implemented; "
+                    "use exploratory feature–temperature relationship analysis instead",
+                    {"measurement_gate_passed": True, "temperature_gate_reason": temp_reason},
+                )
             else:
                 reason = {
                     "soh_capacity_reference_percent": "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不做监督数据集构建",

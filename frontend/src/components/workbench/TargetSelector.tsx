@@ -64,6 +64,7 @@ export function TargetSelector({ batteryId, experimentId, selected, onSelect }: 
             <h3 className="font-medium">{t.display_name_en} / {t.display_name_zh}</h3>
             <p className="text-xs muted mt-1">{t.semantic_type.replace(/_/g, " ").toLowerCase()} · {t.unit}</p>
             {readinessBadge(t)}
+            {t.modeling_readiness === "NOT_IMPLEMENTED" && <Badge variant="outline" className="ml-2" data-testid={`target-modeling-unavailable-${t.target_id}`}>建模未实现 / Modeling unavailable</Badge>}
             <dl className="text-xs mt-3 space-y-1">
               <div><dt className="inline muted">Source / 来源: </dt><dd className="inline">{t.source}</dd></div>
               <div><dt className="inline muted">Coverage / 覆盖: </dt><dd className="inline tabular-nums">{numberText(t.coverage.valid, 0)} / {numberText(t.coverage.total, 0)} 行{t.coverage.independent_states != null ? ` · ${t.coverage.independent_states} 独立状态` : ""}</dd></div>

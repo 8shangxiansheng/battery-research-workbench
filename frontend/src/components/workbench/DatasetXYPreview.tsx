@@ -110,7 +110,7 @@ function BuildButtonsInner({ batteryId, experimentId, targetId, features, mode, 
     : targetId === "soh_capacity_reference_percent"
       ? "SOH 仅 2 个 cycle 级独立状态（NOT_READY），不构建监督数据集；请查看 Step 4 的 cycle 级分组摘要。"
       : targetId === "temperature_c"
-        ? "本实验无温度通道，无可用目标。"
+        ? target?.limitation_zh ?? "温度关系可作探索性分析；温度目标数据集与监督建模尚未实现。"
         : "当前流程仅物化 Reference SOC 数据集族；该目标不支持数据集构建。";
   const mutation = useMutation({
     mutationFn: async () => {

@@ -1415,6 +1415,16 @@ class FeatureLabelAnalysisNode(WorkflowNode):
 class DatasetNode(WorkflowNode):
     node_type = "DATASET"
 
+    _TEMPERATURE_BLOCK_REASON = (
+        "temperature target dataset/modeling is not implemented; "
+        "use exploratory feature–temperature relationship analysis instead"
+    )
+
+    def validate_readiness(self, plan, inputs):
+        if str(plan.target or "") == "temperature_c":
+            return Readiness(ok=False, reason=self._TEMPERATURE_BLOCK_REASON)
+        return Readiness(ok=True, reason="dataset target is supported by the current builder")
+
     def _gate_calibration(
         self, plan, processed_root: Path
     ) -> tuple[str | None, dict[str, tuple[int, int]]]:
@@ -1430,6 +1440,8 @@ class DatasetNode(WorkflowNode):
         )
 
     def resolve_existing_output(self, plan, inputs, processed_root):
+        if str(plan.target or "") == "temperature_c":
+            return None, self._TEMPERATURE_BLOCK_REASON
         calibration_id, _bounds = self._gate_calibration(plan, Path(processed_root))
         if not calibration_id:
             return super().resolve_existing_output(plan, inputs, processed_root)
@@ -1487,6 +1499,8 @@ class DatasetNode(WorkflowNode):
         return f"datasets/{plan.project.battery_id}/{plan.project.experiment_id}/{family}"
 
     def run(self, plan, inputs, ctx):
+        if str(plan.target or "") == "temperature_c":
+            raise ValueError(self._TEMPERATURE_BLOCK_REASON)
         b, e = plan.project.battery_id, plan.project.experiment_id
         from battery_workbench.datasets.builder import build_soc_dataset, build_soh_dataset
         from battery_workbench.datasets.persistence import write_dataset_payload

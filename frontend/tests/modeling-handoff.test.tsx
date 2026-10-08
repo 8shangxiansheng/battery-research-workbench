@@ -284,4 +284,23 @@ describe("Dataset materialization handoff", () => {
     }));
     expect(onBuilt).toHaveBeenCalledWith("mlsafe");
   });
+
+  it("blocks temperature dataset building with an implementation-specific message", async () => {
+    wrap(<DatasetBuildButtons batteryId="CELL_001" experimentId="EXP_001"
+      targetId="temperature_c" features={["SWA"]} mode="EXPLORATORY_FULL_DATA"
+      target={{
+        target_id: "temperature_c", display_name_en: "Temperature", display_name_zh: "温度",
+        semantic_type: "DIRECT_MEASUREMENT", source: "Electrical record temperature channel",
+        coverage: { valid: 3995, total: 3999 }, range: [23.2, 25.3], readiness: "READY",
+        modeling_readiness: "NOT_IMPLEMENTED", limitation: "temperature target dataset/modeling is not implemented",
+        limitation_zh: "温度关系可用于探索；温度目标数据集与监督建模尚未实现。", unit: "celsius",
+      }}
+      summary={null} onBuilt={vi.fn()} />);
+
+    expect(screen.getByTestId("build-exploratory-btn")).toBeDisabled();
+    expect(screen.getByTestId("build-mlsafe-btn")).toBeDisabled();
+    expect(screen.getByTestId("build-blocked-reason").textContent).toContain("温度关系可用于探索");
+    expect(screen.getByTestId("build-blocked-reason").textContent).not.toContain("无温度通道");
+    expect(clientMock.createDataset).not.toHaveBeenCalled();
+  });
 });

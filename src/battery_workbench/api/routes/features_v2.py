@@ -1145,6 +1145,8 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
     current = joined.get("current_a")
     soh_states = int(soh.dropna().nunique()) if soh is not None else 0
     temp_range = float(temp.max() - temp.min()) if temp is not None and temp.notna().any() else 0.0
+    temp_count = _count("temperature_c")
+    temperature_data_gate = temp_count > 0 and temp_range >= 2.0
 
     def _range(s: Any) -> list[float] | None:
         if s is None or not s.notna().any():
@@ -1187,11 +1189,23 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "coverage": {"valid": _count("temperature_c"), "total": n},
             "range": _range(temp),
             "readiness": "UNAVAILABLE"
-            if _count("temperature_c") == 0
+            if temp_count == 0
             else ("INSUFFICIENT_VARIATION" if temp_range < 2.0 else "READY"),
-            "limitation": "no temperature channel in this experiment"
-            if _count("temperature_c") == 0
-            else None,
+            "modeling_readiness": "NOT_IMPLEMENTED" if temperature_data_gate else "BLOCKED_BY_DATA",
+            "limitation": (
+                "no temperature channel in this experiment"
+                if temp_count == 0
+                else "temperature range is below the 2 °C measurement gate"
+                if not temperature_data_gate
+                else "temperature is available for exploratory relationships only; supervised temperature dataset/modeling and independent thermal-condition review are not implemented"
+            ),
+            "limitation_zh": (
+                "无温度通道"
+                if temp_count == 0
+                else "温度变化范围未达到 2 °C 数据阈值"
+                if not temperature_data_gate
+                else "温度可用于探索性特征关系分析；温度目标数据集/监督建模及独立热工况审查尚未实现。"
+            ),
             "unit": "celsius",
         },
         {

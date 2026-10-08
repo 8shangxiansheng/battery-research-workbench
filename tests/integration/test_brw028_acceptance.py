@@ -170,14 +170,19 @@ class TestTargets:
         assert "retrospective" in SOC_DISCLAIMER.lower()
         assert "参考" in SOC_DISCLAIMER_ZH
 
-    def test_temperature_unavailable_soh_not_ready_via_api(self):
+    def test_temperature_exploratory_scope_and_soh_readiness_via_api(self):
         from fastapi.testclient import TestClient
 
         from battery_workbench.api.serve import app
 
         c = TestClient(app)
         targets = {t["target_id"]: t for t in c.get("/api/v1/experiments/CELL_001/EXP_001/targets").json()["data"]["targets"]}
-        assert targets["temperature_c"]["readiness"] == "UNAVAILABLE"
+        temperature = targets["temperature_c"]
+        if temperature["coverage"]["valid"] and temperature["range"][1] - temperature["range"][0] >= 2.0:
+            assert temperature["readiness"] == "READY"
+            assert temperature["modeling_readiness"] == "NOT_IMPLEMENTED"
+        else:
+            assert temperature["modeling_readiness"] == "BLOCKED_BY_DATA"
         soh = targets["soh_capacity_reference_percent"]
         assert soh["readiness"] == "NOT_READY"
         assert soh["coverage"]["independent_states"] == 2

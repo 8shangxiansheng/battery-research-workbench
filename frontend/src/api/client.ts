@@ -732,6 +732,7 @@ export interface TargetDefinition {
   coverage: { valid: number; total: number; independent_states?: number };
   range: [number, number] | null;
   readiness: string;
+  modeling_readiness?: string;
   limitation: string | null;
   limitation_zh?: string | null;
   unit: string;

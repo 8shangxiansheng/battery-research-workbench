@@ -107,6 +107,25 @@ def test_readiness_distinguishes_data_and_implementation_boundaries() -> None:
     assert payload.future_contracts["tuning_study"].enabled is False
 
 
+def test_temperature_measurement_gate_does_not_claim_modeling_is_implemented() -> None:
+    payload = build_extension_readiness(
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        battery_count=1,
+        timebase_status="PROVISIONAL",
+        independent_soh_states=2,
+        temperature_valid_count=3995,
+        temperature_range_c=2.1,
+        model_beats_dummy=False,
+        has_independent_validation=False,
+    )
+    boundary = next(item for item in payload.boundaries if item.code == "TEMPERATURE_MODELING")
+    assert payload.observed["temperature_target_data_gate"] is True
+    assert boundary.status == "NOT_IMPLEMENTED"
+    assert boundary.can_resolve_with_current_data is False
+    assert "dataset/modeling workflow is not implemented" in boundary.reason
+
+
 def test_readiness_distinguishes_missing_comparison_from_failed_comparison() -> None:
     payload = build_extension_readiness(
         battery_id="CELL_001",
