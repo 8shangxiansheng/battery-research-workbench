@@ -646,6 +646,37 @@ def test_cycle_step_mapping_save_is_versioned_and_uses_optimistic_concurrency(
     assert active.read_text(encoding="utf-8") == changed
 
 
+def test_saved_mapping_sidecar_is_consumed_by_reference_labels_workflow_node(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    mapping_csv = Path(inputs["mapping_path"]).read_text(encoding="utf-8")
+    saved = save_cycle_step_mapping(
+        mapping_csv,
+        confirm_reviewed=True,
+        expected_active_sha256=None,
+        raw_root=inputs["raw_root"],
+        processed_root=inputs["processed_root"],
+        battery_id="CELL_A",
+        experiment_id="EXP_A",
+    )
+    plan = SimpleNamespace(project=SimpleNamespace(battery_id="CELL_A", experiment_id="EXP_A"))
+    context = SimpleNamespace(
+        raw_root=inputs["raw_root"], processed_root=inputs["processed_root"]
+    )
+
+    result = ReferenceLabelsNode().run(plan, {}, context)
+
+    label_dir = Path(inputs["processed_root"]) / "labels" / "CELL_A" / "EXP_A"
+    event_labels = pd.read_parquet(label_dir / "event_labels.parquet")
+    manifest = json.loads((label_dir / "label_manifest.json").read_text(encoding="utf-8"))
+    assert result["artifact_id"] == manifest["label_set_id"]
+    assert event_labels["canonical_cycle_index"].tolist() == [1, 1, 2, 2]
+    assert (
+        manifest["input_checksums"]["cycle_step_mapping"] == saved["mapping_sha256"]
+    )
+
+
 def test_cycle_step_mapping_save_requires_explicit_review_confirmation(
     mapping_case, tmp_path: Path
 ) -> None:
