@@ -101,4 +101,12 @@ temperature_valid_count=0, has_independent_validation=false`。
 - **Temperature target**：由无条件拒绝调整为数据门控；只有存在实测有效温度且范围至少 2 °C 时才允许目标数据集。当前样例没有有效温度读数，仍不可建模。
 - **SOH**：容量比标签公式和来源 provenance 有离线测试锁定；这不改变数据门。当前只有 2 个 cycle 级独立状态，至少需要 3 个状态才能满足 SOH 建模 readiness。
 - **模型策略**：固定基线扩展为 11 种策略，新增 ElasticNet、Huber Regression 和 MLP Regressor；策略清单由 `GET /api/v1/modeling/strategies` 提供并可在 UI 选择。所有配置仍是预声明固定参数，不是超参数调优。
-- **仍未闭合的数据/方法项**：时间基准验证写入流程、独立 VALIDATION 角色与嵌套分组调参仍未实现；新增模型策略也没有增加真实独立电池或验证数据。
+- **仍未闭合的数据/方法项**：时间基准验证写入流程、独立 VALIDATION 角色及调参 API/持久化仍未实现；A2-① 内核阶段状态见 H 节。新增模型策略也没有增加真实独立电池或验证数据。
+
+## H. A2-① 嵌套分组选择内核（2026-10-08）
+
+- 新增 `modeling/nested_tuning.py` 纯函数内核：接收命名明确的外层 TRAIN 数据，只在 TRAIN 内按 `battery_id`、`experiment_id` 或 `cycle_group_id` 做 leave-one-group-out 内层验证；每个候选按分组宏平均 MAE/RMSE 选优，搜索空间默认最多 50 项且上限 500 项。
+- 候选 predictor callback 仅收到内层 TRAIN 的 X/y 和内层 VALIDATION 的 X；内层 VALIDATION y 只在内核中用于评分。内核无 outer HELD_OUT 参数，也不接受或读取 HELD_OUT target。要求至少 3 个 outer TRAIN groups，保证每个内层 fold 有至少 2 个训练组和 1 个验证组。
+- 禁止 target、MeasurementEvent/asset/Battery/Experiment/Cycle/Step identity 字段作为预测特征；缺失值不插补，非有限目标/预测与错误输出形状均 fail-closed。
+- 验证：新模块定向测试通过，语句覆盖率 89%；既有 modeling、split、future-contract suites 与 Ruff、`git diff --check` 通过。
+- 边界：此阶段只实现可独立测试的搜索内核；未接入 `POST /tuning-studies`、模型注册、持久化或 UI，也没有声称当前数据已达到调参 readiness。后续必须实现真实的外层角色/独立验证数据门、签名级 HELD_OUT 隔离与审计后，才可启用调参 API。
