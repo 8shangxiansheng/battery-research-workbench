@@ -40,10 +40,18 @@ unauthenticated review status. The deterministic Label Builder independently
 revalidates the mapping when it is explicitly passed; the workflow node
 discovers `data/annotations/{battery_id}/{experiment_id}/cycle-step-mapping.csv`
 when present. A successful preflight reports
-`CYCLE_STEP_MAPPING_CONTRACT_VALIDATED`; it explicitly reports
-`mapping_application_status=LABEL_BUILDER_CONSUMER_AVAILABLE`,
-`label_generation_authorized=false`, and scientific continuity
-`NOT_ASSESSED`.
+`CYCLE_STEP_MAPPING_CONTRACT_VALIDATED`; this means only that the declaration
+and its evidence are structurally/currently valid. It separately reports
+`mapping_application_status` as either
+`LABEL_BUILDER_CONSUMER_AVAILABLE` or
+`LABEL_BUILDER_CONSUMER_UNAVAILABLE`, plus
+`mapping_application_reason` when unavailable. A structurally valid mapping
+that assigns multiple source Cycles to one canonical Cycle is currently not
+consumable by the Reference Label builder: no cross-source capacity
+aggregation contract has been established. The CSV can still be saved as an
+operator-reviewed annotation, but saving does not make label generation
+available. Label generation remains unauthorized by preflight, and scientific
+continuity remains `NOT_ASSESSED` in either case.
 
 The API exposes the current sidecar checksum and a separate explicit save
 operation. Saving requires `confirm_reviewed=true`, the caller's expected
@@ -61,7 +69,13 @@ The read-only API lists these revisions by SHA-256 and active status and serves
 the exact CSV bytes only after rechecking the digest. Historical snapshots are
 for review/recovery; their presence does not mean they remain valid against the
 current raw evidence or parser outputs. A digest mismatch blocks listing and
-download rather than silently repairing the snapshot.
+download rather than silently repairing the snapshot. Active and revision
+sidecars are opened with symlink-resistant reads. POSIX readers traverse from
+the data root with descriptor-relative `O_NOFOLLOW`; Windows readers check
+reparse points and compare the opened file identity before and after reading.
+On Windows, keep the annotations directory writable only by the service
+account because Python does not expose the same portable descriptor-relative
+open API there.
 
 The read-only `GET .../cycle-step-mapping/draft` endpoint can prepare an
 unreviewed inventory from current `steps.parquet` and parser provenance. It
