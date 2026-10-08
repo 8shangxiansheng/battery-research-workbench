@@ -1,0 +1,1 @@
+contract_version,mapping_id,battery_id,experiment_id,electrical_asset_id,cycle_index_raw,step_index_raw,canonical_cycle_index,canonical_step_index,parser_manifest_sha256,evidence_relative_path,evidence_sha256,review_status,reviewer,reviewed_at,rationale
