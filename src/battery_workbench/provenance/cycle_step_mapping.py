@@ -315,10 +315,100 @@ def validate_cycle_step_mapping(
         "source_step_count": len(source_keys),
         "canonical_cycle_count": len({cycle for cycle, _ in target_keys}),
         "review_status": "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
-        "mapping_application_status": "NOT_IMPLEMENTED",
+        "mapping_application_status": "PROJECTION_AVAILABLE_NOT_INTEGRATED",
         "label_generation_authorized": False,
         "scientific_cycle_continuity": "NOT_ASSESSED",
     }
+
+
+def project_canonical_cycle_step(
+    frame: pd.DataFrame,
+    mapping_csv: str | Path,
+    *,
+    raw_root: str | Path,
+    processed_root: str | Path,
+    battery_id: str,
+    experiment_id: str,
+) -> pd.DataFrame:
+    """Add canonical Cycle/Step columns without changing source-local values.
+
+    The full declaration and current parser artifacts are revalidated before
+    projection. This is an in-memory identity adapter only; callers still
+    need their own scientific readiness checks before creating labels.
+    """
+    validation = validate_cycle_step_mapping(
+        mapping_csv,
+        raw_root=raw_root,
+        processed_root=processed_root,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
+    required = {
+        "battery_id",
+        "experiment_id",
+        "electrical_asset_id",
+        "cycle_index_raw",
+        "step_index_raw",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise CycleStepMappingError("projection frame missing columns: " + ", ".join(missing))
+    if frame[list(required)].isna().any().any():
+        raise CycleStepMappingError("projection frame has null source identity")
+    if set(frame["battery_id"].astype(str)) != {battery_id}:
+        raise CycleStepMappingError("projection frame Battery identity mismatch")
+    if set(frame["experiment_id"].astype(str)) != {experiment_id}:
+        raise CycleStepMappingError("projection frame Experiment identity mismatch")
+
+    rows, mapping_sha256 = _read_mapping(Path(mapping_csv))
+    if mapping_sha256 != validation["mapping_sha256"]:
+        raise CycleStepMappingError("mapping CSV changed during projection")
+    mapping: dict[tuple[str, int, int], tuple[int, int]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        source = (
+            _required(row, "electrical_asset_id", row_number),
+            _integer(row.get("cycle_index_raw"), field="cycle_index_raw", row_number=row_number),
+            _integer(row.get("step_index_raw"), field="step_index_raw", row_number=row_number),
+        )
+        target = (
+            _integer(
+                row.get("canonical_cycle_index"),
+                field="canonical_cycle_index",
+                row_number=row_number,
+            ),
+            _integer(
+                row.get("canonical_step_index"),
+                field="canonical_step_index",
+                row_number=row_number,
+            ),
+        )
+        mapping[source] = target
+
+    projected = frame.copy(deep=True)
+    canonical_cycles: list[int] = []
+    canonical_steps: list[int] = []
+    for row_number, row in enumerate(
+        projected[["electrical_asset_id", "cycle_index_raw", "step_index_raw"]].itertuples(
+            index=False, name=None
+        ),
+        start=1,
+    ):
+        asset_id, raw_cycle, raw_step = row
+        source = (
+            str(asset_id).strip(),
+            _integer(raw_cycle, field="cycle_index_raw", row_number=row_number),
+            _integer(raw_step, field="step_index_raw", row_number=row_number),
+        )
+        target = mapping.get(source)
+        if target is None:
+            raise CycleStepMappingError(
+                f"projection row {row_number}: source Cycle/Step is not in reviewed mapping"
+            )
+        canonical_cycles.append(target[0])
+        canonical_steps.append(target[1])
+    projected["canonical_cycle_index"] = canonical_cycles
+    projected["canonical_step_index"] = canonical_steps
+    return projected
 
 
 def main(argv: list[str] | None = None) -> int:

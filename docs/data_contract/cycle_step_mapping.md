@@ -31,14 +31,17 @@ physical Cycle.
 <id> --experiment-id <id> --raw-root data/raw --processed-root data/processed`
 checks identity completeness, current Electrical parser outputs, parser
 manifest binding, raw evidence bytes, review metadata and one-to-one mapping
-structure. A successful result is only
+structure. The `project_canonical_cycle_step` API can then add canonical keys
+to an in-memory step-level table while preserving `cycle_index_raw`,
+`step_index_raw`, DataAsset identity and source locators. A successful
+preflight reports
 `CYCLE_STEP_MAPPING_CONTRACT_VALIDATED`; it explicitly reports
-`mapping_application_status=NOT_IMPLEMENTED`,
+`mapping_application_status=PROJECTION_AVAILABLE_NOT_INTEGRATED`,
 `label_generation_authorized=false`, and scientific continuity
 `NOT_ASSESSED`.
 
-Therefore this declaration does not yet unblock Reference Label generation,
-SOH aggregation, Dataset construction, or modeling. Those consumers continue
-to fail closed on ambiguous multi-asset source Cycle identities until a later
-stage wires the reviewed mapping into each relevant scientific join and adds
+The projection is deliberately not wired into Reference Label generation, SOH
+aggregation, Dataset construction, or modeling, so those consumers continue to
+fail closed on ambiguous multi-asset source Cycle identities. A later stage
+must wire the reviewed mapping into each relevant scientific join and add
 multi-XLSX golden validation. Never edit processed Parquet to mimic a mapping.

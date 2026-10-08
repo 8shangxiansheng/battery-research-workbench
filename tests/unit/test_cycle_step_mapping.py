@@ -11,6 +11,7 @@ import pytest
 from battery_workbench.provenance.cycle_step_mapping import (
     CYCLE_STEP_MAPPING_FIELDS,
     CycleStepMappingError,
+    project_canonical_cycle_step,
     validate_cycle_step_mapping,
 )
 from battery_workbench.provenance.processed_manifest import content_sha256
@@ -172,9 +173,63 @@ def test_valid_explicit_cross_asset_mapping_does_not_authorize_labels(mapping_ca
     assert result["source_cycle_count"] == 2
     assert result["source_step_count"] == 2
     assert result["canonical_cycle_count"] == 2
-    assert result["mapping_application_status"] == "NOT_IMPLEMENTED"
+    assert result["mapping_application_status"] == "PROJECTION_AVAILABLE_NOT_INTEGRATED"
     assert result["label_generation_authorized"] is False
     assert result["scientific_cycle_continuity"] == "NOT_ASSESSED"
+
+
+def test_projection_adds_canonical_keys_and_preserves_source_identity(mapping_case) -> None:
+    _write_mapping(mapping_case, mapping_case["rows"])
+    source = pd.DataFrame(
+        {
+            "battery_id": ["CELL_A", "CELL_A", "CELL_A"],
+            "experiment_id": ["EXP_A", "EXP_A", "EXP_A"],
+            "electrical_asset_id": ["E001", "E001", "E002"],
+            "cycle_index_raw": [1, 1, 1],
+            "step_index_raw": [1, 1, 1],
+            "source_row_index": [10, 11, 20],
+            "value": [0.1, 0.2, 0.3],
+        }
+    )
+
+    projected = project_canonical_cycle_step(
+        source,
+        mapping_case["mapping_csv"],
+        raw_root=mapping_case["raw_root"],
+        processed_root=mapping_case["processed_root"],
+        battery_id="CELL_A",
+        experiment_id="EXP_A",
+    )
+
+    assert projected["canonical_cycle_index"].tolist() == [1, 1, 2]
+    assert projected["canonical_step_index"].tolist() == [1, 1, 1]
+    assert projected["cycle_index_raw"].tolist() == [1, 1, 1]
+    assert projected["electrical_asset_id"].tolist() == ["E001", "E001", "E002"]
+    assert projected["source_row_index"].tolist() == [10, 11, 20]
+    assert "canonical_cycle_index" not in source.columns
+
+
+def test_projection_rejects_source_identity_outside_reviewed_mapping(mapping_case) -> None:
+    _write_mapping(mapping_case, mapping_case["rows"])
+    source = pd.DataFrame(
+        {
+            "battery_id": ["CELL_A"],
+            "experiment_id": ["EXP_A"],
+            "electrical_asset_id": ["E003"],
+            "cycle_index_raw": [1],
+            "step_index_raw": [1],
+        }
+    )
+
+    with pytest.raises(CycleStepMappingError, match="not in reviewed mapping"):
+        project_canonical_cycle_step(
+            source,
+            mapping_case["mapping_csv"],
+            raw_root=mapping_case["raw_root"],
+            processed_root=mapping_case["processed_root"],
+            battery_id="CELL_A",
+            experiment_id="EXP_A",
+        )
 
 
 def test_explicit_segment_continuation_can_share_cycle_but_not_step(mapping_case) -> None:
