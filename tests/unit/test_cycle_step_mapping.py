@@ -14,6 +14,7 @@ from battery_workbench.api.app import create_app
 from battery_workbench.datasets.joins import exact_cycle_join, exact_event_join
 from battery_workbench.labels.builder import build_reference_labels
 from battery_workbench.orchestrator.nodes import ReferenceLabelsNode, WorkflowNode
+from battery_workbench.orchestrator.schemas import ArtifactRef
 from battery_workbench.provenance import cycle_step_mapping
 from battery_workbench.provenance.cycle_step_mapping import (
     CYCLE_STEP_MAPPING_FIELDS,
@@ -409,6 +410,84 @@ def test_reviewed_mapping_reaches_labels_and_exact_cycle_dataset_join(
     assert joined["soh_capacity_reference_percent"].tolist() == pytest.approx(
         [100.0, 100.0, 90.0, 90.0]
     )
+
+
+def test_reference_labels_node_discovers_reviewed_mapping_sidecar(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_root = tmp_path / "data"
+    raw_root = data_root / "raw"
+    processed_root = data_root / "processed"
+    mapping_path = (
+        data_root / "annotations" / "CELL_A" / "EXP_A" / "cycle-step-mapping.csv"
+    )
+    mapping_path.parent.mkdir(parents=True)
+    mapping_path.write_text("reviewed mapping", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_build_reference_labels(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            label_set_id="LS::test",
+            label_engine_version="test",
+            limitations=[],
+        )
+
+    monkeypatch.setattr(
+        "battery_workbench.labels.builder.build_reference_labels",
+        fake_build_reference_labels,
+    )
+    plan = SimpleNamespace(
+        project=SimpleNamespace(battery_id="CELL_A", experiment_id="EXP_A"),
+        label_producer_version=None,
+    )
+    ctx = SimpleNamespace(raw_root=raw_root, processed_root=processed_root)
+
+    result = ReferenceLabelsNode().run(plan, {}, ctx)
+
+    assert captured["cycle_step_mapping_path"] == mapping_path
+    assert captured["raw_root"] == raw_root
+    assert result["artifact_id"] == "LS::test"
+
+
+def test_reference_labels_cache_is_invalidated_when_mapping_changes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_root = tmp_path / "data"
+    processed_root = data_root / "processed"
+    mapping_path = (
+        data_root / "annotations" / "CELL_A" / "EXP_A" / "cycle-step-mapping.csv"
+    )
+    mapping_path.parent.mkdir(parents=True)
+    mapping_path.write_text("new reviewed mapping", encoding="utf-8")
+    manifest_path = tmp_path / "label_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"input_checksums": {"cycle_step_mapping": "stale-checksum"}}),
+        encoding="utf-8",
+    )
+    ref = ArtifactRef(
+        artifact_type="LABEL_SET",
+        artifact_id="LS::test",
+        battery_id="CELL_A",
+        experiment_id="EXP_A",
+        path=str(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(
+        WorkflowNode,
+        "resolve_existing_output",
+        lambda self, plan, inputs, root: (ref, "cached label set"),
+    )
+    plan = SimpleNamespace(
+        project=SimpleNamespace(battery_id="CELL_A", experiment_id="EXP_A")
+    )
+
+    resolved, reason = ReferenceLabelsNode().resolve_existing_output(
+        plan, {}, processed_root
+    )
+
+    assert resolved is None
+    assert "mapping changed" in reason
 
 
 def test_mapping_refuses_cross_asset_cycle_aggregation_until_capacity_contract_exists(
