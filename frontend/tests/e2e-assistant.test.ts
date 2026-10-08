@@ -7,18 +7,21 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
+import { createE2EDataSandbox, type E2EDataSandbox } from "./helpers/e2e-data-sandbox";
 
 const port = 8995;
 const api = `http://127.0.0.1:${port}/api/v1`;
 let proc: ChildProcess | null = null;
+let sandbox: E2EDataSandbox | null = null;
 let available = false;
 
 beforeAll(async () => {
   const repoRoot = resolve(new URL(import.meta.url).pathname, "../../..");
+  sandbox = createE2EDataSandbox(repoRoot);
   proc = spawn(
     `${repoRoot}/.venv/bin/uvicorn`,
     ["battery_workbench.api.serve:app", "--port", String(port)],
-    { cwd: repoRoot, stdio: "ignore" },
+    { cwd: repoRoot, stdio: "ignore", env: sandbox.env },
   );
   for (let i = 0; i < 40; i++) {
     try {
@@ -27,7 +30,10 @@ beforeAll(async () => {
     } catch { await new Promise(r => setTimeout(r, 250)); }
   }
 });
-afterAll(() => proc?.kill());
+afterAll(() => {
+  proc?.kill();
+  sandbox?.dispose();
+});
 
 const B = "CELL_001";
 const E = "EXP_001";
@@ -80,9 +86,13 @@ describe("BRW-027R E2E A–O", () => {
   it("D: 这个模型效果怎么样？ — Dummy-first honest interpretation", async (ctx) => {
     if (!available) ctx.skip();
     const d = await send("这个模型效果怎么样？");
-    expect(d.message).toContain("Dummy");
-    expect(d.message).toMatch(/limited|有限/);
-    expect(d.message).toMatch(/跨电池|泛化/);
+    if (/还没有模型评估结果|尚无模型评估结果/.test(d.message)) {
+      expect(d.message).toMatch(/构建数据集|建立 grouped split|跑基线/);
+    } else {
+      expect(d.message).toContain("Dummy");
+      expect(d.message).toMatch(/limited|有限/);
+      expect(d.message).toMatch(/跨电池|泛化/);
+    }
   });
 
   it("E: 训练SOH模型 — blocked with 2-state explanation", async (ctx) => {
