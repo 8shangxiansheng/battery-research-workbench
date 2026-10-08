@@ -20,6 +20,10 @@ from battery_workbench.provenance.cycle_step_mapping import (
     project_canonical_cycle_step,
     validate_cycle_step_mapping,
 )
+from battery_workbench.provenance.cycle_step_mapping_store import (
+    CycleStepMappingStoreError,
+    save_cycle_step_mapping,
+)
 
 
 def _content_sha256(path: Path) -> str:
@@ -552,6 +556,200 @@ def test_cycle_step_mapping_preflight_api_returns_typed_invalid_response(
     error = response.json()["error"]
     assert error["code"] == "VALIDATION_ERROR"
     assert error["details"]["status"] == "INVALID_MAPPING"
+
+
+def test_cycle_step_mapping_save_is_versioned_and_uses_optimistic_concurrency(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+    endpoint = "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping"
+    content = Path(inputs["mapping_path"]).read_text(encoding="utf-8")
+    sidecar = Path(inputs["raw_root"]).parent / "annotations" / "CELL_A" / "EXP_A"
+    annotations_root = Path(inputs["raw_root"]).parent / "annotations"
+    initial_status = client.get(endpoint)
+    assert initial_status.status_code == 200
+    assert initial_status.json()["data"]["status"] == "MISSING"
+    assert not annotations_root.exists()
+
+    first = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content,
+            "confirm_reviewed": True,
+            "expected_active_sha256": None,
+        },
+    )
+
+    assert first.status_code == 200, first.text
+    first_data = first.json()["data"]
+    active = sidecar / "cycle-step-mapping.csv"
+    revisions = sidecar / "cycle-step-mapping.revisions"
+    assert active.read_text(encoding="utf-8") == content
+    assert (revisions / f"{first_data['mapping_sha256']}.csv").read_text(
+        encoding="utf-8"
+    ) == content
+    assert not (Path(inputs["raw_root"]) / "annotations").exists()
+    saved_status = client.get(endpoint).json()["data"]
+    assert saved_status["status"] == "VALIDATED"
+    assert saved_status["active_mapping_sha256"] == first_data["mapping_sha256"]
+    assert saved_status["revision_count"] == 1
+
+    unchanged = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content,
+            "confirm_reviewed": True,
+            "expected_active_sha256": first_data["mapping_sha256"],
+        },
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["data"]["save_status"] == "ALREADY_CURRENT"
+    assert unchanged.json()["data"]["revision_count"] == 1
+
+    changed = content.replace("CSM::REVIEW_001", "CSM::REVIEW_002")
+    second = client.put(
+        endpoint,
+        json={
+            "mapping_csv": changed,
+            "confirm_reviewed": True,
+            "expected_active_sha256": first_data["mapping_sha256"],
+        },
+    )
+
+    assert second.status_code == 200
+    second_data = second.json()["data"]
+    assert second_data["previous_mapping_sha256"] == first_data["mapping_sha256"]
+    assert active.read_text(encoding="utf-8") == changed
+    assert (revisions / f"{first_data['mapping_sha256']}.csv").exists()
+    assert (revisions / f"{second_data['mapping_sha256']}.csv").read_text(
+        encoding="utf-8"
+    ) == changed
+
+    stale = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content,
+            "confirm_reviewed": True,
+            "expected_active_sha256": first_data["mapping_sha256"],
+        },
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "CONFLICT"
+    assert active.read_text(encoding="utf-8") == changed
+
+
+def test_cycle_step_mapping_save_requires_explicit_review_confirmation(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+    response = client.put(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping",
+        json={
+            "mapping_csv": Path(inputs["mapping_path"]).read_text(encoding="utf-8"),
+            "confirm_reviewed": False,
+            "expected_active_sha256": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert not (Path(inputs["raw_root"]).parent / "annotations").exists()
+
+
+def test_cycle_step_mapping_save_rejects_symlinked_battery_directory_without_escape(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    annotations = Path(inputs["raw_root"]).parent / "annotations"
+    annotations.mkdir()
+    outside = tmp_path / "outside-annotations"
+    outside.mkdir()
+    battery_link = annotations / "CELL_A"
+    try:
+        battery_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(CycleStepMappingStoreError, match="must not be symlinks"):
+        save_cycle_step_mapping(
+            Path(inputs["mapping_path"]).read_text(encoding="utf-8"),
+            confirm_reviewed=True,
+            expected_active_sha256=None,
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            battery_id="CELL_A",
+            experiment_id="EXP_A",
+        )
+
+    assert not (outside / "EXP_A").exists()
+    assert not (Path(inputs["raw_root"]) / "annotations").exists()
+
+
+def test_invalid_mapping_does_not_create_annotation_directories(mapping_case) -> None:
+    raw_root = mapping_case["raw_root"]
+    processed_root = mapping_case["processed_root"]
+    assert isinstance(raw_root, Path)
+    assert isinstance(processed_root, Path)
+    with pytest.raises(CycleStepMappingError):
+        save_cycle_step_mapping(
+            "invalid,csv\n",
+            confirm_reviewed=True,
+            expected_active_sha256=None,
+            raw_root=raw_root,
+            processed_root=processed_root,
+            battery_id="CELL_A",
+            experiment_id="EXP_A",
+        )
+    assert not (raw_root.parent / "annotations").exists()
+
+
+def test_damaged_revision_history_blocks_replacement_without_changing_active_mapping(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    content = Path(inputs["mapping_path"]).read_text(encoding="utf-8")
+    first = save_cycle_step_mapping(
+        content,
+        confirm_reviewed=True,
+        expected_active_sha256=None,
+        raw_root=inputs["raw_root"],
+        processed_root=inputs["processed_root"],
+        battery_id="CELL_A",
+        experiment_id="EXP_A",
+    )
+    sidecar = Path(inputs["raw_root"]).parent / "annotations" / "CELL_A" / "EXP_A"
+    active = sidecar / "cycle-step-mapping.csv"
+    active_before = active.read_bytes()
+    revision = sidecar / "cycle-step-mapping.revisions" / f"{first['mapping_sha256']}.csv"
+    revision.write_text("damaged history", encoding="utf-8")
+
+    with pytest.raises(CycleStepMappingStoreError, match="inconsistent"):
+        save_cycle_step_mapping(
+            content.replace("CSM::REVIEW_001", "CSM::REVIEW_002"),
+            confirm_reviewed=True,
+            expected_active_sha256=first["mapping_sha256"],
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            battery_id="CELL_A",
+            experiment_id="EXP_A",
+        )
+
+    assert active.read_bytes() == active_before
 
 
 def test_explicit_segment_continuation_can_share_cycle_but_not_step(mapping_case) -> None:

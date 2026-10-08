@@ -347,6 +347,39 @@
         "title": "CycleStepMappingPreflightRequest",
         "type": "object"
       },
+      "CycleStepMappingSaveRequest": {
+        "description": "Explicit human confirmation plus optimistic concurrency token.",
+        "properties": {
+          "confirm_reviewed": {
+            "title": "Confirm Reviewed",
+            "type": "boolean"
+          },
+          "expected_active_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Active Sha256"
+          },
+          "mapping_csv": {
+            "maxLength": 4000000,
+            "minLength": 1,
+            "title": "Mapping Csv",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapping_csv",
+          "confirm_reviewed",
+          "expected_active_sha256"
+        ],
+        "title": "CycleStepMappingSaveRequest",
+        "type": "object"
+      },
       "ErrorEnvelope": {
         "properties": {
           "error": {
@@ -1840,6 +1873,122 @@
         "summary": "Canonical Tof",
         "tags": [
           "feature-workbench"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping": {
+      "get": {
+        "description": "Return current sidecar checksum/status for safe replacement flows.",
+        "operationId": "get_reviewed_cycle_step_mapping_status_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Reviewed Cycle Step Mapping Status Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Reviewed Cycle Step Mapping Status",
+        "tags": [
+          "scientific-resources"
+        ]
+      },
+      "put": {
+        "description": "Persist an explicitly confirmed mapping outside immutable raw data.",
+        "operationId": "save_reviewed_cycle_step_mapping_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleStepMappingSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Reviewed Cycle Step Mapping Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Reviewed Cycle Step Mapping",
+        "tags": [
+          "scientific-resources"
         ]
       }
     },

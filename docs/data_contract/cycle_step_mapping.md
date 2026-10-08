@@ -45,6 +45,18 @@ when present. A successful preflight reports
 `label_generation_authorized=false`, and scientific continuity
 `NOT_ASSESSED`.
 
+The API exposes the current sidecar checksum and a separate explicit save
+operation. Saving requires `confirm_reviewed=true`, the caller's expected
+active checksum (null only when no active mapping exists), and fresh server
+validation against current raw evidence and parser outputs. The active sidecar
+is atomically replaced; each previous and new CSV is retained under
+`data/annotations/{battery_id}/{experiment_id}/cycle-step-mapping.revisions/`
+as `<sha256>.csv`. A stale expected checksum returns `CONFLICT`; an identical
+current revision is idempotent. This is local content-addressed history, not
+authenticated identity or a tamper-proof audit log. Because the API has no
+authentication by default, keep the workbench bound to localhost or behind a
+trusted authenticated proxy.
+
 For label generation, V1 currently requires exactly one complete source Cycle
 per canonical Cycle. It supports distinct source assets whose raw Cycle
 numbers restart, provided the reviewed mapping assigns distinct canonical

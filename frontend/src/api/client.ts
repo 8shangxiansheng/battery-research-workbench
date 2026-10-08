@@ -840,6 +840,26 @@ export interface CycleStepMappingPreflightResult {
   scientific_cycle_continuity: "NOT_ASSESSED";
 }
 
+export interface CycleStepMappingStatus {
+  status: "MISSING" | "VALIDATED" | "INVALID";
+  active_mapping_sha256: string | null;
+  revision_count: number;
+  reason?: string | null;
+  mapping_id?: string;
+  source_cycle_count?: number;
+  source_step_count?: number;
+  canonical_cycle_count?: number;
+  review_status?: string;
+  scientific_cycle_continuity?: "NOT_ASSESSED";
+}
+
+export interface CycleStepMappingSaveResult extends CycleStepMappingPreflightResult {
+  save_status: "SAVED" | "ALREADY_CURRENT";
+  previous_mapping_sha256: string | null;
+  revision_count: number;
+  active_mapping_relative_path: string;
+}
+
 export interface FeatureLabelPreviewRow {
   measurement_event_id: string;
   ultrasound_asset_id: string | null;
@@ -1492,6 +1512,19 @@ export const client = {
       `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/preflight`,
       { method: "POST", body: JSON.stringify({ mapping_csv: mappingCsv }) },
     ),
+  getCycleStepMappingStatus: (batteryId: string, experimentId: string) =>
+    request<CycleStepMappingStatus>(
+      `/experiments/${batteryId}/${experimentId}/cycle-step-mapping`,
+    ),
+  saveCycleStepMapping: (
+    batteryId: string,
+    experimentId: string,
+    body: { mapping_csv: string; confirm_reviewed: true; expected_active_sha256: string | null },
+  ) =>
+    request<CycleStepMappingSaveResult>(
+      `/experiments/${batteryId}/${experimentId}/cycle-step-mapping`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
   postFeatureLabelPreview: (batteryId: string, experimentId: string, body: { target_id: string; features: string[]; limit?: number; split_id?: string; fold_index?: string }) =>
     request<FeatureLabelPreviewResponse>(`/experiments/${batteryId}/${experimentId}/feature-label-preview`, {
       method: "POST", body: JSON.stringify(body),
@@ -1787,6 +1820,8 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
+  { method: "PUT", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-label-preview" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/feature-target-ranking" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/gate-calibration" },

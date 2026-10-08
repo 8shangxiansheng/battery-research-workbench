@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, client } from "../../api/client";
 import { Button } from "../ui/button";
 
@@ -10,9 +10,25 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
   experimentId: string;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [confirmReviewed, setConfirmReviewed] = useState(false);
+  const queryClient = useQueryClient();
+  const activeMapping = useQuery({
+    queryKey: ["cycle-step-mapping", batteryId, experimentId],
+    queryFn: () => client.getCycleStepMappingStatus(batteryId, experimentId),
+  });
   const preflight = useMutation({
     mutationFn: async (selected: File) =>
       client.preflightCycleStepMapping(batteryId, experimentId, await selected.text()),
+  });
+  const save = useMutation({
+    mutationFn: async (selected: File) => client.saveCycleStepMapping(batteryId, experimentId, {
+      mapping_csv: await selected.text(),
+      confirm_reviewed: true,
+      expected_active_sha256: activeMapping.data?.data.active_mapping_sha256 ?? null,
+    }),
+    onSuccess: () => queryClient.invalidateQueries({
+      queryKey: ["cycle-step-mapping", batteryId, experimentId],
+    }),
   });
 
   const result = preflight.data?.data;
@@ -20,10 +36,15 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
   const errorReason = error instanceof ApiError
     ? String(error.details.reason ?? error.message)
     : error instanceof Error ? error.message : "预检失败，请稍后重试。";
+  const saveErrorReason = save.error instanceof ApiError
+    ? String(save.error.details.reason ?? save.error.message)
+    : save.error instanceof Error ? save.error.message : "保存失败，请重新读取当前映射状态。";
 
   function selectFile(selected: File | null) {
     setFile(selected);
     preflight.reset();
+    save.reset();
+    setConfirmReviewed(false);
   }
 
   return <section className="feature-card mt-5" data-testid="cycle-step-mapping-preflight">
@@ -32,6 +53,18 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       对多个 Electrical XLSX 的 source-local Cycle/Step 建立显式对应时，可上传已审核的 CSV 检查覆盖和来源证据。
       系统不会根据文件名或循环编号推断对应关系。
     </p>
+    {activeMapping.isLoading && <p role="status" className="muted text-xs mt-2">正在读取当前映射版本…</p>}
+    {activeMapping.isError && <p role="alert" className="text-sm text-destructive mt-2">
+      无法读取当前映射版本；为避免覆盖已有版本，暂不能保存。请重试或检查服务状态。
+    </p>}
+    {activeMapping.data && <p className="muted text-xs mt-2" data-testid="cycle-step-mapping-current">
+      {activeMapping.data.data.status === "MISSING" ? "当前没有已保存映射" :
+        activeMapping.data.data.status === "VALIDATED" ? "当前映射结构与来源 checksum 已验证" :
+          `当前映射无效或过期：${activeMapping.data.data.reason ?? "需要重新预检"}`}
+      {` · 历史版本 ${activeMapping.data.data.revision_count}`}
+      {activeMapping.data.data.active_mapping_sha256
+        ? ` · 当前版本 ${activeMapping.data.data.active_mapping_sha256.slice(0, 12)}` : ""}
+    </p>}
     <div className="mt-3 flex flex-wrap items-end gap-3">
       <label className="text-sm">
         <span className="block mb-1">选择映射 CSV（≤ 4 MB）</span>
@@ -40,12 +73,15 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
           accept=".csv,text/csv"
           aria-label="选择 Cycle-Step 映射 CSV"
           data-testid="cycle-step-mapping-file"
-          onChange={event => selectFile(event.currentTarget.files?.[0] ?? null)}
+          onChange={event => {
+            selectFile(event.currentTarget.files?.[0] ?? null);
+            event.currentTarget.value = "";
+          }}
         />
       </label>
       <Button
         type="button"
-        disabled={!file || file.size > MAX_BYTES || preflight.isPending}
+        disabled={!file || file.size > MAX_BYTES || preflight.isPending || save.isPending}
         onClick={() => file && preflight.mutate(file)}
         data-testid="cycle-step-mapping-run-preflight"
       >
@@ -73,8 +109,35 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
       </dl>
       <p className="mt-2">
         这只证明映射结构和文件 checksum 一致；审核人身份及 Cycle 连续性的科学解释未验证。
-        预检接口不会保存文件，也不会授权标签生成。保存到 annotations sidecar 后，正式流水线仍会重新核验。
+        预检本身不会保存或授权标签生成。只有通过预检并明确确认人工审核后，才可写入 annotations sidecar；正式流水线仍会重新核验。
       </p>
+      <label className="flex items-start gap-2 mt-3">
+        <input
+          type="checkbox"
+          checked={confirmReviewed}
+          onChange={event => setConfirmReviewed(event.currentTarget.checked)}
+          data-testid="cycle-step-mapping-confirm-reviewed"
+        />
+        <span>我已根据证据逐项审核 CSV 中的 Cycle/Step 对应关系；此确认不代表系统认证审核人身份。</span>
+      </label>
+      <Button
+        type="button"
+        className="mt-3"
+        disabled={!file || !confirmReviewed || activeMapping.isLoading || activeMapping.isError || save.isPending}
+        onClick={() => file && save.mutate(file)}
+        data-testid="cycle-step-mapping-save"
+      >
+        {save.isPending ? "正在保存版本…" : "保存已审核映射"}
+      </Button>
     </div>}
+    {save.isError && <p role="alert" className="text-sm text-destructive mt-3" data-testid="cycle-step-mapping-save-error">
+      {saveErrorReason}。当前版本未被覆盖；请刷新当前 checksum 后重试。
+    </p>}
+    {save.data && <p role="status" className="notice mt-3 text-sm" data-testid="cycle-step-mapping-saved">
+      {save.data.data.save_status === "ALREADY_CURRENT" ? "此映射版本已是当前版本。" : "映射已保存并创建不可变版本快照。"}
+      {` 当前历史版本数：${save.data.data.revision_count}。`}
+      保存位置：<code>{save.data.data.active_mapping_relative_path}</code>。
+      <span className="block mt-1">这记录的是操作者声明和文件完整性，不证明物理 Cycle 连续性。</span>
+    </p>}
   </section>;
 }
