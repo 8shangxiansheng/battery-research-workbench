@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
 
+from battery_workbench.api.app import create_app
 from battery_workbench.datasets.joins import exact_cycle_join, exact_event_join
 from battery_workbench.labels.builder import build_reference_labels
 from battery_workbench.orchestrator.nodes import ReferenceLabelsNode, WorkflowNode
@@ -497,6 +499,59 @@ def test_label_node_reuses_only_when_mapping_checksum_matches(
     assert (resolved is not None) is expected_reusable
     if not expected_reusable:
         assert "mapping" in reason.lower()
+
+
+def test_cycle_step_mapping_preflight_api_is_read_only(mapping_case, tmp_path: Path) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    app = create_app(
+        raw_root=inputs["raw_root"],
+        processed_root=inputs["processed_root"],
+        runs_root=tmp_path / "runs",
+    )
+    client = TestClient(app)
+    annotations = Path(inputs["raw_root"]).parent / "annotations"
+    parser_manifest = (
+        Path(inputs["processed_root"]) / "electrical" / "CELL_A" / "EXP_A" / "parser_manifest.json"
+    )
+    manifest_before = _content_sha256(parser_manifest)
+    cycles_before = _content_sha256(Path(inputs["cycles_path"]))
+
+    response = client.post(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/preflight",
+        json={"mapping_csv": Path(inputs["mapping_path"]).read_text(encoding="utf-8")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["status"] == "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED"
+    assert payload["label_generation_authorized"] is False
+    assert payload["review_status"] == "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED"
+    assert not annotations.exists()
+    assert _content_sha256(parser_manifest) == manifest_before
+    assert _content_sha256(Path(inputs["cycles_path"])) == cycles_before
+
+
+def test_cycle_step_mapping_preflight_api_returns_typed_invalid_response(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+
+    response = client.post(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/preflight",
+        json={"mapping_csv": "not,a,valid,cycle-step,mapping\n"},
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"]["status"] == "INVALID_MAPPING"
 
 
 def test_explicit_segment_continuation_can_share_cycle_but_not_step(mapping_case) -> None:

@@ -147,6 +147,7 @@ def create_app(
 
     from battery_workbench.api.routes import (
         assistant,
+        cycle_step_mapping,
         data,
         experiments,
         extensions,
@@ -168,6 +169,7 @@ def create_app(
     app.include_router(data.router, prefix="/api/v1")
     app.include_router(features_v2.router, prefix="/api/v1")
     app.include_router(assistant.router, prefix="/api/v1")
+    app.include_router(cycle_step_mapping.router, prefix="/api/v1")
 
     if static_dir is not None:
         _mount_spa(app, Path(static_dir))

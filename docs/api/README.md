@@ -22,6 +22,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | features | `GET /experiments/{battery_id}/{experiment_id}/features` |
 | datasets | `POST /datasets` (deterministic, idempotent REUSED), `GET /datasets/{dataset_id}` |
 | cohorts | `POST /cohort-datasets`, `GET /cohort-datasets`, `GET /cohort-datasets/{cohort_dataset_id}` (immutable, harmonized SOC cohort); `POST /cohort-datasets/{cohort_dataset_id}/lobo-evaluations`, `GET /cohort-lobo-evaluations/{evaluation_id}` (fixed baselines, Battery-grouped LOBO) |
+| Cycle/Step mapping | `POST /experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight` (validates operator-supplied CSV against current raw/parser evidence; read-only, does not authenticate review or save mapping) |
 | splits | `POST /splits` (deterministic, idempotent REUSED), `GET /splits/{split_id}` |
 | feature-analyses | `POST /feature-analyses` (deterministic AN::id), `GET /feature-analyses/{analysis_id}` |
 | models | `POST /models/baseline-runs` (selected fixed strategies — no tuning endpoint), deterministic MODEL::id |

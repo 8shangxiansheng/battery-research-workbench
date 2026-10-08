@@ -331,6 +331,22 @@
         "title": "CohortUnitMapping",
         "type": "object"
       },
+      "CycleStepMappingPreflightRequest": {
+        "description": "CSV bytes supplied by the operator; this endpoint never saves them.",
+        "properties": {
+          "mapping_csv": {
+            "maxLength": 4000000,
+            "minLength": 1,
+            "title": "Mapping Csv",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapping_csv"
+        ],
+        "title": "CycleStepMappingPreflightRequest",
+        "type": "object"
+      },
       "ErrorEnvelope": {
         "properties": {
           "error": {
@@ -1824,6 +1840,69 @@
         "summary": "Canonical Tof",
         "tags": [
           "feature-workbench"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight": {
+      "post": {
+        "operationId": "preflight_cycle_step_mapping_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_preflight_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleStepMappingPreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preflight Cycle Step Mapping Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Preflight Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preflight Cycle Step Mapping",
+        "tags": [
+          "scientific-resources"
         ]
       }
     },
