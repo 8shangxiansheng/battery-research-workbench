@@ -96,6 +96,7 @@ def write_label_payload(
     supersedes_label_set_id: str | None = None,
     cycle_step_mapping_path: Path | None = None,
     cycle_step_mapping: dict[str, str] | None = None,
+    cycle_step_mapping_sha256: str | None = None,
 ) -> LabelReport:
     output_root = Path(output_root)
     out_dir = output_root / "labels" / battery_id / experiment_id
@@ -135,7 +136,10 @@ def write_label_payload(
             "cycles": _sha256(cycles_path),
             "steps": _sha256(steps_path),
             **(
-                {"cycle_step_mapping": _sha256(cycle_step_mapping_path)}
+                {
+                    "cycle_step_mapping": cycle_step_mapping_sha256
+                    or _sha256(cycle_step_mapping_path)
+                }
                 if cycle_step_mapping_path is not None
                 else {}
             ),

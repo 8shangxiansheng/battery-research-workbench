@@ -402,7 +402,6 @@ def test_reviewed_mapping_reaches_labels_and_exact_cycle_dataset_join(
     assert set(event_labels["cycle_step_mapping_review_status"]) == {
         "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED"
     }
-
     features = inputs["events"][["measurement_event_id", "battery_id", "experiment_id"]].copy()
     features["analysis_eligible"] = True
     joined = exact_event_join(features, event_labels)
@@ -410,6 +409,27 @@ def test_reviewed_mapping_reaches_labels_and_exact_cycle_dataset_join(
     assert joined["soh_capacity_reference_percent"].tolist() == pytest.approx(
         [100.0, 100.0, 90.0, 90.0]
     )
+
+
+def test_mapping_replacement_during_build_aborts_before_label_publication(
+    mapping_case, tmp_path: Path, monkeypatch
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    from battery_workbench.labels import builder as label_builder
+
+    original_soc = label_builder.compute_soc_reference
+
+    def replace_active_mapping(*args, **kwargs):
+        result = original_soc(*args, **kwargs)
+        inputs["mapping_path"].write_text("concurrent replacement", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(label_builder, "compute_soc_reference", replace_active_mapping)
+
+    with pytest.raises(ValueError, match="mapping changed during label generation"):
+        _build_mapped_labels(inputs)
+
+    assert not (inputs["output_root"] / "labels" / "CELL_A" / "EXP_A").exists()
 
 
 def test_reference_labels_node_discovers_reviewed_mapping_sidecar(

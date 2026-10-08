@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -131,6 +132,64 @@ def build_reference_labels(
     supersedes_label_set_id: str | None = None,
     cycle_step_mapping_path: Path | None = None,
     raw_root: Path | None = None,
+) -> LabelReport:
+    """Build labels against one immutable mapping snapshot.
+
+    The active sidecar is read exactly once. All validation/projection uses the
+    snapshot, and publication is refused if the active sidecar changed while
+    labels were being computed.
+    """
+    if cycle_step_mapping_path is None:
+        return _build_reference_labels(
+            measurement_events_path=measurement_events_path,
+            records_path=records_path,
+            cycles_path=cycles_path,
+            steps_path=steps_path,
+            ultrasound_manifest_path=ultrasound_manifest_path,
+            output_root=output_root,
+            config=config,
+            supersedes_label_set_id=supersedes_label_set_id,
+            cycle_step_mapping_path=None,
+            raw_root=raw_root,
+        )
+    if raw_root is None:
+        raise ValueError("raw_root is required when cycle_step_mapping_path is supplied")
+    active_mapping_path = Path(cycle_step_mapping_path)
+    snapshot_bytes = active_mapping_path.read_bytes()
+    snapshot_sha256 = hashlib.sha256(snapshot_bytes).hexdigest()
+    with TemporaryDirectory(prefix="brw-cycle-step-mapping-") as temp_dir:
+        snapshot_path = Path(temp_dir) / "cycle-step-mapping.csv"
+        snapshot_path.write_bytes(snapshot_bytes)
+        return _build_reference_labels(
+            measurement_events_path=measurement_events_path,
+            records_path=records_path,
+            cycles_path=cycles_path,
+            steps_path=steps_path,
+            ultrasound_manifest_path=ultrasound_manifest_path,
+            output_root=output_root,
+            config=config,
+            supersedes_label_set_id=supersedes_label_set_id,
+            cycle_step_mapping_path=snapshot_path,
+            raw_root=raw_root,
+            active_cycle_step_mapping_path=active_mapping_path,
+            expected_mapping_sha256=snapshot_sha256,
+        )
+
+
+def _build_reference_labels(
+    *,
+    measurement_events_path: Path,
+    records_path: Path,
+    cycles_path: Path,
+    steps_path: Path,
+    ultrasound_manifest_path: Path,
+    output_root: Path,
+    config: LabelConfig | None = None,
+    supersedes_label_set_id: str | None = None,
+    cycle_step_mapping_path: Path | None = None,
+    raw_root: Path | None = None,
+    active_cycle_step_mapping_path: Path | None = None,
+    expected_mapping_sha256: str | None = None,
 ) -> LabelReport:
     """Build canonical V2 reference labels for one experiment."""
     from battery_workbench.labels.persistence import write_label_payload
@@ -591,6 +650,12 @@ def build_reference_labels(
         reference_capacity_ah=reference.q_ref_ah,
     )
 
+    if (
+        active_cycle_step_mapping_path is not None
+        and _sha256(active_cycle_step_mapping_path) != expected_mapping_sha256
+    ):
+        raise ValueError("reviewed Cycle/Step mapping changed during label generation")
+
     return write_label_payload(
         event_labels=event_labels,
         cycle_labels=cycle_labels.drop(columns=["_label_cycle_index"]),
@@ -613,6 +678,7 @@ def build_reference_labels(
         config=config,
         output_root=output_root,
         supersedes_label_set_id=supersedes_label_set_id,
-        cycle_step_mapping_path=cycle_step_mapping_path,
+        cycle_step_mapping_path=active_cycle_step_mapping_path or cycle_step_mapping_path,
         cycle_step_mapping=mapping_provenance,
+        cycle_step_mapping_sha256=expected_mapping_sha256,
     )
