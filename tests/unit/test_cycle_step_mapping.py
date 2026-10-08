@@ -824,6 +824,55 @@ def test_damaged_revision_history_blocks_replacement_without_changing_active_map
     assert active.read_bytes() == active_before
 
 
+def test_mapping_api_fails_closed_when_revision_history_is_corrupted(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    client = TestClient(
+        create_app(
+            raw_root=inputs["raw_root"],
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+    endpoint = "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping"
+    content = Path(inputs["mapping_path"]).read_text(encoding="utf-8")
+    saved = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content,
+            "confirm_reviewed": True,
+            "expected_active_sha256": None,
+        },
+    )
+    assert saved.status_code == 200
+    sidecar = Path(inputs["raw_root"]).parent / "annotations" / "CELL_A" / "EXP_A"
+    active = sidecar / "cycle-step-mapping.csv"
+    original_active = active.read_bytes()
+    revision = (
+        sidecar
+        / "cycle-step-mapping.revisions"
+        / f"{saved.json()['data']['mapping_sha256']}.csv"
+    )
+    revision.write_text("corrupted revision", encoding="utf-8")
+
+    status = client.get(endpoint)
+    replacement = client.put(
+        endpoint,
+        json={
+            "mapping_csv": content.replace("CSM::REVIEW_001", "CSM::REVIEW_002"),
+            "confirm_reviewed": True,
+            "expected_active_sha256": saved.json()["data"]["mapping_sha256"],
+        },
+    )
+
+    assert status.status_code == 409
+    assert status.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert replacement.status_code == 409
+    assert replacement.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert active.read_bytes() == original_active
+
+
 def test_explicit_segment_continuation_can_share_cycle_but_not_step(mapping_case) -> None:
     rows = mapping_case["rows"]
     rows[1]["canonical_cycle_index"] = "1"

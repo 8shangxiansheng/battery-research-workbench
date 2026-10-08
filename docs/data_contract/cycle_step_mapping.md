@@ -57,6 +57,15 @@ authenticated identity or a tamper-proof audit log. Because the API has no
 authentication by default, keep the workbench bound to localhost or behind a
 trusted authenticated proxy.
 
+If API status returns `INTEGRITY_ERROR` for revision history, saving and
+replacement remain blocked; the application does not rewrite or discard a
+damaged snapshot. Preserve a copy of the full experiment annotation directory,
+restore it from a trusted backup, then retry status inspection. If the active
+mapping is merely `INVALID` because parser/raw evidence changed, prepare and
+review a new CSV against current evidence, then use the normal preflight/save
+flow. Do not edit processed Parquet or re-hash a damaged historical file to
+make it appear valid.
+
 For label generation, V1 currently requires exactly one complete source Cycle
 per canonical Cycle. It supports distinct source assets whose raw Cycle
 numbers restart, provided the reviewed mapping assigns distinct canonical

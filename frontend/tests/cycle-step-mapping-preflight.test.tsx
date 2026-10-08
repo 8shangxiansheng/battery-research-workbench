@@ -188,6 +188,39 @@ describe("Cycle-Step mapping preflight", () => {
     );
   });
 
+  it("历史快照完整性失败时给出备份恢复说明且不静默覆盖", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(client, "getCycleStepMappingStatus")
+      .mockRejectedValueOnce(new ApiError(409, {
+        error: {
+          code: "INTEGRITY_ERROR",
+          message: "content-addressed mapping revision is inconsistent",
+          details: {},
+          request_id: "req-integrity",
+        },
+      }))
+      .mockResolvedValueOnce({
+        data: {
+          status: "VALIDATED",
+          active_mapping_sha256: "e".repeat(64),
+          revision_count: 1,
+          reason: null,
+        },
+        meta: { read_only: true },
+      });
+    mount();
+
+    const integrityError = await screen.findByRole("alert");
+    expect(integrityError).toHaveTextContent("完整性校验未通过");
+    expect(integrityError).toHaveTextContent("从可信副本恢复");
+    expect(integrityError).toHaveTextContent("不要删除或改写损坏快照");
+    await user.click(screen.getByRole("button", { name: "重试读取映射状态" }));
+
+    expect(await screen.findByTestId("cycle-step-mapping-current")).toHaveTextContent(
+      "当前映射结构与来源 checksum 已验证",
+    );
+  });
+
   it("保存冲突后清除旧审核确认并刷新版本状态", async () => {
     const user = userEvent.setup();
     const status = vi.spyOn(client, "getCycleStepMappingStatus");

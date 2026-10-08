@@ -48,6 +48,10 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
   const saveErrorReason = save.error instanceof ApiError
     ? String(save.error.details.reason ?? save.error.message)
     : save.error instanceof Error ? save.error.message : "保存失败，请重新读取当前映射状态。";
+  const activeMappingApiError = activeMapping.error instanceof ApiError
+    ? activeMapping.error
+    : null;
+  const revisionHistoryBlocked = activeMappingApiError?.code === "INTEGRITY_ERROR";
 
   function selectFile(selected: File | null) {
     setFile(selected);
@@ -71,7 +75,15 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     </p>
     {activeMapping.isLoading && <p role="status" className="muted text-xs mt-2">正在读取当前映射版本…</p>}
     {activeMapping.isError && <div role="alert" className="text-sm text-destructive mt-2">
-      <p>无法读取当前映射版本；为避免覆盖已有版本，暂不能保存。请重试或检查服务状态。</p>
+      {revisionHistoryBlocked ? <>
+        <p>映射历史快照完整性校验未通过；系统已阻止读取/覆盖，当前映射不会被自动修复。</p>
+        <p className="mt-1">请先备份并从可信副本恢复该实验的 <code>data/annotations/{"{battery_id}/{experiment_id}"}</code> 目录，再重试。不要删除或改写损坏快照来绕过校验。</p>
+        <details className="mt-1">
+          <summary>支持信息</summary>
+          <p>{activeMappingApiError?.message}</p>
+          <p>请求 ID：{activeMappingApiError?.requestId}</p>
+        </details>
+      </> : <p>无法读取当前映射版本；为避免覆盖已有版本，暂不能保存。请重试或检查服务状态。</p>}
       <Button
         type="button"
         variant="outline"
