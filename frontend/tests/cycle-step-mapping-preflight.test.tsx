@@ -28,6 +28,42 @@ beforeEach(() => {
 });
 
 describe("Cycle-Step mapping preflight", () => {
+  it("结构有效但标签消费者不支持跨来源 Cycle 合并时明确警告", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(client, "preflightCycleStepMapping").mockResolvedValue({
+      data: {
+        status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
+        contract_version: "cycle-step-mapping/1.0",
+        mapping_id: "CSM::MERGED_1",
+        battery_id: "CELL_A",
+        experiment_id: "EXP_A",
+        mapping_sha256: "a".repeat(64),
+        parser_manifest_sha256: "b".repeat(64),
+        source_cycle_count: 2,
+        source_step_count: 4,
+        canonical_cycle_count: 1,
+        review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
+        mapping_application_status: "LABEL_BUILDER_CONSUMER_UNAVAILABLE",
+        mapping_application_reason: "cross-source Cycle aggregation is not implemented",
+        label_generation_authorized: false,
+        scientific_cycle_continuity: "NOT_ASSESSED",
+      },
+      meta: { read_only: true },
+    });
+    mount();
+
+    await user.upload(
+      screen.getByLabelText("选择 Cycle-Step 映射 CSV"),
+      new File(["mapping"], "mapping.csv", { type: "text/csv" }),
+    );
+    await user.click(screen.getByRole("button", { name: "预检映射" }));
+
+    expect(await screen.findByTestId("cycle-step-mapping-consumer-warning")).toHaveTextContent(
+      "当前参考标签生成器不能消费此映射",
+    );
+    expect(screen.getByTestId("cycle-step-mapping-save")).toBeInTheDocument();
+  });
+
   it("上传 CSV 后显示数量，并明确预检不等于科学验证或保存", async () => {
     const user = userEvent.setup();
     vi.spyOn(client, "preflightCycleStepMapping").mockResolvedValue({

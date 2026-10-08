@@ -835,7 +835,8 @@ export interface CycleStepMappingPreflightResult {
   source_step_count: number;
   canonical_cycle_count: number;
   review_status: "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED";
-  mapping_application_status: "LABEL_BUILDER_CONSUMER_AVAILABLE";
+  mapping_application_status?: "LABEL_BUILDER_CONSUMER_AVAILABLE" | "LABEL_BUILDER_CONSUMER_UNAVAILABLE";
+  mapping_application_reason?: string | null;
   label_generation_authorized: false;
   scientific_cycle_continuity: "NOT_ASSESSED";
 }

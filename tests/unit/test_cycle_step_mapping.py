@@ -189,8 +189,27 @@ def test_valid_explicit_cross_asset_mapping_does_not_authorize_labels(mapping_ca
     assert result["source_step_count"] == 2
     assert result["canonical_cycle_count"] == 2
     assert result["mapping_application_status"] == "LABEL_BUILDER_CONSUMER_AVAILABLE"
+    assert result["mapping_application_reason"] is None
     assert result["label_generation_authorized"] is False
     assert result["scientific_cycle_continuity"] == "NOT_ASSESSED"
+
+
+def test_contract_valid_cycle_continuation_reports_current_label_consumer_unavailable(
+    mapping_case,
+) -> None:
+    rows = mapping_case["rows"]
+    rows[1] = {
+        **rows[1],
+        "canonical_cycle_index": "1",
+        "canonical_step_index": "2",
+    }
+    _write_mapping(mapping_case, rows)
+
+    result = _validate(mapping_case)
+
+    assert result["status"] == "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED"
+    assert result["mapping_application_status"] == "LABEL_BUILDER_CONSUMER_UNAVAILABLE"
+    assert "aggregation is not implemented" in result["mapping_application_reason"]
 
 
 def test_projection_adds_canonical_keys_and_preserves_source_identity(mapping_case) -> None:

@@ -542,6 +542,13 @@ def validate_cycle_step_mapping(
             f"mapping must cover every parsed source step exactly once (missing={missing}, extra={extra})"
         )
 
+    source_cycles_by_canonical: dict[int, set[tuple[str, int]]] = {}
+    for source_cycle, canonical_cycle in canonical_cycle_by_source_cycle.items():
+        source_cycles_by_canonical.setdefault(canonical_cycle, set()).add(source_cycle)
+    label_consumer_available = all(
+        len(source_cycles) == 1 for source_cycles in source_cycles_by_canonical.values()
+    )
+
     return {
         "status": "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
         "contract_version": CYCLE_STEP_MAPPING_VERSION,
@@ -554,7 +561,16 @@ def validate_cycle_step_mapping(
         "source_step_count": len(source_keys),
         "canonical_cycle_count": len({cycle for cycle, _ in target_keys}),
         "review_status": "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED",
-        "mapping_application_status": "LABEL_BUILDER_CONSUMER_AVAILABLE",
+        "mapping_application_status": (
+            "LABEL_BUILDER_CONSUMER_AVAILABLE"
+            if label_consumer_available
+            else "LABEL_BUILDER_CONSUMER_UNAVAILABLE"
+        ),
+        "mapping_application_reason": (
+            None
+            if label_consumer_available
+            else "cross-source Cycle aggregation is not implemented by the Reference Label consumer"
+        ),
         "label_generation_authorized": False,
         "scientific_cycle_continuity": "NOT_ASSESSED",
     }

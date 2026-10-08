@@ -296,6 +296,14 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
     </div>}
     {result && <div role="status" className="notice mt-3 text-sm" data-testid="cycle-step-mapping-result">
       <strong>结构与字节校验通过</strong>
+      {result.mapping_application_status === "LABEL_BUILDER_CONSUMER_UNAVAILABLE" && <p
+        className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-amber-950"
+        data-testid="cycle-step-mapping-consumer-warning"
+      >
+        映射声明结构有效，但当前参考标签生成器不能消费此映射：
+        {result.mapping_application_reason ?? "跨来源 Cycle 聚合尚未实现。"}
+        保存只保留审核映射记录，不会使标签生成可用；请拆分映射或等待容量聚合契约实现。
+      </p>}
       <dl className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
         <div><dt className="muted">来源 Cycle</dt><dd>{result.source_cycle_count}</dd></div>
         <div><dt className="muted">来源 Step</dt><dd>{result.source_step_count}</dd></div>
