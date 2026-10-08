@@ -24,6 +24,7 @@ from typing import Any
 import pandas as pd
 
 CYCLE_STEP_MAPPING_VERSION = "cycle-step-mapping/1.0"
+MAX_CYCLE_STEP_MAPPING_EVIDENCE_BYTES = 64 * 1024 * 1024
 CYCLE_STEP_MAPPING_FIELDS = (
     "contract_version",
     "mapping_id",
@@ -47,6 +48,10 @@ _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 class CycleStepMappingError(ValueError):
     """A mapping is malformed, incomplete, stale, or ambiguous."""
+
+
+class CycleStepMappingEvidenceTooLarge(CycleStepMappingError):
+    """证据文件超过 checksum endpoint 的大小上限。"""
 
 
 def _sha256(path: Path) -> str:
@@ -84,6 +89,31 @@ def _raw_relative_file(raw_root: Path, value: str, *, field: str) -> Path:
     if not resolved.is_file():
         raise CycleStepMappingError(f"{field} must reference a file")
     return resolved
+
+
+def hash_cycle_step_mapping_evidence(
+    relative_path: str, *, raw_root: str | Path
+) -> dict[str, Any]:
+    """校验 raw-relative 证据路径，并返回文件大小与 SHA-256。"""
+    raw = Path(raw_root).resolve()
+    evidence = _raw_relative_file(raw, relative_path, field="evidence_relative_path")
+    try:
+        size_bytes = evidence.stat().st_size
+    except OSError as exc:
+        raise CycleStepMappingError("evidence file metadata cannot be read") from exc
+    if size_bytes > MAX_CYCLE_STEP_MAPPING_EVIDENCE_BYTES:
+        raise CycleStepMappingEvidenceTooLarge(
+            "evidence file exceeds the 64 MiB checksum limit"
+        )
+    try:
+        evidence_sha256 = _sha256(evidence)
+    except OSError as exc:
+        raise CycleStepMappingError("evidence file cannot be read") from exc
+    return {
+        "evidence_relative_path": relative_path,
+        "evidence_sha256": evidence_sha256,
+        "size_bytes": size_bytes,
+    }
 
 
 def _assert_parser_sources_current(

@@ -885,6 +885,12 @@ export interface CycleStepMappingSourceStep {
   rationale: string;
 }
 
+export interface CycleStepMappingEvidenceHash {
+  evidence_relative_path: string;
+  evidence_sha256: string;
+  size_bytes: number;
+}
+
 export interface FeatureLabelPreviewRow {
   measurement_event_id: string;
   ultrasound_asset_id: string | null;
@@ -1545,6 +1551,14 @@ export const client = {
     request<{ source_steps: CycleStepMappingSourceStep[] }>(
       `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/source-inventory`,
     ),
+  hashCycleStepMappingEvidence: (
+    batteryId: string,
+    experimentId: string,
+    evidenceRelativePath: string,
+  ) => request<CycleStepMappingEvidenceHash>(
+    `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/evidence-check`,
+    { method: "POST", body: JSON.stringify({ evidence_relative_path: evidenceRelativePath }) },
+  ),
   getCycleStepMappingRevisions: (batteryId: string, experimentId: string) =>
     request<{ revisions: CycleStepMappingRevision[] }>(
       `/experiments/${batteryId}/${experimentId}/cycle-step-mapping/revisions`,
@@ -1856,6 +1870,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/source-inventory" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/evidence-check" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}" },
   { method: "PUT", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CycleStepMappingSourceStep } from "../../api/client";
+import { ApiError, client, type CycleStepMappingSourceStep } from "../../api/client";
 import { Button } from "../ui/button";
 
 type MappingRow = CycleStepMappingSourceStep & {
@@ -30,6 +30,8 @@ export function CycleStepMappingEditor({
   const [reviewedAt, setReviewedAt] = useState("");
   const [rationale, setRationale] = useState("");
   const [reviewed, setReviewed] = useState(false);
+  const [hashingEvidence, setHashingEvidence] = useState<Record<string, boolean>>({});
+  const [evidenceErrors, setEvidenceErrors] = useState<Record<string, string>>({});
 
   const assignmentsComplete = rows.length > 0 && rows.every(row => {
     const canonicalCycle = Number(row.canonical_cycle_index);
@@ -41,13 +43,46 @@ export function CycleStepMappingEditor({
     && Number.isFinite(Date.parse(reviewedAt));
   const canPreflight = assignmentsComplete && mappingId.trim() !== ""
     && reviewer.trim() !== "" && timestampHasOffset
-    && rationale.trim() !== "" && reviewed;
+    && rationale.trim() !== "" && reviewed
+    && rows.every(row => row.evidence_relative_path.trim() !== ""
+      && /^[0-9a-f]{64}$/i.test(row.evidence_sha256));
 
   function updateRow(index: number, patch: Partial<MappingRow>) {
     onChange();
+    if ("evidence_relative_path" in patch) {
+      patch.evidence_sha256 = "";
+      const row = rows[index];
+      if (row) {
+        const key = `${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`;
+        setEvidenceErrors(current => ({ ...current, [key]: "" }));
+      }
+    }
     setRows(current => current.map((row, rowIndex) =>
       rowIndex === index ? { ...row, ...patch } : row,
     ));
+  }
+
+  async function verifyEvidence(index: number) {
+    const row = rows[index];
+    if (!row) return;
+    const key = `${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`;
+    setHashingEvidence(current => ({ ...current, [key]: true }));
+    setEvidenceErrors(current => ({ ...current, [key]: "" }));
+    try {
+      const response = await client.hashCycleStepMappingEvidence(
+        row.battery_id,
+        row.experiment_id,
+        row.evidence_relative_path.trim(),
+      );
+      updateRow(index, { evidence_sha256: response.data.evidence_sha256 });
+    } catch (error) {
+      const message = error instanceof ApiError
+        ? String(error.details.reason ?? error.message)
+        : error instanceof Error ? error.message : "证据文件校验失败。";
+      setEvidenceErrors(current => ({ ...current, [key]: message }));
+    } finally {
+      setHashingEvidence(current => ({ ...current, [key]: false }));
+    }
   }
 
   function buildCsv(): string {
@@ -128,7 +163,7 @@ export function CycleStepMappingEditor({
             <th className="p-2">Source Cycle / Step</th>
             <th className="p-2">Canonical Cycle</th>
             <th className="p-2">Canonical Step</th>
-            <th className="p-2">来源文件 / SHA-256</th>
+            <th className="p-2">raw-relative 证据文件 / SHA-256</th>
           </tr>
         </thead>
         <tbody>
@@ -151,8 +186,24 @@ export function CycleStepMappingEditor({
                 onChange={event => updateRow(index, { canonical_step_index: event.currentTarget.value })} />
             </td>
             <td className="p-2">
-              <code>{row.evidence_relative_path}</code><br />
-              <code>{row.evidence_sha256.slice(0, 12)}…</code>
+              <input
+                aria-label={`Evidence path ${row.electrical_asset_id} ${row.cycle_index_raw}/${row.step_index_raw}`}
+                className="mb-1 w-64 rounded border px-2 py-1"
+                disabled={hashingEvidence[`${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`]}
+                value={row.evidence_relative_path}
+                onChange={event => updateRow(index, { evidence_relative_path: event.currentTarget.value })}
+              />
+              <Button type="button" variant="outline" size="sm"
+                disabled={!row.evidence_relative_path.trim() || hashingEvidence[`${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`]}
+                onClick={() => void verifyEvidence(index)}>
+                {hashingEvidence[`${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`]
+                  ? "校验中…" : "校验 raw 文件并取 SHA-256"}
+              </Button>
+              <div className="mt-1"><code>{row.evidence_sha256 || "尚未校验"}</code></div>
+              {evidenceErrors[`${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`]
+                && <p role="alert" className="mt-1 text-destructive">
+                  {evidenceErrors[`${row.electrical_asset_id}:${row.cycle_index_raw}:${row.step_index_raw}`]}
+                </p>}
             </td>
           </tr>)}
         </tbody>
@@ -166,6 +217,9 @@ export function CycleStepMappingEditor({
       <span>我已依据可追溯实验记录逐项审核映射；系统不认证审核人身份，也不独立证明物理 Cycle 连续性。</span>
     </label>
     {!assignmentsComplete && <p className="mt-2 text-xs text-amber-700">请为每个 source step 填写正整数 canonical Cycle 和 Step。</p>}
+    {rows.some(row => !/^[0-9a-f]{64}$/i.test(row.evidence_sha256)) && <p className="mt-2 text-xs text-amber-700">
+      请校验每一行的 raw-relative 证据文件；路径必须位于 `data/raw/` 内，最大 64 MiB。checksum 只证明字节一致，不解释证据的科学含义。
+    </p>}
     {!timestampHasOffset && reviewedAt && <p className="mt-2 text-xs text-amber-700">
       审核时间需要是有效 ISO-8601 时间并包含 UTC offset，例如 <code>+08:00</code> 或 <code>Z</code>。
     </p>}

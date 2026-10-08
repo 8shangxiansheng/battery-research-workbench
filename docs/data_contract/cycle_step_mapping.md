@@ -77,6 +77,14 @@ whenever a field changes. A save can only use the exact CSV bytes that passed
 the latest preflight; it still requires separate confirmation and server-side
 revalidation.
 
+Each evidence path in the editor is raw-relative and can be changed to another
+source record (for example, an acquisition log) only after the read-only
+`POST .../cycle-step-mapping/evidence-check` resolves it below `data/raw/` and
+returns its SHA-256. Symlinks that escape the raw root are rejected, and files
+larger than 64 MiB are not hashed by this endpoint. This verifies path
+confinement and byte identity only; a researcher remains responsible for
+judging whether the referenced record supports the declared correspondence.
+
 If API status returns `INTEGRITY_ERROR` for revision history, saving and
 replacement remain blocked; the application does not rewrite or discard a
 damaged snapshot. Preserve a copy of the full experiment annotation directory,

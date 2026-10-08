@@ -396,6 +396,14 @@ describe("Cycle-Step mapping preflight", () => {
       },
       meta: { read_only: true, scientific_assignments_inferred: false },
     });
+    const hashEvidence = vi.spyOn(client, "hashCycleStepMappingEvidence").mockResolvedValue({
+      data: {
+        evidence_relative_path: "evidence/cycle-review.txt",
+        evidence_sha256: "d".repeat(64),
+        size_bytes: 128,
+      },
+      meta: { read_only: true },
+    });
     const preflight = vi.spyOn(client, "preflightCycleStepMapping").mockResolvedValue({
       data: {
         status: "CYCLE_STEP_MAPPING_CONTRACT_VALIDATED",
@@ -446,6 +454,17 @@ describe("Cycle-Step mapping preflight", () => {
     const canonicalStep = screen.getByLabelText("Canonical Step E001 4/2");
     expect(canonicalCycle).toHaveValue(null);
     expect(screen.getByTestId("cycle-step-mapping-editor-preflight")).toBeDisabled();
+    const evidencePath = screen.getByLabelText("Evidence path E001 4/2");
+    await user.clear(evidencePath);
+    await user.type(evidencePath, "evidence/cycle-review.txt");
+    expect(screen.getByTestId("cycle-step-mapping-editor-preflight")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "校验 raw 文件并取 SHA-256" }));
+    await waitFor(() => expect(hashEvidence).toHaveBeenCalledWith(
+      "CELL_A",
+      "EXP_A",
+      "evidence/cycle-review.txt",
+    ));
+    expect(screen.getByText("d".repeat(64))).toBeInTheDocument();
     await user.type(canonicalCycle, "2");
     await user.type(canonicalStep, "1");
     await user.type(screen.getByLabelText("映射 ID"), "CSM::MANUAL_1");
@@ -460,6 +479,7 @@ describe("Cycle-Step mapping preflight", () => {
     const mappingCsv = preflight.mock.lastCall?.[2] ?? "";
     expect(mappingCsv).toContain('"CSM::MANUAL_1"');
     expect(mappingCsv).toContain('"E001","4","2","2","1"');
+    expect(mappingCsv).toContain('"evidence/cycle-review.txt","' + "d".repeat(64) + '"');
     expect(mappingCsv).toContain('"ACCEPTED","researcher-1","2026-10-08T10:00:00+08:00"');
     expect(result).toHaveTextContent("结构与字节校验通过");
     await user.click(screen.getByTestId("cycle-step-mapping-confirm-reviewed"));

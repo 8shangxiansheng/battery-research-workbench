@@ -15,8 +15,10 @@ from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.service import validate_id
 from battery_workbench.provenance.cycle_step_mapping import (
     CycleStepMappingError,
+    CycleStepMappingEvidenceTooLarge,
     build_cycle_step_mapping_draft_csv,
     build_cycle_step_mapping_source_inventory,
+    hash_cycle_step_mapping_evidence,
     validate_cycle_step_mapping,
 )
 from battery_workbench.provenance.cycle_step_mapping_store import (
@@ -44,6 +46,12 @@ class CycleStepMappingSaveRequest(CycleStepMappingPreflightRequest):
     expected_active_sha256: str | None
 
 
+class CycleStepMappingEvidenceCheckRequest(BaseModel):
+    """操作者选择的 immutable raw-root 下的证据路径。"""
+
+    evidence_relative_path: str = Field(min_length=1, max_length=1024)
+
+
 @router.get("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/source-inventory")
 def get_cycle_step_mapping_source_inventory(
     request: Request, battery_id: str, experiment_id: str
@@ -69,6 +77,33 @@ def get_cycle_step_mapping_source_inventory(
         "data": {"source_steps": rows},
         "meta": {"read_only": True, "scientific_assignments_inferred": False},
     }
+
+
+@router.post("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/evidence-check")
+def check_cycle_step_mapping_evidence(
+    request: Request,
+    battery_id: str,
+    experiment_id: str,
+    body: CycleStepMappingEvidenceCheckRequest,
+) -> dict[str, Any]:
+    """校验用户选择的 raw 证据文件并返回其 checksum。"""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    try:
+        result = hash_cycle_step_mapping_evidence(
+            body.evidence_relative_path,
+            raw_root=service.raw_root,
+        )
+    except CycleStepMappingEvidenceTooLarge as exc:
+        raise APIError(ErrorCode.UPLOAD_TOO_LARGE, str(exc)) from exc
+    except CycleStepMappingError as exc:
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "Cycle/Step mapping evidence path is invalid",
+            {"reason": str(exc)},
+        ) from exc
+    return {"data": result, "meta": {"read_only": True}}
 
 
 @router.get(

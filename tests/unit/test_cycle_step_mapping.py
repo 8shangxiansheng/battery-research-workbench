@@ -14,6 +14,7 @@ from battery_workbench.api.app import create_app
 from battery_workbench.datasets.joins import exact_cycle_join, exact_event_join
 from battery_workbench.labels.builder import build_reference_labels
 from battery_workbench.orchestrator.nodes import ReferenceLabelsNode, WorkflowNode
+from battery_workbench.provenance import cycle_step_mapping
 from battery_workbench.provenance.cycle_step_mapping import (
     CYCLE_STEP_MAPPING_FIELDS,
     CycleStepMappingError,
@@ -624,6 +625,48 @@ def test_cycle_step_mapping_source_inventory_blocks_unregistered_parser_asset(
     error = response.json()["error"]
     assert error["code"] == "SCIENTIFIC_READINESS_BLOCKED"
     assert "E999" in error["details"]["reason"]
+
+
+def test_cycle_step_mapping_evidence_check_hashes_only_confined_bounded_raw_files(
+    mapping_case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    raw_root = Path(inputs["raw_root"])
+    evidence_path = raw_root / "evidence" / "cycle-review.txt"
+    outside_path = tmp_path / "outside-evidence.txt"
+    outside_path.write_text("outside", encoding="utf-8")
+    escape_link = raw_root / "outside-link.txt"
+    try:
+        escape_link.symlink_to(outside_path)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+    client = TestClient(
+        create_app(
+            raw_root=raw_root,
+            processed_root=inputs["processed_root"],
+            runs_root=tmp_path / "runs",
+        )
+    )
+    endpoint = "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/evidence-check"
+
+    valid = client.post(endpoint, json={"evidence_relative_path": "evidence/cycle-review.txt"})
+    assert valid.status_code == 200
+    assert valid.json()["data"] == {
+        "evidence_relative_path": "evidence/cycle-review.txt",
+        "evidence_sha256": _content_sha256(evidence_path),
+        "size_bytes": evidence_path.stat().st_size,
+    }
+    assert valid.json()["meta"]["read_only"] is True
+
+    traversal = client.post(endpoint, json={"evidence_relative_path": "../outside-evidence.txt"})
+    assert traversal.status_code == 400
+    escaped = client.post(endpoint, json={"evidence_relative_path": "outside-link.txt"})
+    assert escaped.status_code == 400
+
+    monkeypatch.setattr(cycle_step_mapping, "MAX_CYCLE_STEP_MAPPING_EVIDENCE_BYTES", 1)
+    too_large = client.post(endpoint, json={"evidence_relative_path": "evidence/cycle-review.txt"})
+    assert too_large.status_code == 413
+    assert too_large.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
 
 
 def test_cycle_step_mapping_preflight_api_returns_typed_invalid_response(

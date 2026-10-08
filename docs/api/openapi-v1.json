@@ -331,6 +331,22 @@
         "title": "CohortUnitMapping",
         "type": "object"
       },
+      "CycleStepMappingEvidenceCheckRequest": {
+        "description": "操作者选择的 immutable raw-root 下的证据路径。",
+        "properties": {
+          "evidence_relative_path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Evidence Relative Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_relative_path"
+        ],
+        "title": "CycleStepMappingEvidenceCheckRequest",
+        "type": "object"
+      },
       "CycleStepMappingPreflightRequest": {
         "description": "CSV bytes supplied by the operator; this endpoint never saves them.",
         "properties": {
@@ -1994,7 +2010,7 @@
     },
     "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft": {
       "get": {
-        "description": "Download source inventory with all scientific mapping decisions blank.",
+        "description": "下载未审核来源清单，所有科学映射决策保持空白。",
         "operationId": "download_cycle_step_mapping_draft_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_draft_get",
         "parameters": [
           {
@@ -2039,6 +2055,70 @@
           }
         },
         "summary": "Download Cycle Step Mapping Draft",
+        "tags": [
+          "scientific-resources"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/evidence-check": {
+      "post": {
+        "description": "校验用户选择的 raw 证据文件并返回其 checksum。",
+        "operationId": "check_cycle_step_mapping_evidence_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_evidence_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleStepMappingEvidenceCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Check Cycle Step Mapping Evidence Api V1 Experiments  Battery Id   Experiment Id  Cycle Step Mapping Evidence Check Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Cycle Step Mapping Evidence",
         "tags": [
           "scientific-resources"
         ]
@@ -2224,7 +2304,7 @@
     },
     "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/source-inventory": {
       "get": {
-        "description": "Return verified source pairs without proposing canonical assignments.",
+        "description": "返回已校验的 source pair 清单，不提出 canonical 对应关系。",
         "operationId": "get_cycle_step_mapping_source_inventory_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_source_inventory_get",
         "parameters": [
           {
