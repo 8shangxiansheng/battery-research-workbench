@@ -15,7 +15,7 @@ from battery_workbench.datasets.joins import exact_cycle_join, exact_event_join
 from battery_workbench.labels.builder import build_reference_labels
 from battery_workbench.orchestrator.nodes import ReferenceLabelsNode, WorkflowNode
 from battery_workbench.orchestrator.schemas import ArtifactRef
-from battery_workbench.provenance import cycle_step_mapping
+from battery_workbench.provenance import cycle_step_mapping, cycle_step_mapping_store
 from battery_workbench.provenance.cycle_step_mapping import (
     CYCLE_STEP_MAPPING_FIELDS,
     CycleStepMappingError,
@@ -24,6 +24,7 @@ from battery_workbench.provenance.cycle_step_mapping import (
 )
 from battery_workbench.provenance.cycle_step_mapping_store import (
     CycleStepMappingStoreError,
+    read_regular_file_no_symlinks,
     save_cycle_step_mapping,
 )
 
@@ -536,6 +537,40 @@ def test_reference_labels_node_rejects_symlinked_mapping_sidecar(
         ReferenceLabelsNode().resolve_existing_output(
             plan, {}, data_root / "processed"
         )
+
+
+def test_secure_mapping_read_rejects_symlink_swap_at_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    annotation_root = tmp_path / "annotations"
+    experiment_dir = annotation_root / "CELL_A" / "EXP_A"
+    experiment_dir.mkdir(parents=True)
+    mapping_path = experiment_dir / "cycle-step-mapping.csv"
+    mapping_path.write_text("trusted mapping", encoding="utf-8")
+    external_path = tmp_path / "external.csv"
+    external_path.write_text("outside data", encoding="utf-8")
+    real_open = cycle_step_mapping_store.os.open
+    switched = False
+
+    def swap_before_final_open(path, flags, *args, **kwargs):
+        nonlocal switched
+        is_final_open = (
+            path == mapping_path.name and kwargs.get("dir_fd") is not None
+        ) or path == mapping_path
+        if is_final_open and not switched:
+            mapping_path.unlink()
+            mapping_path.symlink_to(external_path)
+            switched = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(cycle_step_mapping_store.os, "open", swap_before_final_open)
+
+    with pytest.raises(
+        CycleStepMappingStoreError, match="symlink during secure read|changed during secure read"
+    ):
+        read_regular_file_no_symlinks(mapping_path, boundary=annotation_root)
+
+    assert switched
 
 
 def test_reference_labels_cache_is_invalidated_when_mapping_changes(

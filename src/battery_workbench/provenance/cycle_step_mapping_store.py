@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,6 +33,88 @@ def _sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def read_regular_file_no_symlinks(path: Path, *, boundary: Path) -> bytes:
+    """Read a regular file beneath ``boundary`` without following symlinks.
+
+    POSIX uses descriptor-relative traversal with ``O_NOFOLLOW`` for every
+    component. Windows lacks portable ``openat`` support in Python, so it uses
+    reparse-point checks and verifies the opened file identity before/after
+    reading; the annotation root should remain writable only by the service
+    account there.
+    """
+    path = Path(os.path.abspath(path))
+    boundary = Path(boundary).resolve(strict=True)
+    try:
+        relative = path.relative_to(boundary)
+    except ValueError as exc:
+        raise CycleStepMappingStoreError("mapping file escapes its allowed directory") from exc
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise CycleStepMappingStoreError("mapping file path is invalid")
+
+    if os.name != "nt" and hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd:
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+        descriptor = os.open(boundary, directory_flags)
+        try:
+            for component in relative.parts[:-1]:
+                child = os.open(component, directory_flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            file_descriptor = os.open(
+                relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            try:
+                if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+                    raise CycleStepMappingStoreError("mapping path is not a regular file")
+                with os.fdopen(file_descriptor, "rb", closefd=False) as stream:
+                    return stream.read()
+            finally:
+                os.close(file_descriptor)
+        except OSError as exc:
+            raise CycleStepMappingStoreError(
+                "mapping path changed or contains a symlink during secure read"
+            ) from exc
+        finally:
+            os.close(descriptor)
+
+    current = boundary
+    for component in relative.parts[:-1]:
+        current = current / component
+        try:
+            info = current.lstat()
+        except OSError as exc:
+            raise CycleStepMappingStoreError("mapping directory is missing or unreadable") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise CycleStepMappingStoreError("mapping directory must not be a symlink")
+        if getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+            raise CycleStepMappingStoreError("mapping directory must not be a reparse point")
+
+    file_path = current / relative.parts[-1]
+    try:
+        before = file_path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise CycleStepMappingStoreError("mapping path is not a regular file")
+        if getattr(before, "st_file_attributes", 0) & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+        ):
+            raise CycleStepMappingStoreError("mapping path must not be a reparse point")
+        descriptor = os.open(file_path, os.O_RDONLY)
+        try:
+            opened = os.fstat(descriptor)
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                content = stream.read()
+            after = file_path.lstat()
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino) or (
+                opened.st_dev,
+                opened.st_ino,
+            ) != (after.st_dev, after.st_ino):
+                raise CycleStepMappingStoreError("mapping path changed during secure read")
+            return content
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise CycleStepMappingStoreError("mapping file is missing or unreadable") from exc
+
+
 def _validate_ids(battery_id: str, experiment_id: str) -> None:
     for name, value in (("battery_id", battery_id), ("experiment_id", experiment_id)):
         if not _SAFE_ID_RE.fullmatch(value) or ".." in value:
@@ -56,7 +139,7 @@ def _ensure_child_directory(parent: Path, child: Path, *, root: Path) -> None:
         raise CycleStepMappingStoreError("annotation directory escapes its root") from exc
 
 
-def _revision_count(revisions_dir: Path) -> int:
+def _revision_count(revisions_dir: Path, *, boundary: Path) -> int:
     if not revisions_dir.exists():
         return 0
     if revisions_dir.is_symlink() or not revisions_dir.is_dir():
@@ -65,9 +148,8 @@ def _revision_count(revisions_dir: Path) -> int:
     for path in revisions_dir.iterdir():
         if path.suffix != ".csv":
             continue
-        if path.is_symlink() or not path.is_file():
-            raise CycleStepMappingStoreError("mapping revision is not a regular file")
-        if not _SHA256_RE.fullmatch(path.stem) or _sha256_bytes(path.read_bytes()) != path.stem:
+        content = read_regular_file_no_symlinks(path, boundary=boundary)
+        if not _SHA256_RE.fullmatch(path.stem) or _sha256_bytes(content) != path.stem:
             raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
         count += 1
     return count
@@ -198,17 +280,15 @@ def list_cycle_step_mapping_revisions(
     active_path, revisions_dir = paths
     active_digest: str | None = None
     if active_path.exists():
-        if not active_path.is_file():
-            raise CycleStepMappingStoreError("active mapping path is not a regular file")
-        active_digest = _sha256_bytes(active_path.read_bytes())
+        active_digest = _sha256_bytes(
+            read_regular_file_no_symlinks(active_path, boundary=active_path.parents[3])
+        )
     if not revisions_dir.exists():
         return []
 
     revisions: list[dict[str, Any]] = []
     for path in sorted(revisions_dir.glob("*.csv"), key=lambda item: item.stem):
-        if path.is_symlink() or not path.is_file():
-            raise CycleStepMappingStoreError("mapping revision is not a regular file")
-        content = path.read_bytes()
+        content = read_regular_file_no_symlinks(path, boundary=revisions_dir.parents[3])
         if not _SHA256_RE.fullmatch(path.stem) or _sha256_bytes(content) != path.stem:
             raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
         revisions.append(
@@ -238,7 +318,9 @@ def read_cycle_step_mapping_revision(
         raise FileNotFoundError("Cycle/Step mapping revision not found")
     if not revision_path.is_file():
         raise CycleStepMappingStoreError("mapping revision is not a regular file")
-    content = revision_path.read_bytes()
+    content = read_regular_file_no_symlinks(
+        revision_path, boundary=Path(raw_root).resolve().parent
+    )
     if _sha256_bytes(content) != revision_sha256:
         raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
     return content
@@ -284,7 +366,7 @@ def get_cycle_step_mapping_status(
     revisions_dir = experiment_dir / "cycle-step-mapping.revisions"
     if revisions_dir.is_symlink() or active_path.is_symlink():
         raise CycleStepMappingStoreError("mapping sidecar paths must not be symlinks")
-    revision_count = _revision_count(revisions_dir)
+    revision_count = _revision_count(revisions_dir, boundary=data_root)
     if not active_path.exists():
         return {
             "status": "MISSING",
@@ -294,7 +376,7 @@ def get_cycle_step_mapping_status(
         }
     if not active_path.is_file():
         raise CycleStepMappingStoreError("active mapping path is not a regular file")
-    content = active_path.read_bytes()
+    content = read_regular_file_no_symlinks(active_path, boundary=data_root)
     digest = _sha256_bytes(content)
     try:
         with tempfile.TemporaryDirectory(prefix="brw-cycle-step-status-") as temp_dir:
@@ -373,10 +455,13 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise CycleStepMappingStoreError("could not atomically save mapping sidecar") from exc
 
 
-def _archive_revision(revisions_dir: Path, content: bytes, digest: str) -> None:
+def _archive_revision(
+    revisions_dir: Path, content: bytes, digest: str, *, boundary: Path
+) -> None:
     revision_path = revisions_dir / f"{digest}.csv"
     if revision_path.exists():
-        if revision_path.is_symlink() or _sha256_bytes(revision_path.read_bytes()) != digest:
+        existing_content = read_regular_file_no_symlinks(revision_path, boundary=boundary)
+        if _sha256_bytes(existing_content) != digest:
             raise CycleStepMappingStoreError("content-addressed mapping revision is inconsistent")
         return
     _atomic_write(revision_path, content)
@@ -431,33 +516,40 @@ def save_cycle_step_mapping(
         # preflight and activation without being detected.
         validation = validate_content()
         # Fail closed on damaged history before changing the active mapping.
-        _revision_count(revisions_dir)
+        data_root = annotation_root.parent
+        _revision_count(revisions_dir, boundary=data_root)
 
         if active_path.is_symlink():
             raise CycleStepMappingStoreError("active mapping path must not be a symlink")
         if active_path.exists() and not active_path.is_file():
             raise CycleStepMappingStoreError("active mapping path is not a regular file")
-        active_content = active_path.read_bytes() if active_path.exists() else None
+        active_content = (
+            read_regular_file_no_symlinks(active_path, boundary=data_root)
+            if active_path.exists()
+            else None
+        )
         active_digest = _sha256_bytes(active_content) if active_content is not None else None
         if active_digest != expected_active_sha256:
             raise CycleStepMappingConflict(
                 "active Cycle/Step mapping changed; reload before saving"
             )
         if active_digest == digest:
-            _archive_revision(revisions_dir, content, digest)
+            _archive_revision(revisions_dir, content, digest, boundary=data_root)
             return {
                 **validation,
                 "save_status": "ALREADY_CURRENT",
                 "previous_mapping_sha256": active_digest,
-                "revision_count": _revision_count(revisions_dir),
+                "revision_count": _revision_count(revisions_dir, boundary=data_root),
                 "active_mapping_relative_path": (
                     Path("annotations") / battery_id / experiment_id / "cycle-step-mapping.csv"
                 ).as_posix(),
             }
 
         if active_content is not None and active_digest is not None:
-            _archive_revision(revisions_dir, active_content, active_digest)
-        _archive_revision(revisions_dir, content, digest)
+            _archive_revision(
+                revisions_dir, active_content, active_digest, boundary=data_root
+            )
+        _archive_revision(revisions_dir, content, digest, boundary=data_root)
         _atomic_write(active_path, content)
         try:
             active_path.resolve(strict=True).relative_to(annotation_root)
@@ -470,7 +562,7 @@ def save_cycle_step_mapping(
         **validation,
         "save_status": "SAVED",
         "previous_mapping_sha256": active_digest,
-        "revision_count": _revision_count(revisions_dir),
+        "revision_count": _revision_count(revisions_dir, boundary=annotation_root.parent),
         "active_mapping_relative_path": (
             Path("annotations") / battery_id / experiment_id / "cycle-step-mapping.csv"
         ).as_posix(),

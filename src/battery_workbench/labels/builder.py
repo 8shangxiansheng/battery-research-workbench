@@ -155,7 +155,14 @@ def build_reference_labels(
     if raw_root is None:
         raise ValueError("raw_root is required when cycle_step_mapping_path is supplied")
     active_mapping_path = Path(cycle_step_mapping_path)
-    snapshot_bytes = active_mapping_path.read_bytes()
+    from battery_workbench.provenance.cycle_step_mapping_store import (
+        read_regular_file_no_symlinks,
+    )
+
+    snapshot_bytes = read_regular_file_no_symlinks(
+        active_mapping_path,
+        boundary=Path(raw_root).resolve().parent,
+    )
     snapshot_sha256 = hashlib.sha256(snapshot_bytes).hexdigest()
     with TemporaryDirectory(prefix="brw-cycle-step-mapping-") as temp_dir:
         snapshot_path = Path(temp_dir) / "cycle-step-mapping.csv"
@@ -650,11 +657,17 @@ def _build_reference_labels(
         reference_capacity_ah=reference.q_ref_ah,
     )
 
-    if (
-        active_cycle_step_mapping_path is not None
-        and _sha256(active_cycle_step_mapping_path) != expected_mapping_sha256
-    ):
-        raise ValueError("reviewed Cycle/Step mapping changed during label generation")
+    if active_cycle_step_mapping_path is not None:
+        from battery_workbench.provenance.cycle_step_mapping_store import (
+            read_regular_file_no_symlinks,
+        )
+
+        current_mapping = read_regular_file_no_symlinks(
+            active_cycle_step_mapping_path,
+            boundary=Path(raw_root).resolve().parent,
+        )
+        if hashlib.sha256(current_mapping).hexdigest() != expected_mapping_sha256:
+            raise ValueError("reviewed Cycle/Step mapping changed during label generation")
 
     return write_label_payload(
         event_labels=event_labels,
