@@ -33,8 +33,10 @@ checks identity completeness, current Electrical parser outputs, parser
 manifest binding, raw evidence bytes, review metadata and one-to-one mapping
 structure. The `project_canonical_cycle_step` API can then add canonical keys
 to an in-memory step-level table while preserving `cycle_index_raw`,
-`step_index_raw`, DataAsset identity and source locators. A successful
-preflight reports
+`step_index_raw`, DataAsset identity and source locators. Each projected row
+also carries the mapping ID/checksum, pinned parser-manifest checksum,
+row-specific evidence checksum, and unauthenticated review status. A
+successful preflight reports
 `CYCLE_STEP_MAPPING_CONTRACT_VALIDATED`; it explicitly reports
 `mapping_application_status=PROJECTION_AVAILABLE_NOT_INTEGRATED`,
 `label_generation_authorized=false`, and scientific continuity

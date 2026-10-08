@@ -363,7 +363,9 @@ def project_canonical_cycle_step(
     rows, mapping_sha256 = _read_mapping(Path(mapping_csv))
     if mapping_sha256 != validation["mapping_sha256"]:
         raise CycleStepMappingError("mapping CSV changed during projection")
-    mapping: dict[tuple[str, int, int], tuple[int, int]] = {}
+    mapping: dict[tuple[str, int, int], tuple[int, int, str]] = {}
+    mapping_id = str(validation["mapping_id"])
+    parser_manifest_sha256 = str(validation["parser_manifest_sha256"])
     for row_number, row in enumerate(rows, start=2):
         source = (
             _required(row, "electrical_asset_id", row_number),
@@ -382,11 +384,13 @@ def project_canonical_cycle_step(
                 row_number=row_number,
             ),
         )
-        mapping[source] = target
+        evidence_sha256 = _required(row, "evidence_sha256", row_number).lower()
+        mapping[source] = (target[0], target[1], evidence_sha256)
 
     projected = frame.copy(deep=True)
     canonical_cycles: list[int] = []
     canonical_steps: list[int] = []
+    evidence_hashes: list[str] = []
     for row_number, row in enumerate(
         projected[["electrical_asset_id", "cycle_index_raw", "step_index_raw"]].itertuples(
             index=False, name=None
@@ -399,15 +403,21 @@ def project_canonical_cycle_step(
             _integer(raw_cycle, field="cycle_index_raw", row_number=row_number),
             _integer(raw_step, field="step_index_raw", row_number=row_number),
         )
-        target = mapping.get(source)
-        if target is None:
+        mapped = mapping.get(source)
+        if mapped is None:
             raise CycleStepMappingError(
                 f"projection row {row_number}: source Cycle/Step is not in reviewed mapping"
             )
-        canonical_cycles.append(target[0])
-        canonical_steps.append(target[1])
+        canonical_cycles.append(mapped[0])
+        canonical_steps.append(mapped[1])
+        evidence_hashes.append(mapped[2])
     projected["canonical_cycle_index"] = canonical_cycles
     projected["canonical_step_index"] = canonical_steps
+    projected["cycle_step_mapping_id"] = mapping_id
+    projected["cycle_step_mapping_sha256"] = mapping_sha256
+    projected["cycle_step_mapping_parser_manifest_sha256"] = parser_manifest_sha256
+    projected["cycle_step_mapping_evidence_sha256"] = evidence_hashes
+    projected["cycle_step_mapping_review_status"] = "OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED"
     return projected
 
 

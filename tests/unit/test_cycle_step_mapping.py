@@ -206,6 +206,17 @@ def test_projection_adds_canonical_keys_and_preserves_source_identity(mapping_ca
     assert projected["cycle_index_raw"].tolist() == [1, 1, 1]
     assert projected["electrical_asset_id"].tolist() == ["E001", "E001", "E002"]
     assert projected["source_row_index"].tolist() == [10, 11, 20]
+    assert projected["cycle_step_mapping_id"].eq("CSM::REVIEW_001").all()
+    assert projected["cycle_step_mapping_sha256"].str.fullmatch(r"[0-9a-f]{64}").all()
+    assert (
+        projected["cycle_step_mapping_parser_manifest_sha256"].str.fullmatch(r"[0-9a-f]{64}").all()
+    )
+    assert projected["cycle_step_mapping_evidence_sha256"].str.fullmatch(r"[0-9a-f]{64}").all()
+    assert (
+        projected["cycle_step_mapping_review_status"]
+        .eq("OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED")
+        .all()
+    )
     assert "canonical_cycle_index" not in source.columns
 
 
