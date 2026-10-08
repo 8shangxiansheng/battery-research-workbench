@@ -20,6 +20,11 @@ data/raw/batteries/**
 # Manifests are intentionally version-controlled.
 # They should contain metadata/paths, not raw signal content.
 
+# Operator-reviewed local sidecars are data, not source code.
+data/annotations/**
+!data/annotations/**/
+!data/annotations/**/.gitkeep
+
 # Derived research data
 data/processed/**
 data/features/**

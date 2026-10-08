@@ -30,7 +30,7 @@ git pull
 docker compose up --build -d
 ```
 
-Compose 将 `data/raw`、`data/processed` 和 `data/artifacts` 映射到容器外部。换电脑或更新源码前，请备份需要保留的实验数据与产物；不要把原始数据当作源码更新覆盖。Docker Desktop 的 Linux 容器不等于原生 Windows 容器。
+Compose 将 `data/raw`、`data/annotations`、`data/processed` 和 `data/artifacts` 映射到容器外部。已审核的 Cycle/Step 映射保存在 `data/annotations/{battery_id}/{experiment_id}/`，不会写进不可变 `data/raw`；该目录已挂载到宿主机，容器重建后仍保留。annotations 属于本地研究数据，已加入 Git 忽略规则；换电脑或更新源码前，请与 raw、processed 和 artifacts 一起备份。Docker Desktop 的 Linux 容器不等于原生 Windows 容器。
 
 只读分析部署可设置 `BRW_RAW_READ_ONLY=true`；此时导入新原始数据不可用。其他环境变量和权限说明见根目录 [README](../README.md) 的 Docker deployment 一节。
 

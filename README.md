@@ -200,11 +200,11 @@ docker compose up --build -d
 
 Compose 默认只监听本机回环地址；需配置 `BRW_PORT` 可改主机端口。由于 API 当前没有认证，**不要直接将 `BRW_BIND_ADDR` 设为 `0.0.0.0` 暴露到不可信网络**；远程使用请置于具备认证与 TLS 的反向代理之后。
 
-Compose 将 `data/raw`、`data/processed` 和 `data/artifacts` 分目录挂载。raw 默认可写是为了支持 UI 新建实验/导入原始资产；导入流程只新增源文件和 manifest，不应覆盖已有原始文件。对于只需分析既有数据的部署，可设置 `BRW_RAW_READ_ONLY=true`，但此时 UI 导入功能不可用。Linux 用户需确保挂载目录可由容器 UID/GID（默认 `10001:10001`）写入；例如：
+Compose 将 `data/raw`、`data/annotations`、`data/processed` 和 `data/artifacts` 分目录挂载。受审 Cycle/Step 映射 sidecar 写入 `data/annotations`，容器重建后仍保留且默认不纳入 Git；部署迁移时应备份该目录。raw 默认可写是为了支持 UI 新建实验/导入原始资产；导入流程只新增源文件和 manifest，不应覆盖已有原始文件。对于只需分析既有数据的部署，可设置 `BRW_RAW_READ_ONLY=true`，但此时 UI 导入功能不可用。Linux 用户需确保挂载目录可由容器 UID/GID（默认 `10001:10001`）写入；例如：
 
 ```bash
-mkdir -p data/raw data/processed data/artifacts
-sudo chown -R "${BRW_UID:-10001}:${BRW_GID:-10001}" data/raw data/processed data/artifacts
+mkdir -p data/raw data/annotations data/processed data/artifacts
+sudo chown -R "${BRW_UID:-10001}:${BRW_GID:-10001}" data/raw data/annotations data/processed data/artifacts
 ```
 
 也可设置 `BRW_UID` / `BRW_GID` 为当前用户的 UID/GID。Docker Desktop (Windows/macOS) 使用其共享目录权限映射。
