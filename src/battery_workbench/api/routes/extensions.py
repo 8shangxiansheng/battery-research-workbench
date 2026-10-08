@@ -14,6 +14,7 @@ from battery_workbench.api.routes.features_v2 import alignment_summary, list_tar
 from battery_workbench.api.service import validate_id
 from battery_workbench.datasets.cohort import eligible_cohort_for_experiment
 from battery_workbench.io.experiment.manifest_loader import load_batteries
+from battery_workbench.splits.validation_evidence import inspect_independent_validation_evidence
 
 router = APIRouter(tags=["scientific-resources"])
 
@@ -68,6 +69,9 @@ def extension_readiness(
         else any(float(row["value"]) < float(dummy["value"]) for row in peers)
     )
     cohort = eligible_cohort_for_experiment(service.processed_root, battery_id, experiment_id)
+    validation_evidence = inspect_independent_validation_evidence(
+        service.processed_root, battery_id=battery_id, experiment_id=experiment_id
+    )
     data: ExtensionReadiness = build_extension_readiness(
         battery_id=battery_id,
         experiment_id=experiment_id,
@@ -77,7 +81,8 @@ def extension_readiness(
         temperature_valid_count=int(temperature.get("coverage", {}).get("valid", 0)),
         temperature_range_c=temperature_range_c,
         model_beats_dummy=model_beats_dummy,
-        has_independent_validation=False,
+        has_independent_validation=bool(validation_evidence["available"]),
+        independent_validation_evidence=validation_evidence,
         eligible_cohort_battery_count=int(cohort.get("battery_count", 0)) if cohort else 0,
         eligible_cohort_id=cohort.get("cohort_dataset_id") if cohort else None,
     )

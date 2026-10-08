@@ -209,6 +209,25 @@ def test_t18_exact_explicit_group_holdout() -> None:
     assert set(held_out) == {"CG::3", "CG::4"}
 
 
+def test_group_holdout_supports_train_validation_and_held_out() -> None:
+    frame = _group_frame("cycle_group_id", {f"CG::{i}": 3 for i in range(1, 7)})
+    spec = _spec(
+        strategy=SplitStrategy.GROUP_HOLDOUT,
+        explicit_holdout_groups=["CG::6"],
+        require_roles=["TRAIN", "VALIDATION", "HELD_OUT"],
+    )
+    assignments = build_assignments(spec, frame)
+    roles_by_group = assignments.drop_duplicates("cycle_group_id").set_index("cycle_group_id")["role"]
+    assert roles_by_group.to_dict() == {
+        "CG::1": "VALIDATION",
+        "CG::2": "TRAIN",
+        "CG::3": "TRAIN",
+        "CG::4": "TRAIN",
+        "CG::5": "TRAIN",
+        "CG::6": "HELD_OUT",
+    }
+
+
 def test_t19_dataset_unchanged(tmp_path) -> None:
     """split materialization must not touch the dataset directory."""
     frame = _four_group_frame()
@@ -305,6 +324,33 @@ def test_manifest_declares_limited_evaluation_type(tmp_path) -> None:
     assert role_sem["held_out_role"] == "HELD_OUT"
     # HELD_OUT target is off-limits to model selection
     assert role_sem["held_out_target_usage"] == "FORBIDDEN_FOR_MODEL_SELECTION"
+
+
+def test_manifest_counts_independent_three_way_roles(tmp_path) -> None:
+    from battery_workbench.splits.persistence import write_split_payload
+
+    frame = _group_frame("cycle_group_id", {f"CG::{i}": 2 for i in range(1, 7)})
+    spec = _spec(
+        strategy=SplitStrategy.GROUP_HOLDOUT,
+        explicit_holdout_groups=["CG::6"],
+        require_roles=["TRAIN", "VALIDATION", "HELD_OUT"],
+    )
+    assignments = build_assignments(spec, frame)
+    paths = write_split_payload(
+        spec=spec,
+        assignments=assignments,
+        dataset_id=spec.dataset_id,
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        dataset_family="SOC",
+        output_root=tmp_path,
+        group_counts=frame.groupby("cycle_group_id").size().to_dict(),
+    )
+    manifest = json.loads((tmp_path / paths["split_manifest"]).read_text())
+    semantics = manifest["role_semantics"]
+    assert semantics["independent_validation_groups"] == 1
+    assert semantics["independent_held_out_groups"] == 1
+    assert semantics["three_way_structure_present"] is True
 
 
 def test_train_only_view_returns_only_train_rows() -> None:

@@ -76,6 +76,14 @@ class SplitSpec(BaseModel):
             raise ValueError("K_FOLD_GROUPED requires k >= 2")
         if self.strategy == SplitStrategy.GROUP_HOLDOUT and not self.explicit_holdout_groups:
             raise ValueError("GROUP_HOLDOUT requires explicit_holdout_groups")
+        if (
+            self.strategy == SplitStrategy.GROUP_HOLDOUT
+            and "HELD_OUT" in self.require_roles
+            and set(self.require_roles) != {"TRAIN", "VALIDATION", "HELD_OUT"}
+        ):
+            raise ValueError(
+                "GROUP_HOLDOUT with HELD_OUT requires exactly TRAIN, VALIDATION, and HELD_OUT roles"
+            )
         if not self.split_id:
             self.split_id = split_id_for(self)
         return self

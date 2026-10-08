@@ -81,16 +81,34 @@ def write_split_payload(
         else spec.strategy.value
     )
     roles = sorted(set(assignments["role"])) if len(assignments) else []
+    group_roles = (
+        assignments.drop_duplicates([spec.group_column, "role"])
+        .groupby("role")[spec.group_column]
+        .nunique()
+        .to_dict()
+        if len(assignments) and spec.group_column in assignments
+        else {}
+    )
+    validation_groups = int(group_roles.get("VALIDATION", 0))
+    held_out_groups = int(group_roles.get("HELD_OUT", 0))
+    test_groups = int(group_roles.get("TEST", 0))
     role_semantics = {
         "held_out_role": "HELD_OUT" if "HELD_OUT" in roles else "",
-        "independent_validation_groups": 0 if "HELD_OUT" in roles else None,
-        "independent_test_groups": 0 if "HELD_OUT" in roles else None,
-        "three_way_structure_present": "VALIDATION" in roles and "TEST" in roles,
+        "independent_validation_groups": validation_groups,
+        "independent_test_groups": test_groups,
+        "independent_held_out_groups": held_out_groups,
+        "three_way_structure_present": (
+            validation_groups > 0 and held_out_groups > 0
+            if "HELD_OUT" in roles
+            else validation_groups > 0 and test_groups > 0
+        ),
         "held_out_target_usage": (
             "FORBIDDEN_FOR_MODEL_SELECTION" if "HELD_OUT" in roles else "NOT_APPLICABLE"
         ),
         "note": (
-            "independent cycles only; no simultaneous independent validation + test groups exist"
+            "groups are role-disjoint; HELD_OUT is not used for model selection"
+            if "HELD_OUT" in roles and validation_groups > 0
+            else "no independent validation role is materialized"
             if "HELD_OUT" in roles
             else ""
         ),

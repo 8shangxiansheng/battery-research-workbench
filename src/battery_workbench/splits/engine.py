@@ -147,12 +147,20 @@ def build_assignments(spec: SplitSpec, frame: pd.DataFrame) -> pd.DataFrame:
         remaining = [g for g in groups if g not in holdout]
         fold = "fold1"
         roles = list(spec.require_roles)
-        # explicit holdout groups take the SECOND required role (validation;
-        # for 3-way, the last remaining group takes TEST — deterministic).
-        holdout_role = roles[1] if len(roles) > 1 else "VALIDATION"
-        for group in holdout:
-            _emit(group, fold, holdout_role)
-        if len(roles) >= 3 and remaining:
+        if "HELD_OUT" in roles:
+            # Explicit groups are the untouched outer evaluation set. Reserve
+            # one deterministic remaining group for model selection.
+            for group in sorted(holdout):
+                _emit(group, fold, "HELD_OUT")
+            validation_group = remaining[0]
+            _emit(validation_group, fold, "VALIDATION")
+            for group in remaining[1:]:
+                _emit(group, fold, "TRAIN")
+        elif len(roles) >= 3:
+            # Preserve the legacy TRAIN / VALIDATION / TEST split semantics.
+            holdout_role = roles[1] if len(roles) > 1 else "VALIDATION"
+            for group in sorted(holdout):
+                _emit(group, fold, holdout_role)
             for j, group in enumerate(remaining):
                 if j == len(remaining) - 1 and len(remaining) > 1:
                     _emit(group, fold, "TEST")
@@ -161,6 +169,9 @@ def build_assignments(spec: SplitSpec, frame: pd.DataFrame) -> pd.DataFrame:
                 else:
                     _emit(group, fold, "TRAIN")
         else:
+            holdout_role = roles[1] if len(roles) > 1 else "VALIDATION"
+            for group in sorted(holdout):
+                _emit(group, fold, holdout_role)
             for group in remaining:
                 _emit(group, fold, "TRAIN")
 

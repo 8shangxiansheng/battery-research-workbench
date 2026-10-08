@@ -110,3 +110,11 @@ temperature_valid_count=0, has_independent_validation=false`。
 - 禁止 target、MeasurementEvent/asset/Battery/Experiment/Cycle/Step identity 字段作为预测特征；缺失值不插补，非有限目标/预测与错误输出形状均 fail-closed。
 - 验证：新模块定向测试通过，语句覆盖率 89%；既有 modeling、split、future-contract suites 与 Ruff、`git diff --check` 通过。
 - 边界：此阶段只实现可独立测试的搜索内核；未接入 `POST /tuning-studies`、模型注册、持久化或 UI，也没有声称当前数据已达到调参 readiness。后续必须实现真实的外层角色/独立验证数据门、签名级 HELD_OUT 隔离与审计后，才可启用调参 API。
+
+## I. A2-② 独立验证 readiness 证据门（2026-10-08）
+
+- `GROUP_HOLDOUT` 新增显式 `TRAIN / VALIDATION / HELD_OUT` 角色路径：用户指定的 outer holdout groups 进入 `HELD_OUT`，剩余排序首组作为 `VALIDATION`，其余组作为 `TRAIN`；既有二角色和 `TRAIN / VALIDATION / TEST` 行为保留。
+- Split manifest 改为记录实际角色分组数，不再把所有 `HELD_OUT` split 的 validation/test 数量硬编码为 0。
+- extension-readiness 只读扫描物化 artifacts，校验 split/dataset/experiment 身份、manifest/Parquet checksum、dataset 状态、event ID 全量匹配、group ID 与源 dataset 一致、三个角色按组互斥，且至少 3 个 TRAIN groups、1 个 VALIDATION group、1 个 HELD_OUT group。错误或不完整 artifacts fail-closed 并返回拒绝原因。
+- `HYPERPARAMETER_TUNING` 仍是 `NOT_IMPLEMENTED` 且 future contract disabled；当前 CELL_001 历史 split 未验证为满足三角色证据，因此 readiness 继续为 false。
+- 验证：split engine、persistence、evidence scanner、extension contract/API 测试通过；Ruff 和 `git diff --check` 通过。完整集成链和调参 API 仍未实现。

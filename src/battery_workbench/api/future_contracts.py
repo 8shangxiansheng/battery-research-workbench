@@ -127,6 +127,7 @@ def build_extension_readiness(
     temperature_range_c: float | None,
     model_beats_dummy: bool | None,
     has_independent_validation: bool,
+    independent_validation_evidence: dict[str, Any] | None = None,
     eligible_cohort_battery_count: int = 0,
     eligible_cohort_id: str | None = None,
 ) -> ExtensionReadiness:
@@ -200,9 +201,10 @@ def build_extension_readiness(
             status="NOT_IMPLEMENTED",
             can_resolve_with_current_data=False,
             reason=(
-                "no tuning route; fixed baselines only"
+                "no tuning route; fixed baselines only; "
+                + str((independent_validation_evidence or {}).get("reason", "evidence unavailable"))
                 if not has_independent_validation
-                else "activation review required"
+                else "verified validation evidence exists; activation review and implementation are still required"
             ),
             requirements=[
                 "independent VALIDATION role",
@@ -266,6 +268,11 @@ def build_extension_readiness(
             "temperature_range_c": temperature_range_c,
             "model_beats_dummy": model_beats_dummy,
             "has_independent_validation": has_independent_validation,
+            "independent_validation_evidence": independent_validation_evidence or {
+                "available": has_independent_validation,
+                "verified_split_ids": [],
+                "reason": "not provided",
+            },
         },
         boundaries=boundaries,
         future_contracts=contracts,
