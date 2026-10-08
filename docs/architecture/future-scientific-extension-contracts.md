@@ -16,9 +16,9 @@ GET /api/v1/experiments/{battery_id}/{experiment_id}/extension-readiness
 |---|---|---|
 | `cohort-dataset/1.0` | 已实现并启用；支持创建/读取不可变 harmonized SOC cohort，以及 Battery-grouped LOBO evaluation | 至少 2 个独立电池；来源 dataset、标签公式/temporality、特征定义和单位须兼容且通过 checksum 验证。当前 CELL_001 数据本身不满足跨电池证据门 |
 | `timebase-validation/1.0` | descriptor/readiness 已有；验证写入 endpoint 尚未实现 | 需要逐资产绝对时间锚点、时区、来源证据和误差审计。当前时间基准仍为 `PROVISIONAL` |
-| `target-dataset/1.0` | 通用写入 endpoint 尚未实现；已有 Reference SOC 工作流、温度目标数据门及 cycle-level SOH 标签构建/校验能力 | 温度需有实测通道、覆盖审计且观测范围至少 2 °C；SOH 建模要求至少 3 个独立状态、cycle/battery 粒度及参考容量来源。当前样例无有效温度读数且仅 2 个独立 SOH 状态 |
+| `target-dataset/1.0` | 通用写入 endpoint 尚未实现；已有 Reference SOC 工作流、温度目标数据门及 cycle-level SOH 标签构建/校验能力 | 当前 CELL_001 温度有 3995/3999 个有效读数，范围 23.2–25.3 °C，满足现有软件 readiness 阈值；但没有独立控制的热工况证据，温度关系仅宜探索/诊断。SOH 仍只有 2 个独立状态，需至少 3 个且具备 cycle/battery 粒度与容量来源 |
 | `tuning-study/1.0` | 请求 schema/readiness descriptor、TRAIN-only 嵌套分组选择内核、`GROUP_HOLDOUT` 三角色物化和只读产物证据核验已有；`POST /api/v1/tuning-studies`、持久化与模型适配尚未实现 | readiness 仅接受 checksum、来源数据行/分组、身份均验证通过的 `TRAIN / VALIDATION / HELD_OUT` 产物；当前 CELL_001 历史 split 不满足条件。证据发现也不启用调参 API |
-| Dummy 优势评估 | 固定基线模型比较已实现，策略来自 `/api/v1/modeling/strategies` | 是否超过 Dummy 是结果，不是接口启用门；需结合当前 dataset、split 和评估范围解释 |
+| Dummy 优势评估 | 固定基线模型比较已实现，策略来自 `/api/v1/modeling/strategies` | 2026-10-08 当前 artifact 中 SVR MAE 27.69、Dummy MAE 30.72 个百分点；两循环 limited evaluation，仅说明该次有限比较，不等于可靠预测能力或泛化证据 |
 
 ## Cohort / LOBO 已实现路径
 
@@ -33,7 +33,7 @@ GET /api/v1/experiments/{battery_id}/{experiment_id}/extension-readiness
 
 - 跨电池泛化使用 `battery_id` 作为外层分组；禁止用随机帧、行、MeasurementEvent 或 SOC 分箱切分代替。
 - SOH 的独立样本单位是 cycle/battery 级状态，不能把帧行计作独立健康状态。现有标签构建/离线复用校验不等于 SOH 建模就绪。
-- 温度只能来自实测通道；当前规则要求有效温度读数和至少 2 °C 观测范围。不得从超声或其他特征推算温度标签。
+- 温度只能来自实测通道；当前 CELL_001 的记录温度满足软件数据阈值（覆盖 3995/3999、范围 2.1 °C），但窄范围观察不等于有设计的多温度实验。不得从超声或其他特征推算温度标签，也不应将相关性直接解释为温度因果效应。
 - 调参入口若实现，特征选择与搜索须局限于外层 TRAIN 中的独立分组内层验证；外层 held-out 标签不得参与选择。当前纯内核只接收外层 TRAIN 行，callback 不接收内层验证目标；内层目标只由内核用于候选评分。
 - 三角色外层 split 的 `GROUP_HOLDOUT` 语义为：显式组进入 `HELD_OUT`，剩余组中排序首组作为 `VALIDATION`，其余为 `TRAIN`；已有二角色和 `TRAIN / VALIDATION / TEST` 语义保持兼容。
 - readiness 核验仅扫描当前 battery/experiment 的物化 split；split manifest 与 assignments 校验 checksum、split/dataset/实验身份、源 dataset 状态及 checksum、事件行全集、分组一致性/角色互斥和最小组数。任何缺失、过期、损坏、歧义或符号链接产物均不构成证据。

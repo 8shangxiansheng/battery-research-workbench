@@ -2,9 +2,10 @@
 
 日期：2026-09-24。范围：回应"这些缺口怎么完善"。逐项给出：当前证据 → 缺口的真实性质（数据受限 vs 代码受限）→ 完善路径 → 验收标准。本轮同时落地了三个代码可闭环的 UI/工作流缺口（见 B 节）。
 
-`GET /api/v1/experiments/{b}/{e}/extension-readiness` 是本节论断的机器可读来源；
-当前真实链路观测：`battery_count=1, timebase=PROVISIONAL, independent_soh_states=2,
-temperature_valid_count=0, has_independent_validation=false`。
+本节 A–G 初始论断为 2026-09-24 快照，不能覆盖后续日期的 readiness 观测；当前状态以文末最新补记及
+`GET /api/v1/experiments/{b}/{e}/extension-readiness` 为准。初始快照：`battery_count=1,
+timebase=PROVISIONAL, independent_soh_states=2, temperature_valid_count=0,
+has_independent_validation=false`。
 
 ## A. 科学证据边界（数据受限 —— 不能用代码"修掉"，只能准备到"数据一到即可激活"）
 
@@ -98,10 +99,11 @@ temperature_valid_count=0, has_independent_validation=false`。
 以下状态是对本计划后续提交的补记；A–F 各节保留其原始日期和当时结论，不作为当前功能清单单独引用。
 
 - **Cohort / LOBO**：F 节所述 cohort API 与 Models 页面入口已在当前主线实现。能力已启用，但真实跨电池评估仍要求至少 2 个来源校验通过、定义兼容的独立电池数据集；当前 CELL_001 单电池不满足该门。
-- **Temperature target**：由无条件拒绝调整为数据门控；只有存在实测有效温度且范围至少 2 °C 时才允许目标数据集。当前样例没有有效温度读数，仍不可建模。
+- **Temperature target**：由无条件拒绝调整为数据门控；只有存在实测有效温度且范围至少 2 °C 时才允许目标数据集。2026-10-08 当前 API 观察为 3995/3999 有效、23.2–25.3 °C，软件 readiness 已通过；这不是独立热工况或因果效应证据。
 - **SOH**：容量比标签公式和来源 provenance 有离线测试锁定；这不改变数据门。当前只有 2 个 cycle 级独立状态，至少需要 3 个状态才能满足 SOH 建模 readiness。
 - **模型策略**：固定基线扩展为 11 种策略，新增 ElasticNet、Huber Regression 和 MLP Regressor；策略清单由 `GET /api/v1/modeling/strategies` 提供并可在 UI 选择。所有配置仍是预声明固定参数，不是超参数调优。
 - **仍未闭合的数据/方法项**：时间基准验证写入流程、独立 VALIDATION 角色及调参 API/持久化仍未实现；A2-① 内核阶段状态见 H 节。新增模型策略也没有增加真实独立电池或验证数据。
+- **2026-10-08 当前补测**：声电对齐 3995/3999 唯一匹配、4 条歧义、0 条未匹配，最大同步误差约 0.03122 s，时间基准仍为 `PROVISIONAL`。最新模型比较为 SVR MAE 27.69、Dummy 30.72 个百分点（`TWO_CYCLES_ONLY`）；这是有限两循环结果，不是独立验证结论。温度 software readiness 为 `READY`；SOH 为 2 个独立状态；无有效跨电池 cohort 与独立 VALIDATION/HELD_OUT split。
 
 ## H. A2-① 嵌套分组选择内核（2026-10-08）
 
@@ -118,3 +120,9 @@ temperature_valid_count=0, has_independent_validation=false`。
 - extension-readiness 只读扫描物化 artifacts，校验 split/dataset/experiment 身份、manifest/Parquet checksum、dataset 状态、event ID 全量匹配、group ID 与源 dataset 一致、三个角色按组互斥，且至少 3 个 TRAIN groups、1 个 VALIDATION group、1 个 HELD_OUT group。错误或不完整 artifacts fail-closed 并返回拒绝原因。
 - `HYPERPARAMETER_TUNING` 仍是 `NOT_IMPLEMENTED` 且 future contract disabled；当前 CELL_001 历史 split 未验证为满足三角色证据，因此 readiness 继续为 false。
 - 验证：split engine、persistence、evidence scanner、extension contract/API 测试通过；Ruff 和 `git diff --check` 通过。完整集成链和调参 API 仍未实现。
+
+## J. B1 冻结 Gate Calibration 数值级端到端验证（2026-10-08）
+
+- 追踪确认现有 DatasetNode 对所选 gated feature 通过 `resolved_gate_bounds()` 取得冻结窗口，并调用 `selected_feature_series()` 重新计算；gate calibration identity 也参与 dataset identity 与复用失效判断。原缺口是端到端验收只检查 manifest 中有 calibration ID，没有证明窗口实际影响数值。
+- 扩展 `test_fresh_intake_to_report`：导入真实 CELL_001 raw 文件到临时实验，冻结 `SWA_SURFACE_GATE=[80,230)`，从导出的 feature artifact 与 Zarr raw waveform 独立重算每条 `SWA`，逐行与 dataset parquet 对照，并确认该值与 source template 计算确实不同。
+- 真实数据端到端测试通过（仅生成临时目录输出，没有修改 `data/raw/` 或主工作区数据）；警告中 MLP convergence warning 与本 Gate 验收无关。此阶段没有改变科学公式，仅补齐对已有冻结窗口行为的 golden acceptance 证据。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -12,9 +13,11 @@ from fastapi.testclient import TestClient
 from battery_workbench.api.app import create_app
 
 REPO = Path(__file__).resolve().parents[2]
-ELECTRICAL = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
+RAW_FIXTURE_ROOT = Path(os.environ.get("BRW_TEST_RAW_ROOT", REPO / "data/raw"))
+ELECTRICAL = RAW_FIXTURE_ROOT / "batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
 ULTRASOUND = (
-    REPO / "data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
+    RAW_FIXTURE_ROOT
+    / "batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
 )
 
 
@@ -155,11 +158,48 @@ def test_fresh_intake_feature_dataset_model_report_chain(tmp_path: Path) -> None
         (processed / "datasets" / battery_id / experiment_id).rglob("dataset_manifest.json")
     )
     assert dataset_manifests
-    assert any(
-        json.loads(path.read_text(encoding="utf-8")).get("gate_calibration_id")
-        == gate_calibration_id
-        for path in dataset_manifests
+    dataset_manifest = next(
+        manifest
+        for manifest in (
+            json.loads(path.read_text(encoding="utf-8")) for path in dataset_manifests
+        )
+        if manifest.get("gate_calibration_id") == gate_calibration_id
     )
+    # Numerical golden: the frozen [80, 230) calibration must drive values
+    # materialized in the dataset, not merely appear as manifest provenance.
+    from battery_workbench.features.selected_series import (
+        load_waveform_frames,
+        selected_feature_series,
+    )
+
+    source_feature_rows = pd.read_parquet(dataset_manifest["feature_set_path"])
+    waveform_frames = load_waveform_frames(
+        processed / "ultrasound" / battery_id / experiment_id / "waveforms.zarr",
+        source_feature_rows[["waveform_group", "waveform_row_index"]],
+    )
+    expected_frozen_swa = selected_feature_series(
+        waveform_frames,
+        ["SWA"],
+        gate_bounds={"SWA_SURFACE_GATE": (80, 230)},
+    )["SWA"]
+    source_template_swa = selected_feature_series(waveform_frames, ["SWA"])["SWA"]
+    assert bool((abs(expected_frozen_swa - source_template_swa) > 1e-12).any())
+    expected_by_event = pd.DataFrame(
+        {
+            "measurement_event_id": source_feature_rows["measurement_event_id"].astype(str),
+            "expected_swa": expected_frozen_swa,
+        }
+    )
+    materialized_dataset = pd.read_parquet(dataset_manifest["output_path"])
+    compared = materialized_dataset[["measurement_event_id", "SWA"]].merge(
+        expected_by_event,
+        on="measurement_event_id",
+        how="left",
+        validate="one_to_one",
+    )
+    assert len(compared) == len(materialized_dataset) > 0
+    assert compared["expected_swa"].notna().all()
+    assert (compared["SWA"] - compared["expected_swa"]).abs().max() < 1e-12
 
     model_request = {
         "profile": "FULL_PRE_MODEL",
