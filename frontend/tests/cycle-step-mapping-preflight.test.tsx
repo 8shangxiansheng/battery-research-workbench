@@ -77,6 +77,13 @@ describe("Cycle-Step mapping preflight", () => {
     const templateLink = screen.getByRole("link", { name: "下载空白 CSV 模板" });
     expect(templateLink).toHaveAttribute("href", "/cycle-step-mapping.csv");
     expect(templateLink).toHaveAttribute("download", "cycle-step-mapping.csv");
+    const draftLink = screen.getByTestId("cycle-step-mapping-download-draft");
+    expect(draftLink).toHaveAttribute(
+      "href",
+      "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/draft",
+    );
+    expect(draftLink).toHaveAttribute("download", "cycle-step-mapping-draft-CELL_A-EXP_A.csv");
+    expect(screen.getByText(/canonical Cycle\/Step、审核人和理由保持空白/)).toBeInTheDocument();
 
     await user.upload(
       screen.getByLabelText("选择 Cycle-Step 映射 CSV"),

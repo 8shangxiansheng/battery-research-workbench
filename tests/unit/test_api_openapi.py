@@ -34,3 +34,15 @@ def test_openapi_error_schema_documented() -> None:
     spec = client.get("/openapi.json").json()
     schemas = spec.get("components", {}).get("schemas", {})
     assert "ErrorEnvelope" in schemas or len(schemas) >= 0  # documented at least informally
+
+
+def test_cycle_step_mapping_csv_download_routes_advertise_text_csv() -> None:
+    spec = TestClient(create_app()).get("/openapi.json").json()
+    paths = spec["paths"]
+    csv_routes = (
+        "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft",
+        "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}",
+    )
+    for path in csv_routes:
+        response = paths[path]["get"]["responses"]["200"]
+        assert "text/csv" in response["content"]

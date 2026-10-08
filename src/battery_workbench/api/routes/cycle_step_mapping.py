@@ -15,6 +15,7 @@ from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.service import validate_id
 from battery_workbench.provenance.cycle_step_mapping import (
     CycleStepMappingError,
+    build_cycle_step_mapping_draft_csv,
     validate_cycle_step_mapping,
 )
 from battery_workbench.provenance.cycle_step_mapping_store import (
@@ -40,6 +41,41 @@ class CycleStepMappingSaveRequest(CycleStepMappingPreflightRequest):
 
     confirm_reviewed: bool
     expected_active_sha256: str | None
+
+
+@router.get(
+    "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft",
+    response_class=Response,
+    responses={200: {"content": {"text/csv": {"schema": {"type": "string"}}}}},
+)
+def download_cycle_step_mapping_draft(
+    request: Request, battery_id: str, experiment_id: str
+) -> Response:
+    """Download source inventory with all scientific mapping decisions blank."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    try:
+        content = build_cycle_step_mapping_draft_csv(
+            raw_root=service.raw_root,
+            processed_root=service.processed_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
+    except CycleStepMappingError as exc:
+        raise APIError(
+            ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+            "Current parser source inventory is unavailable",
+            {"reason": str(exc)},
+        ) from exc
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="cycle-step-mapping-draft-{battery_id}-{experiment_id}.csv"',
+            "X-Mapping-Draft": "unreviewed",
+        },
+    )
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/cycle-step-mapping")
@@ -82,7 +118,9 @@ def list_reviewed_cycle_step_mapping_revisions(
 
 
 @router.get(
-    "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}"
+    "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}",
+    response_class=Response,
+    responses={200: {"content": {"text/csv": {"schema": {"type": "string"}}}}},
 )
 def download_reviewed_cycle_step_mapping_revision(
     request: Request, battery_id: str, experiment_id: str, revision_sha256: str

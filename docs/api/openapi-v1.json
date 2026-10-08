@@ -1992,6 +1992,58 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft": {
+      "get": {
+        "description": "Download source inventory with all scientific mapping decisions blank.",
+        "operationId": "download_cycle_step_mapping_draft_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Cycle Step Mapping Draft",
+        "tags": [
+          "scientific-resources"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight": {
       "post": {
         "operationId": "preflight_cycle_step_mapping_api_v1_experiments__battery_id___experiment_id__cycle_step_mapping_preflight_post",
@@ -2145,8 +2197,10 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "description": "Successful Response"

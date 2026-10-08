@@ -63,6 +63,15 @@ for review/recovery; their presence does not mean they remain valid against the
 current raw evidence or parser outputs. A digest mismatch blocks listing and
 download rather than silently repairing the snapshot.
 
+The read-only `GET .../cycle-step-mapping/draft` endpoint can prepare an
+unreviewed inventory from current `steps.parquet` and parser provenance. It
+prefills source-local asset/cycle/step identity and source/parser checksums, but
+leaves canonical Cycle/Step, mapping ID, reviewer, review timestamp, status and
+rationale blank. It never proposes cross-asset equivalence, and the draft must
+fail preflight until a researcher completes and reviews it. The copied raw
+workbook checksum is lineage evidence only; it does not prove physical cycle
+continuity or substitute for an experiment record supporting the mapping.
+
 If API status returns `INTEGRITY_ERROR` for revision history, saving and
 replacement remain blocked; the application does not rewrite or discard a
 damaged snapshot. Preserve a copy of the full experiment annotation directory,

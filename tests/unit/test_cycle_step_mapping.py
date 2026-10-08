@@ -535,6 +535,59 @@ def test_cycle_step_mapping_preflight_api_is_read_only(mapping_case, tmp_path: P
     assert _content_sha256(Path(inputs["cycles_path"])) == cycles_before
 
 
+def test_cycle_step_mapping_draft_prefills_provenance_but_not_scientific_decisions(
+    mapping_case, tmp_path: Path
+) -> None:
+    inputs = _prepare_label_inputs(mapping_case, tmp_path)
+    app = create_app(
+        raw_root=inputs["raw_root"],
+        processed_root=inputs["processed_root"],
+        runs_root=tmp_path / "runs",
+    )
+    client = TestClient(app)
+    raw_root = Path(inputs["raw_root"])
+    raw_before = {
+        path.relative_to(raw_root).as_posix(): _content_sha256(path)
+        for path in raw_root.rglob("*")
+        if path.is_file()
+    }
+
+    response = client.get("/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/draft")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["x-mapping-draft"] == "unreviewed"
+    rows = list(csv.DictReader(response.text.splitlines()))
+    assert len(rows) == 4
+    assert {
+        (row["electrical_asset_id"], row["cycle_index_raw"], row["step_index_raw"])
+        for row in rows
+    } == {
+        ("E001", "1", "1"),
+        ("E001", "1", "2"),
+        ("E002", "1", "1"),
+        ("E002", "1", "2"),
+    }
+    assert all(row["parser_manifest_sha256"] for row in rows)
+    assert all(row["evidence_sha256"] for row in rows)
+    assert all(row["evidence_relative_path"].endswith(".xlsx") for row in rows)
+    assert all(not row["canonical_cycle_index"] for row in rows)
+    assert all(not row["canonical_step_index"] for row in rows)
+    assert all(not row["mapping_id"] and not row["reviewer"] for row in rows)
+
+    preflight = client.post(
+        "/api/v1/experiments/CELL_A/EXP_A/cycle-step-mapping/preflight",
+        json={"mapping_csv": response.text},
+    )
+    assert preflight.status_code == 400
+    assert preflight.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert raw_before == {
+        path.relative_to(raw_root).as_posix(): _content_sha256(path)
+        for path in raw_root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_cycle_step_mapping_preflight_api_returns_typed_invalid_response(
     mapping_case, tmp_path: Path
 ) -> None:

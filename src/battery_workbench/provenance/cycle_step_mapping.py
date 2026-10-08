@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import math
 import re
@@ -291,6 +292,66 @@ def _read_mapping(path: Path) -> tuple[list[dict[str, str]], str]:
     if not rows:
         raise CycleStepMappingError("mapping CSV has no reviewed source steps")
     return rows, hashlib.sha256(raw).hexdigest()
+
+
+def build_cycle_step_mapping_draft_csv(
+    *,
+    raw_root: str | Path,
+    processed_root: str | Path,
+    battery_id: str,
+    experiment_id: str,
+) -> str:
+    """Build an unreviewed inventory draft from current parser provenance.
+
+    Source identity and checksums are copied from verified manifests/artifacts.
+    Canonical indices and human-review fields intentionally remain blank; this
+    function never proposes cross-asset Cycle/Step equivalence.
+    """
+    raw = Path(raw_root).resolve()
+    processed = Path(processed_root).resolve()
+    electrical_dir = processed / "electrical" / battery_id / experiment_id
+    manifest, manifest_path = _assert_parser_sources_current(
+        raw_root=raw,
+        processed_root=processed,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
+    steps = pd.read_parquet(electrical_dir / "steps.parquet")
+    step_keys = _source_keys(
+        steps, artifact="steps", battery_id=battery_id, experiment_id=experiment_id
+    )
+    source_details = {
+        str(item["asset_id"]): str(item["relative_path"])
+        for item in manifest["source_asset_details"]
+    }
+    source_hashes = manifest["source_sha256"]
+    parser_manifest_sha256 = _sha256(manifest_path)
+
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=CYCLE_STEP_MAPPING_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    for asset_id, cycle_index, step_index in sorted(step_keys):
+        writer.writerow(
+            {
+                "contract_version": CYCLE_STEP_MAPPING_VERSION,
+                "mapping_id": "",
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "electrical_asset_id": asset_id,
+                "cycle_index_raw": cycle_index,
+                "step_index_raw": step_index,
+                "canonical_cycle_index": "",
+                "canonical_step_index": "",
+                "parser_manifest_sha256": parser_manifest_sha256,
+                "evidence_relative_path": source_details[asset_id],
+                "evidence_sha256": source_hashes[asset_id],
+                "review_status": "",
+                "reviewer": "",
+                "reviewed_at": "",
+                "rationale": "",
+            }
+        )
+    return output.getvalue()
 
 
 def validate_cycle_step_mapping(

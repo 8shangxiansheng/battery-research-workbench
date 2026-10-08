@@ -183,6 +183,15 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
           下载空白 CSV 模板
         </a>
       </Button>
+      <Button asChild variant="outline">
+        <a
+          href={`${API_BASE}/experiments/${encodeURIComponent(batteryId)}/${encodeURIComponent(experimentId)}/cycle-step-mapping/draft`}
+          download={`cycle-step-mapping-draft-${batteryId}-${experimentId}.csv`}
+          data-testid="cycle-step-mapping-download-draft"
+        >
+          下载当前 source inventory 草稿
+        </a>
+      </Button>
       <Button
         type="button"
         disabled={!file || file.size > MAX_BYTES || preflight.isPending || save.isPending}
@@ -192,6 +201,10 @@ export function CycleStepMappingPreflight({ batteryId, experimentId }: {
         {preflight.isPending ? "正在预检…" : "预检映射"}
       </Button>
     </div>
+    <p className="muted text-xs mt-2">
+      草稿只从当前 parser 输出预填 source identity 与原始文件 SHA-256；canonical Cycle/Step、审核人和理由保持空白。
+      它不会推断跨文件关系，也不能直接通过预检。原始文件摘要仅用于来源追溯，不证明物理循环连续。
+    </p>
     {file && <p className="muted text-xs mt-2" data-testid="cycle-step-mapping-file-name">
       {file.name} · {(file.size / 1024).toFixed(1)} KB
     </p>}

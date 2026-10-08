@@ -1830,6 +1830,7 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-samples" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/alignment-exclusions" },
   { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/preflight" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/draft" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/cycle-step-mapping/revisions/{revision_sha256}" },
