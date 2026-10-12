@@ -95,6 +95,53 @@ from battery_workbench.multimodal.schemas import CanonicalMeasurementEvent
 router = APIRouter(tags=["feature-workbench"])
 
 
+def _resolved_sampling_rate(
+    processed_root: Path, battery_id: str, experiment_id: str
+) -> tuple[float | None, bool, str | None]:
+    """Resolve fs and its parameter-set identity using canonical TOF policy."""
+    parameter_root = Path(processed_root) / "parameters" / battery_id / experiment_id
+    fallback: tuple[float | None, bool, str | None] = (None, False, None)
+    for manifest_path in sorted(parameter_root.glob("PS::*/parameter_set_manifest.json")):
+        manifest = _read_json_local(manifest_path)
+        if not isinstance(manifest, dict) or manifest.get("sampling_rate_status") != "RESOLVED":
+            continue
+        parameter_set_id = manifest.get("parameter_set_id")
+        if not isinstance(parameter_set_id, str) or parameter_set_id != manifest_path.parent.name:
+            continue
+        effective_path = manifest_path.parent / "effective_parameters.json"
+        effective = _read_json_local(effective_path) if effective_path.is_file() else {}
+        if not isinstance(effective, dict):
+            effective = {}
+        effective = effective.get("effective_parameters") or effective
+        fs_hz, verified = effective_fs(effective, require_verified=False)
+        candidate = (fs_hz, verified, parameter_set_id)
+        if verified:
+            return candidate
+        if candidate[0] is not None and fallback[0] is None:
+            fallback = candidate
+    return fallback
+
+
+def _canonical_tof_sampling_rate_matches(
+    canonical_manifest: dict[str, Any],
+    current: tuple[float | None, bool, str | None],
+) -> bool:
+    """Require matching parameter identity, verified state and physical value."""
+    current_fs, current_verified, current_parameter_set_id = current
+    try:
+        artifact_fs = float(canonical_manifest.get("sampling_rate_hz"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return bool(
+        current_verified
+        and current_fs is not None
+        and current_parameter_set_id is not None
+        and canonical_manifest.get("sampling_rate_verified") is True
+        and canonical_manifest.get("parameter_set_id") == current_parameter_set_id
+        and np.isclose(artifact_fs, current_fs, rtol=1e-12, atol=0.0)
+    )
+
+
 def _assert_source_provenance(
     request: Request,
     battery_id: str,
@@ -2905,20 +2952,9 @@ def feature_label_preview(
     # TOF provenance: canonical method + current fs + GateCalibrationRecord
     service_ro = get_service(request)
     cal = resolve_tof_gate_calibration(battery_id, experiment_id, service_ro.processed_root)
-    ps_dir = service_ro.processed_root / "parameters" / battery_id / experiment_id
-    fs_hz, fs_verified, fs_ps = None, False, None
-    from battery_workbench.features_physical.canonical_tof import effective_fs as _eff_fs
-
-    for m_path in sorted(ps_dir.glob("PS::*/effective_parameters.json")):
-        eff = _read_json_local(m_path)
-        if not eff:
-            continue
-        fs, verified = _eff_fs(eff.get("effective_parameters") or eff, require_verified=True)
-        if verified:
-            fs_hz, fs_verified, fs_ps = fs, True, m_path.parent.name
-            break
-        if fs is not None and fs_hz is None:
-            fs_hz, fs_ps = fs, m_path.parent.name
+    fs_hz, fs_verified, fs_ps = _resolved_sampling_rate(
+        service_ro.processed_root, battery_id, experiment_id
+    )
     if "TOF_XCORR" in features:
         feature_meta["TOF_XCORR"]["canonical_note"] = (
             "TOF_XCORR 为诊断量；canonical TOF 是 "
@@ -3302,7 +3338,13 @@ def feature_target_ranking(
                 ("bottom_end_sample_exclusive", "bottom_end_exclusive"),
             )
         )
-        tof_refresh_required = not window_matches
+        sampling_rate_matches = _canonical_tof_sampling_rate_matches(
+            cm,
+            _resolved_sampling_rate(
+                get_service(request).processed_root, battery_id, experiment_id
+            ),
+        )
+        tof_refresh_required = not window_matches or not sampling_rate_matches
         tof_provenance = {
             "tof_method_id": cm.get("tof_method_id"),
             "tof_definition_version": cm.get("tof_definition_version"),
@@ -3314,7 +3356,9 @@ def feature_target_ranking(
             "current_gate_calibration_id": cal["gate_calibration_id"],
             "current_gate_calibration_version": cal["version"],
             "gate_calibration_window_matches_current": window_matches,
-            "gate_calibration_refresh_required": tof_refresh_required,
+            "gate_calibration_refresh_required": not window_matches,
+            "sampling_rate_parameter_set_matches_current": sampling_rate_matches,
+            "sampling_rate_refresh_required": not sampling_rate_matches,
             "waveform_valid_rows": cm.get("canonical_tof_valid"),
             "note": "XCorr 为诊断量，不替代 canonical tof_us",
         }
@@ -3886,20 +3930,9 @@ def canonical_tof(
         )
 
     # fs from the effective parameter set — the only legal provenance
-    ps_root = get_service(request).processed_root / "parameters" / battery_id / experiment_id
-    fs_hz, fs_verified = None, False
-    parameter_set_id = None
-    for manifest in sorted(ps_root.glob("PS::*/parameter_set_manifest.json")):
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        if data.get("sampling_rate_status") != "RESOLVED":
-            continue
-        parameter_set_id = data.get("parameter_set_id")
-        eff_path = manifest.parent / "effective_parameters.json"
-        eff = json.loads(eff_path.read_text(encoding="utf-8")) if eff_path.is_file() else {}
-        eff = eff.get("effective_parameters") or eff
-        fs_hz, fs_verified = effective_fs(eff, require_verified=True)
-        if fs_verified:
-            break
+    fs_hz, fs_verified, parameter_set_id = _resolved_sampling_rate(
+        get_service(request).processed_root, battery_id, experiment_id
+    )
     if parameter_set_id is None:
         raise APIError(
             ErrorCode.ARTIFACT_NOT_AVAILABLE,

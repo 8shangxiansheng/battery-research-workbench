@@ -462,6 +462,7 @@ def test_model_artifact_currentness_checks_outputs_and_dataset_lineage(
                 "battery_id": battery_id,
                 "experiment_id": experiment_id,
                 "dataset_family": "SOC",
+                "analysis_slice_id": "AS::test",
                 "target_name": "soc_reference_percent",
                 "target_column": "soc_reference_percent",
                 "predictor_columns": ["amplitude_a_u"],

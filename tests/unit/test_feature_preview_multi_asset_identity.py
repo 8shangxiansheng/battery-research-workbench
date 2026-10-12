@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,6 +10,60 @@ from fastapi.testclient import TestClient
 from battery_workbench.api.app import create_app
 from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.routes import features_v2
+
+
+def test_current_sampling_rate_resolution_binds_parameter_set_identity(tmp_path) -> None:
+    parameter_root = tmp_path / "parameters/CELL_X/EXP_X"
+    for parameter_set_id, fs_hz, verification_status in (
+        ("PS::a", 50_000_000.0, "VERIFIED"),
+        ("PS::b", 80_000_000.0, "VERIFIED"),
+    ):
+        output = parameter_root / parameter_set_id
+        output.mkdir(parents=True)
+        (output / "parameter_set_manifest.json").write_text(
+            json.dumps({
+                "parameter_set_id": parameter_set_id,
+                "sampling_rate_status": "RESOLVED",
+            }),
+            encoding="utf-8",
+        )
+        (output / "effective_parameters.json").write_text(
+            json.dumps({
+                "ultrasound.sampling_rate_hz": {
+                    "value": fs_hz,
+                    "status": "RESOLVED",
+                    "verification_status": verification_status,
+                }
+            }),
+            encoding="utf-8",
+        )
+
+    current = features_v2._resolved_sampling_rate(tmp_path, "CELL_X", "EXP_X")
+    assert current == (50_000_000.0, True, "PS::a")
+    assert features_v2._canonical_tof_sampling_rate_matches(
+        {
+            "sampling_rate_hz": 50_000_000.0,
+            "sampling_rate_verified": True,
+            "parameter_set_id": "PS::a",
+        },
+        current,
+    )
+    assert not features_v2._canonical_tof_sampling_rate_matches(
+        {
+            "sampling_rate_hz": 50_000_000.0,
+            "sampling_rate_verified": True,
+            "parameter_set_id": "PS::b",
+        },
+        current,
+    )
+    assert not features_v2._canonical_tof_sampling_rate_matches(
+        {
+            "sampling_rate_hz": 40_000_000.0,
+            "sampling_rate_verified": True,
+            "parameter_set_id": "PS::a",
+        },
+        current,
+    )
 
 
 def test_missing_label_artifact_returns_recovery_action(tmp_path, monkeypatch) -> None:
