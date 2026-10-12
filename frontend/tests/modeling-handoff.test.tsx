@@ -163,6 +163,37 @@ describe("RunsPage user actions", () => {
       experiment_id: "EXP_001",
     }));
   });
+
+  it("offers event and label recovery when their one-to-one join is invalid", async () => {
+    setupRuns([]);
+    clientMock.getWorkflowContext.mockResolvedValue({ data: {
+      schema_version: "1", battery_id: "CELL_001", experiment_id: "EXP_001", current_step: "TARGET",
+      step_statuses: { TARGET: "BLOCKED" }, artifact_freshness: {}, typed_actions: [],
+      steps: { TARGET: { status: "BLOCKED", blocking: {
+        required_action: "REBUILD_MEASUREMENT_EVENTS_AND_LABELS_FROM_VERIFIED_INPUTS",
+        blocking_message: "事件与标签关联无效", scientific_reason: "MEASUREMENT_EVENT_LABEL_JOIN_INVALID",
+      } } },
+      recommended_next_action: null, pending_action: null, scientific_context: {}, assistant_context: null,
+      meta: { read_only: true },
+    }, meta: {} });
+    clientMock.startRun.mockResolvedValue({ data: { run_id: "RUN::event-label-rebuild", status: "RUNNING" }, meta: {} });
+    wrap(
+      <RunsPage />,
+      "/experiments/CELL_001/EXP_001/advanced/runs",
+      "/experiments/:batteryId/:experimentId/advanced/runs",
+    );
+
+    const recovery = await screen.findByTestId("event-label-recovery");
+    expect(recovery).toHaveTextContent("不会把 provisional 时间基准升级为 verified");
+    await userEvent.setup().click(screen.getByTestId("rebuild-events-and-labels"));
+
+    await waitFor(() => expect(clientMock.startRun).toHaveBeenCalledWith({
+      profile: "SCIENTIFIC_ANALYSIS",
+      battery_id: "CELL_001",
+      experiment_id: "EXP_001",
+      stages: ["MEASUREMENT_EVENTS", "REFERENCE_LABELS"],
+    }));
+  });
 });
 
 describe("Models-page launcher", () => {

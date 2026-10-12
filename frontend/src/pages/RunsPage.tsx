@@ -31,6 +31,8 @@ export function RunsPage() {
   const sourceIntegrityBlocked = workflow.data?.meta.source_integrity_status === "INTEGRITY_BLOCKED";
   const alignmentRecoveryRequired = workflow.data?.steps.ALIGNMENT?.blocking?.required_action
     === "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT";
+  const eventLabelRecoveryRequired = workflow.data?.steps.TARGET?.blocking?.required_action
+    === "REBUILD_MEASUREMENT_EVENTS_AND_LABELS_FROM_VERIFIED_INPUTS";
   const reparse = useMutation({
     mutationFn: () => client.startRun({
       profile: "INGEST_TO_MEASUREMENT_EVENTS",
@@ -64,6 +66,25 @@ export function RunsPage() {
       void qc.invalidateQueries({ queryKey: ["run", result.data.run_id] });
       void qc.invalidateQueries({ queryKey: ["runs"] });
       for (const key of ["synchronization", "alignment-summary", "alignment-samples", "alignment-exclusions"]) {
+        void qc.invalidateQueries({ queryKey: [key, batteryId, experimentId] });
+      }
+    },
+    onError: (error) => setActionError(error),
+  });
+  const rebuildEventsAndLabels = useMutation({
+    mutationFn: () => client.startRun({
+      profile: "SCIENTIFIC_ANALYSIS",
+      battery_id: batteryId,
+      experiment_id: experimentId,
+      stages: ["MEASUREMENT_EVENTS", "REFERENCE_LABELS"],
+    }),
+    onSuccess: (result) => {
+      setFlowMessage("声电事件与参考标签重建已提交；请检查运行结果及时间基准状态。重建不会验证设备时钟。");
+      setActionError(null);
+      invalidateWorkflow(batteryId, experimentId);
+      void qc.invalidateQueries({ queryKey: ["run", result.data.run_id] });
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+      for (const key of ["measurement-events", "targets", "alignment-summary", "alignment-samples", "alignment-exclusions"]) {
         void qc.invalidateQueries({ queryKey: [key, batteryId, experimentId] });
       }
     },
@@ -150,6 +171,24 @@ export function RunsPage() {
             {rebuildAlignment.isPending ? "正在提交重建…" : "重建时间基准与同步链"}
           </button>
           {rebuildAlignment.error && <ErrorBanner error={rebuildAlignment.error} />}
+        </section>
+      )}
+
+      {eventLabelRecoveryRequired && (
+        <section className="notice mb-5" role="alert" data-testid="event-label-recovery">
+          <h3 className="font-medium">声电事件与标签关联需要重建</h3>
+          <p className="text-sm mt-1">
+            当前 MeasurementEvent 与标签无法一对一验证。将从已验证的解析、时间锚点和同步输入重建事件及 Reference Label；若上游来源无效，运行会阻断并提示先修复来源。重建不会把 provisional 时间基准升级为 verified。
+          </p>
+          <button
+            type="button"
+            data-testid="rebuild-events-and-labels"
+            disabled={rebuildEventsAndLabels.isPending}
+            onClick={() => rebuildEventsAndLabels.mutate()}
+          >
+            {rebuildEventsAndLabels.isPending ? "正在提交重建…" : "重建声电事件与标签"}
+          </button>
+          {rebuildEventsAndLabels.error && <ErrorBanner error={rebuildEventsAndLabels.error} />}
         </section>
       )}
 
