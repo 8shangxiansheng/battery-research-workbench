@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from battery_workbench.datasets.freshness import dataset_freshness
 from battery_workbench.orchestrator.nodes import DatasetNode
 from battery_workbench.orchestrator.schemas import AnalysisPlan, PlanProject
 
@@ -128,6 +129,7 @@ def _write_reusable_dataset(root: Path, dataset_id: str) -> Path:
         "target_name": "soc_reference_percent",
         "target_column": "soc_reference_percent",
         "dataset_builder_version": requirements.expected_version,
+        "analysis_slice_id": "AS::node",
     }
     (dataset_dir / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return label_path
@@ -160,6 +162,21 @@ def test_dataset_node_does_not_reuse_dataset_after_label_source_changes(tmp_path
 
     assert ref is None
     assert "STALE_SOURCE" in reason
+
+
+def test_dataset_freshness_rejects_analysis_slice_identity_mismatch(tmp_path: Path) -> None:
+    _write_reusable_dataset(tmp_path, "DS::slice-identity")
+    manifest_path = (
+        tmp_path / "datasets/CELL_NODE/EXP_NODE/SOC/DS::slice-identity/dataset_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["analysis_slice_id"] = "AS::different"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    freshness = dataset_freshness(tmp_path, manifest_path, manifest)
+
+    assert freshness["freshness_status"] == "STALE_SOURCE"
+    assert "FEATURE_SET_ANALYSIS_SLICE_ID_MISMATCH" in freshness["freshness_reasons"]
 
 
 def test_dataset_node_skips_stale_sibling_and_reuses_matching_fresh_dataset(

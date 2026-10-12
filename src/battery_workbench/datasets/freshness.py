@@ -299,6 +299,10 @@ def dataset_freshness(
                         }.items()
                     ):
                         reasons.append("FEATURE_SET_MANIFEST_IDENTITY_MISMATCH")
+                    if feature_payload.get("analysis_slice_id") != manifest.get(
+                        "analysis_slice_id"
+                    ):
+                        reasons.append("FEATURE_SET_ANALYSIS_SLICE_ID_MISMATCH")
                     output_paths = feature_payload.get("output_paths")
                     output_checksums = feature_payload.get("output_checksums")
                     for output_name, expected_output in (

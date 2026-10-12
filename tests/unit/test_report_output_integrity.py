@@ -137,6 +137,17 @@ def test_report_sidecar_identity_and_root_confinement_fail_closed(
     assert reasons == ["REPORT_OUTPUT_OUTSIDE_ROOT"]
 
 
+def test_report_verifier_rejects_noncanonical_json_input(tmp_path: Path) -> None:
+    report_path = _write_report(tmp_path)
+    alternate_path = report_path.parent / "alternate.json"
+    alternate_path.write_text(report_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert verify_report_outputs(alternate_path) == (
+        "INTEGRITY_BLOCKED",
+        ["REPORT_OUTPUT_JSON_PATH_NOT_CANONICAL"],
+    )
+
+
 def test_report_api_redacts_tampered_frozen_report(tmp_path: Path, monkeypatch) -> None:
     processed = tmp_path / "processed"
     (processed / "datasets" / BATTERY_ID / EXPERIMENT_ID).mkdir(parents=True)

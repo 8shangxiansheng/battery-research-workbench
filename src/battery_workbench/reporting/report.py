@@ -109,6 +109,9 @@ def verify_report_outputs(
     """Verify a frozen report and its rendered copies; never repairs files."""
     report_json_path = Path(report_json_path)
     report_dir = report_json_path.parent
+    canonical_report_path = report_dir / "scientific_report.json"
+    if report_json_path.name != canonical_report_path.name:
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_JSON_PATH_NOT_CANONICAL"]
     manifest_path = report_dir / "scientific_report_manifest.json"
     if not manifest_path.is_file():
         return "LEGACY", ["REPORT_OUTPUT_MANIFEST_MISSING"]
@@ -164,7 +167,7 @@ def verify_report_outputs(
     if reasons:
         return "INTEGRITY_BLOCKED", reasons
     try:
-        report = json.loads(report_json_path.read_text(encoding="utf-8"))
+        report = json.loads(canonical_report_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_JSON_INVALID"]
     if not isinstance(report, dict) or report.get("report_id") != expected_report_id:
