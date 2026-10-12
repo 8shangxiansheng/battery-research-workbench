@@ -6,7 +6,9 @@
 
 工作台已有实验导入、Overview、Waveform、Analysis、Models 和 Report 等用户流程。第一次使用请先阅读[使用指南](docs/USER_GUIDE.md)；它说明 Docker / Windows 部署、实验导入、分析步骤及当前科学限制。本文其余内容主要记录数据架构、开发和部署细节。
 
-当前 CELL_001 / EXP_001 是单电池、两循环样例；时间基准仍需在界面核实是否为 provisional，Reference SOC 是回顾性参考标签，温度通道缺失，SOH 独立状态数量有限。模型与报告是否可运行取决于当前数据集和 grouped split 状态；不要把样例结果表述为跨电池泛化或超参数调优结论。
+当前 CELL_001 / EXP_001 是单电池、两循环样例。最近本地工件核查显示，波形采样率参数仍记录为 50 MHz、`USER_SUPPLIED/VERIFIED`；但当前工作区 canonical envelope-peak TOF 工件未通过 freshness 校验（gate calibration 已变化、calibration record 路径非规范、FeatureSet manifest 输入 checksum 不匹配），不能作为该工作区的当前结果使用，须通过正常流程重建。2026-10-08 的浏览器会话曾显示 TOF `READY`、gate calibration version 96；其后端和 `data/processed/` 挂载尚未核实是否与本工作区相同，因此部署实例的 TOF 状态目前未能对账。声电绝对时间基准仍为 `PROVISIONAL`（时区未知、同步未验证）。Reference SOC 是回顾性参考标签；原始电学 XLSX 有 T1 auxTemp，按 Electrical DataAsset + `record_index_raw` 精确关联到 3,995 条唯一 MeasurementEvent，但传感器位置/校准证据未验证，因此温度建模 target 仍为 `BLOCKED_BY_VALIDATION`；SOH 独立状态数量有限。不要把该样例表述为跨电池泛化或超参数调优结论；2026-10-06 基线报告是历史快照，不代表当前 ignored processed 工件状态。
+
+科研数据扩展、代码阶段和真实数据验收门见[科研可用性改进计划](docs/scientific-research-improvement-plan.md)。计划区分软件可实现项与需要新增实验数据/测量协议的前置条件。
 
 V1.1 已将核心数据模型升级为：
 
@@ -128,6 +130,8 @@ print(report.status)
 
 QA 不会删除重复 timestamp、修改异常值或回写 processed Parquet。
 
+Parser manifest 还为每项规范解析输出记录生成时 SHA-256；读取和复用前会校验 Parquet/Zarr、实验身份及规范路径。历史 manifest 若缺少输出 checksum，QA 会报告 `PARSER_OUTPUT_INTEGRITY_INVALID` 并将状态设为 `FAIL`，科学 API 会返回 `INTEGRITY_ERROR`，而不是从当前文件补造历史 checksum。请从 Runs 正常重跑相应 Parser，再检查同步和其余下游工件的新鲜度；不要手工编辑 parser manifest 或直接改写 `data/processed/`。该恢复只确认解析字节完整，不会验证设备时钟、采样率、标签或声电关联的科学真实性。详细契约见 [Manifest Data Contract](docs/data_contract/manifests.md#parser-输出完整性)。
+
 ## Ultrasound TXT Parser
 
 BRW-005 根据 DataAsset manifest 将一个 Experiment 下的一个或多个 Ultrasound TXT 转为 frame metadata 与独立的 raw waveform Zarr group：
@@ -153,7 +157,7 @@ parsed = parse_ultrasound_experiment(experiment, assets, raw_root)
 write_ultrasound_experiment(parsed, Path("data/processed/ultrasound"))
 ```
 
-Parser 保留 raw frame ID、unknown metadata 与整数 waveform，不执行滤波、FFT、TOF 或 Electrical 同步。当前没有可靠 sampling rate，输出中保持 `null`。
+Parser 保留 raw frame ID、unknown metadata 与整数 waveform，不执行滤波、FFT、TOF 或 Electrical 同步。**原始解析器输出**中的 `sampling_rate_hz` 保持 `null`，不会从约 10 s 的帧间隔推断波形采样率。独立的参数注册表若有可追溯且 `VERIFIED` 的采样率，可供下游 canonical TOF 使用，并须在参数集/TOF 工件中保留来源；这只验证波形采样时钟，不会验证声电绝对时间基准。当前 CELL_001/EXP_001 的声电同步仍为 `PROVISIONAL`。
 
 ## Ultrasound QA
 
@@ -177,8 +181,9 @@ print(report.status)
 ```
 
 QA 会生成 JSON、HTML、3 张 CSV 表和 8 张诊断图，不会修改 processed 输入或波形。
-当前 `sampling_rate_hz=null`，因此图表横轴保持 sample index，且不报告绝对 TOF
-或物理频率。
+原始 Parser QA 的 `parser_manifest.json` 仍记录 `sampling_rate_hz=null`，所以该 QA
+横轴保持 sample index，不报告绝对 TOF 或物理频率。后续 canonical TOF 若通过独立、
+可追溯的 `VERIFIED` 参数集获得采样率，是另一条派生工件路径；不代表声电同步时间基准已验证。
 
 ## Run tests
 
@@ -200,11 +205,11 @@ docker compose up --build -d
 
 Compose 默认只监听本机回环地址；需配置 `BRW_PORT` 可改主机端口。由于 API 当前没有认证，**不要直接将 `BRW_BIND_ADDR` 设为 `0.0.0.0` 暴露到不可信网络**；远程使用请置于具备认证与 TLS 的反向代理之后。
 
-Compose 将 `data/raw`、`data/processed` 和 `data/artifacts` 分目录挂载。raw 默认可写是为了支持 UI 新建实验/导入原始资产；导入流程只新增源文件和 manifest，不应覆盖已有原始文件。对于只需分析既有数据的部署，可设置 `BRW_RAW_READ_ONLY=true`，但此时 UI 导入功能不可用。Linux 用户需确保挂载目录可由容器 UID/GID（默认 `10001:10001`）写入；例如：
+Compose 将 `data/raw`、`data/annotations`、`data/processed` 和 `data/artifacts` 分目录挂载。`data/raw` 保存不可变原始数据/证据；`data/annotations` 保存用户维护的工况分段 sidecar，不应放到 raw 中。raw 默认可写是为了支持 UI 新建实验/导入原始资产；导入流程只新增源文件和 manifest，不应覆盖已有原始文件。对于只需分析既有数据的部署，可设置 `BRW_RAW_READ_ONLY=true`，但此时 UI 导入功能不可用。Linux 用户需确保挂载目录可由容器 UID/GID（默认 `10001:10001`）写入；例如：
 
 ```bash
-mkdir -p data/raw data/processed data/artifacts
-sudo chown -R "${BRW_UID:-10001}:${BRW_GID:-10001}" data/raw data/processed data/artifacts
+mkdir -p data/raw data/annotations data/processed data/artifacts
+sudo chown -R "${BRW_UID:-10001}:${BRW_GID:-10001}" data/raw data/annotations data/processed data/artifacts
 ```
 
 也可设置 `BRW_UID` / `BRW_GID` 为当前用户的 UID/GID。Docker Desktop (Windows/macOS) 使用其共享目录权限映射。

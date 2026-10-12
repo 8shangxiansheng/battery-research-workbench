@@ -1,0 +1,111 @@
+# Scientific analysis plan companion template.
+# This is a planning document, not an executable analysis configuration.
+# Keep undecided choices explicit; do not replace them with software defaults.
+
+schema_version: "brw-analysis-plan-template/1.1"
+study:
+  study_id: null
+  title: null
+  version: null
+  status: DRAFT # DRAFT | APPROVED | SUPERSEDED
+  authored_at: null # ISO-8601 date/time with timezone
+  approved_at: null
+  approved_by: null
+  supersedes_version: null
+
+research_question:
+  question: null
+  intended_claim_scope: null # EXPLORATORY | CONFIRMATORY; choose explicitly.
+  target_population: null
+  applicable_conditions: []
+
+primary_analysis:
+  endpoint:
+    target_id: null
+    operational_definition: null
+    unit: null
+    source_and_method_version: null
+    observation_grain: null # MEASUREMENT_EVENT | CYCLE | EXPERIMENT | BATTERY
+    uncertainty_source: null
+  feature:
+    feature_id: null
+    gate_id: null
+    feature_variant: null
+    operational_definition_and_version: null
+    unit: null
+  relationship:
+    estimand: null # Define the exact quantity to estimate; do not write only "correlation".
+    method: null # e.g. Pearson/Spearman only after justification and approval.
+    scope: null # OVERALL | condition/cycle scope, explicitly defined.
+    directionality: null # TWO_SIDED | POSITIVE | NEGATIVE, justified in the protocol.
+  independent_unit: BATTERY
+  eligible_batteries_and_experiments: []
+  inclusion_rule_ids: []
+  exclusion_rule_ids: []
+
+repeated_measurement_structure:
+  review_status: UNDECIDED # UNDECIDED | REVIEWED
+  hierarchy: [] # e.g. Battery -> Experiment -> Cycle -> MeasurementEvent; confirm for this study.
+  within_battery_dependence_handling: null
+  between_battery_estimand: null
+  aggregation_or_weighting: null
+
+uncertainty_and_inference:
+  resampling_unit: BATTERY
+  resampling_method: UNDECIDED # Choose and justify; software must not infer this choice.
+  confidence_interval:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    confidence_level: null
+    method: null
+    planned_resampling_replicates: null
+    random_seed_policy: null
+    rationale: null # Required when status is NOT_PLANNED.
+  p_value:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    method: null
+    rationale: null # Required when status is NOT_PLANNED.
+  multiple_comparison:
+    status: UNDECIDED # UNDECIDED | ADJUST | NOT_APPLICABLE
+    hypothesis_family_id: null
+    method: null
+    family_definition: null
+    rationale: null # Required when NOT_APPLICABLE; define a family when ADJUST.
+  confirmatory_inference_allowed: false # Requires approved plan and eligible independent units.
+
+confounding_and_sensitivity:
+  confounder_review_status: UNDECIDED # UNDECIDED | REVIEWED_NONE | CANDIDATES_SPECIFIED
+  candidate_confounders: [] # If specified: rationale, source, unit/grain, and handling.
+  adjustment:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    method: null
+    rationale: null # Required when NOT_PLANNED.
+  sensitivity:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    analyses: []
+    rationale: null # Required when NOT_PLANNED.
+  subgroup:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    analyses: []
+    rationale: null # Required when NOT_PLANNED.
+
+data_and_sync_gates:
+  accepted_target_semantics: null
+  required_target_provenance: []
+  required_feature_provenance: []
+  minimum_sync_status: null # Explicitly distinguish PROVISIONAL from validated synchronization.
+  maximum_sync_error_s: null
+  ambiguity_policy: null
+  missing_data_policy: null
+  protocol_deviation_policy: null
+
+evaluation_separation:
+  model_evaluation_in_scope: false
+  held_out_unit: BATTERY
+  held_out_data_may_influence_feature_or_model_selection: false
+  tuning:
+    status: UNDECIDED # UNDECIDED | PLANNED | NOT_PLANNED
+    policy: null
+    rationale: null # Required when NOT_PLANNED.
+
+decision_log: [] # Append dated decisions; do not overwrite approved historical choices.
+limitations_and_open_questions: []

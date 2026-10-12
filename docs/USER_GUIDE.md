@@ -2,6 +2,8 @@
 
 本文面向实验人员，介绍如何启动工作台、导入数据、检查科学前置条件、分析特征并生成数据集、模型评估与报告。界面以当前仓库版本为准；功能状态可能随版本变化。
 
+开始真实多电池/多工况采集前，请先按[采集与纳入 SOP](data-collection-sop.md)冻结研究方案、记录设备和时间证据，并维护批次纳入审计。该 SOP 是执行前模板，不代表当前 CELL_001 已满足其数据门。
+
 ## 1. 启动工作台
 
 ### Docker Compose（推荐）
@@ -30,7 +32,7 @@ git pull
 docker compose up --build -d
 ```
 
-Compose 将 `data/raw`、`data/processed` 和 `data/artifacts` 映射到容器外部。换电脑或更新源码前，请备份需要保留的实验数据与产物；不要把原始数据当作源码更新覆盖。Docker Desktop 的 Linux 容器不等于原生 Windows 容器。
+Compose 将 `data/raw`、`data/annotations`、`data/processed` 和 `data/artifacts` 映射到容器外部。工况分段声明 sidecar 放在 `data/annotations/{battery_id}/{experiment_id}/condition_segments.csv`；其证据文件仍从只读的 `data/raw/` 引用。换电脑或更新源码前，请备份需要保留的实验数据、annotations 与产物；不要把原始数据当作源码更新覆盖。Docker Desktop 的 Linux 容器不等于原生 Windows 容器。
 
 只读分析部署可设置 `BRW_RAW_READ_ONLY=true`；此时导入新原始数据不可用。其他环境变量和权限说明见根目录 [README](../README.md) 的 Docker deployment 一节。
 
@@ -51,6 +53,24 @@ npm run dev
 ```
 
 打开 Vite 输出的本地地址（通常是 `http://localhost:5173`）。开发服务器会将 `/api/v1` 请求代理到本机 API。也可运行 `npm run build` 构建前端。
+
+若 API 端口 `8000` 已被其他本地实例占用，可让 API 使用另一端口，并通过 `BRW_API_PROXY_TARGET` 指定前端代理目标：
+
+```bash
+BRW_RAW_ROOT=data/raw \
+BRW_PROCESSED_ROOT=data/processed \
+BRW_RUNS_ROOT=data/artifacts/runs \
+.venv/bin/uvicorn battery_workbench.api.serve:app --host 127.0.0.1 --port 8002
+```
+
+在 `frontend/` 目录启动前端：
+
+```bash
+cd frontend
+BRW_API_PROXY_TARGET=http://127.0.0.1:8002 npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+该变量只配置 Vite 开发代理，不改变 API 的公开路径或生产部署配置。
 
 ### 模型接入（Assistant 意图理解，可选）
 
@@ -95,11 +115,11 @@ data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.tx
 
 从实验库进入“新建实验”，按向导完成：
 
-1. **实验信息**：填写 Battery ID 和实验名称；Experiment ID 可按界面规则自动生成。不要从文件名推断身份。
+1. **实验信息**：填写 Battery ID 和实验名称；Experiment ID 可按界面规则自动生成。可记录协议标识、工况 ID/描述及 Experiment 起止时间；这些值会进入 `experiments.csv` 和 intake import manifest，标记为操作者申报，不代表设备校准或科学验证通过。起止时间不作为声电对齐锚点。不要从文件名推断身份。
 2. **数据资产**：分别上传电学 XLSX 和超声 TXT。检查文件角色、名称、大小和 checksum。
 3. **格式检测**：确认系统检测出的格式/解析器。若结果有歧义，必须人工选择；不支持的格式不能继续。
 4. **预览与验证**：分别阅读格式有效性、科学元数据完整性和流水线就绪状态。格式通过不代表科学参数已齐全。
-5. **科学元数据**：尽可能提供采样率、时间锚点及实验所需的设备/几何信息。无法确认的值应留空或标记未知，不要猜测。
+5. **科学元数据**：尽可能提供采样率、时间锚点及实验所需的设备/几何信息。无法确认的值应留空或标记未知，不要猜测。当前工况标签是 Experiment 级的；实验过程中切换工况不能用一个静态标签代替时间分段。
 6. **提交**：复核身份、资产和限制后确认导入。提交登记数据资产；需要处理数据时，再明确点击“开始数据处理”。
 
 如果采样率未知，导入可以继续，但依赖绝对时间/频率的分析（例如物理 TOF）会保持阻断，不能将未知值填成 0 或猜测值。
@@ -112,17 +132,23 @@ data/raw/batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.tx
 
 ### 4.1 Target：选择研究目标
 
-在“特征分析”中选择目标，例如 Reference SOC。查看目标来源、覆盖率、范围和限制。当前 CELL_001 的 Reference SOC 是回顾性分段归一化参考标签，不是真实 SOC。Temperature 目标走数据驱动门：有温度通道且极差 ≥ 2°C 时放行，否则仍拒收并给出原因；SOH 只有两个独立状态，不能把逐帧重复值当成大量独立样本。
+在“特征分析”中选择目标，例如 Reference SOC。查看目标来源、覆盖率、范围和限制。当前 CELL_001 的 Reference SOC 是回顾性分段归一化参考标签，不是真实 SOC。Temperature 即使存在读数且极差 ≥ 2°C，也只有通过传感器位置与校准证据验证后才可建模；目前这项验证尚未实现/登记，因此温度目标仍阻断。SOH 只有两个独立状态，不能把逐帧重复值当成大量独立样本。
+
+目标卡片可展开“标签来源与不确定度”，核对标签粒度、公式/测量方法、方法版本、来源文件和 uncertainty 状态。`UNKNOWN` 表示数据/协议没有提供经过验证的不确定度，不是零误差；折叠区也不会把来源信息等同于校准通过。
 
 ### 4.2 Alignment：检查同步
 
 查看匹配、歧义、未匹配数量及同步误差。只有唯一匹配的 MeasurementEvent 才能安全进入分析；歧义记录不会静默挑选电学行。注意区分“已按暂定时间基准对齐”和“时间基准已验证”：`PROVISIONAL` 不代表同步已验证。
 
+若需提交时间锚点依据，可在 Alignment 的“时间基准验证”面板登记逐 DataAsset 的绝对起始时间、时区、证据引用和容差。填写 raw-relative 证据路径后，可先点“预检路径并自动填入 SHA-256”；服务器只读取 `data/raw/` 下文件并计算 hash/大小，不上传或复制文件，也不判断证据是否足以证明时钟。随后由操作者记录审核决定；该记录以 `OPERATOR_ASSERTED_UNAUTHENTICATED` 标记，接受后状态为 `ACCEPTED_PENDING_RECOMPUTE`，须显式重跑 MeasurementEvent 流程。它不会自动证明证据真实性，也不会把 `validated_sync` 设为 `true`；目前仍没有证据文件上传或认证审核身份。因此，提交或接受记录不等于时间基准验证通过，真实设备/同步证据不足时仍应保留 `PROVISIONAL`。
+
+Alignment 中的“Electrical 温度通道来源”面板可查看已解析 auxTemp 的 channel ID。单通道会预选但仍须明确点击重建；多通道必须选定一个后启动 `INGEST_TO_MEASUREMENT_EVENTS`。该运行会更新派生 MeasurementEvent 并可能使下游工件 stale；它只选择数据来源，不证明探头位置/校准，不解除 Temperature target 的验证阻断，也不提升声电时间基准状态。无 channel ID 时系统不提供推测或合并选项。
+
 ### 4.3 Waveform：检查波形与闸门
 
 在“波形与闸门”查看超声 A-scan、缩放/平移和已配置的局部采样窗口。草稿闸门需要按界面动作确认后才成为已提交配置。闸门定义的是单帧波形内部的样本区间；由该帧提取的特征共享同一个电学 MeasurementEvent，不会因为选了不同闸门而自动获得不同电学时刻。
 
-若页面要求 sampling rate 或时间基准，使用页面的参数/校准入口补齐并验证。TOF 前置条件未满足时应显示 blocked 状态和原因，不应把 0 当作有效 TOF。
+若页面要求 sampling rate 或时间基准，使用页面入口登记可追溯的前置信息；页面/API 不会仅因填写或保存就伪造“验证通过”。TOF 前置条件未满足时应显示 blocked 状态和原因，不应把 0 当作有效 TOF。
 
 ### 4.4 Features 与 Relationships：提取和检查特征
 
@@ -176,7 +202,7 @@ Models 页面另有“建立跨电池队列”和“Battery-level LOBO”入口�
 - 样例只有 CELL_001 单电池、EXP_001 两个循环；不能据此声称跨电池泛化。
 - 时间基准仍可能为 provisional，需在 Alignment 页面核实当前状态。
 - Reference SOC 是回顾性参考标签，不等于独立测得的真实 SOC。
-- 当前样例缺温度通道（温度目标需有通道且极差 ≥ 2°C 才放行）；SOH 独立状态数不足以支撑稳健的逐帧建模结论。
+- 当前样例温度读数已关联，但传感器位置/校准未验证，温度目标仍阻断；极差 ≥ 2°C 只是必要条件，不代表可建模。SOH 独立状态数不足以支撑稳健的逐帧建模结论。
 - Dummy baseline 未被模型超过时，应如实报告；固定基线比较不等于超参数调优。
 - 特征相关、Ranking 和模型误差都受样本数量、分组结构、同步质量与标签定义限制。
 

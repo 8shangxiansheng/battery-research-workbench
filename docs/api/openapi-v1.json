@@ -331,6 +331,578 @@
         "title": "CohortUnitMapping",
         "type": "object"
       },
+      "CorrelationAlignmentAssessment": {
+        "properties": {
+          "association_scope": {
+            "const": "EXPLORATORY_ONLY",
+            "title": "Association Scope",
+            "type": "string"
+          },
+          "confirmatory_inference_allowed": {
+            "const": false,
+            "title": "Confirmatory Inference Allowed",
+            "type": "boolean"
+          },
+          "limitation": {
+            "title": "Limitation",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "VALIDATED",
+              "PROVISIONAL",
+              "UNKNOWN"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "validated_sync": {
+            "title": "Validated Sync",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "validated_sync",
+          "association_scope",
+          "confirmatory_inference_allowed",
+          "limitation"
+        ],
+        "title": "CorrelationAlignmentAssessment",
+        "type": "object"
+      },
+      "CorrelationInferenceAssessment": {
+        "properties": {
+          "analysis_mode": {
+            "const": "EXPLORATORY",
+            "title": "Analysis Mode",
+            "type": "string"
+          },
+          "analysis_plan": {
+            "additionalProperties": true,
+            "title": "Analysis Plan",
+            "type": "object"
+          },
+          "claim_scope": {
+            "const": "ASSOCIATION_ONLY",
+            "title": "Claim Scope",
+            "type": "string"
+          },
+          "confidence_interval": {
+            "additionalProperties": true,
+            "title": "Confidence Interval",
+            "type": "object"
+          },
+          "confounder_adjustment": {
+            "additionalProperties": true,
+            "title": "Confounder Adjustment",
+            "type": "object"
+          },
+          "correlation_results_included": {
+            "title": "Correlation Results Included",
+            "type": "boolean"
+          },
+          "group_count_semantics": {
+            "const": "DECLARED_BATTERY_ID",
+            "title": "Group Count Semantics",
+            "type": "string"
+          },
+          "group_identity_status": {
+            "const": "NOT_ASSESSED",
+            "title": "Group Identity Status",
+            "type": "string"
+          },
+          "independent_unit": {
+            "const": "BATTERY",
+            "title": "Independent Unit",
+            "type": "string"
+          },
+          "multiple_comparison": {
+            "additionalProperties": true,
+            "title": "Multiple Comparison",
+            "type": "object"
+          },
+          "p_value": {
+            "additionalProperties": true,
+            "title": "P Value",
+            "type": "object"
+          },
+          "physical_battery_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Physical Battery Count"
+          },
+          "study_protocol_status": {
+            "title": "Study Protocol Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "analysis_mode",
+          "claim_scope",
+          "independent_unit",
+          "group_count_semantics",
+          "group_identity_status",
+          "correlation_results_included",
+          "study_protocol_status",
+          "analysis_plan",
+          "confidence_interval",
+          "p_value",
+          "multiple_comparison",
+          "confounder_adjustment"
+        ],
+        "title": "CorrelationInferenceAssessment",
+        "type": "object"
+      },
+      "CorrelationPolicyVersions": {
+        "properties": {
+          "battery_decomposition": {
+            "title": "Battery Decomposition",
+            "type": "string"
+          },
+          "battery_scatter_diagnostic": {
+            "title": "Battery Scatter Diagnostic",
+            "type": "string"
+          },
+          "condition_stratification": {
+            "title": "Condition Stratification",
+            "type": "string"
+          },
+          "cycle_within_between_correlation": {
+            "title": "Cycle Within Between Correlation",
+            "type": "string"
+          },
+          "feature_state_correlation": {
+            "title": "Feature State Correlation",
+            "type": "string"
+          },
+          "feature_state_join": {
+            "title": "Feature State Join",
+            "type": "string"
+          }
+        },
+        "required": [
+          "feature_state_correlation",
+          "feature_state_join",
+          "battery_decomposition",
+          "cycle_within_between_correlation",
+          "condition_stratification",
+          "battery_scatter_diagnostic"
+        ],
+        "title": "CorrelationPolicyVersions",
+        "type": "object"
+      },
+      "CycleCorrelationComponent": {
+        "properties": {
+          "coefficient": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coefficient"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "n_cycle_groups": {
+            "title": "N Cycle Groups",
+            "type": "integer"
+          },
+          "n_events": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Events"
+          }
+        },
+        "required": [
+          "coefficient",
+          "method",
+          "n_cycle_groups"
+        ],
+        "title": "CycleCorrelationComponent",
+        "type": "object"
+      },
+      "CycleCorrelationDecomposition": {
+        "properties": {
+          "battery_identity_status": {
+            "const": "NOT_ASSESSED",
+            "default": "NOT_ASSESSED",
+            "title": "Battery Identity Status",
+            "type": "string"
+          },
+          "between_cycle": {
+            "$ref": "#/components/schemas/CycleCorrelationComponent"
+          },
+          "declared_battery_group_count": {
+            "title": "Declared Battery Group Count",
+            "type": "integer"
+          },
+          "excluded_ineligible_count": {
+            "title": "Excluded Ineligible Count",
+            "type": "integer"
+          },
+          "group_count_semantics": {
+            "const": "DECLARED_BATTERY_ID",
+            "default": "DECLARED_BATTERY_ID",
+            "title": "Group Count Semantics",
+            "type": "string"
+          },
+          "interpretation": {
+            "title": "Interpretation",
+            "type": "string"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "missing_feature_count": {
+            "title": "Missing Feature Count",
+            "type": "integer"
+          },
+          "missing_state_count": {
+            "title": "Missing State Count",
+            "type": "integer"
+          },
+          "n_batteries": {
+            "title": "N Batteries",
+            "type": "integer"
+          },
+          "n_cycle_groups": {
+            "title": "N Cycle Groups",
+            "type": "integer"
+          },
+          "n_events": {
+            "title": "N Events",
+            "type": "integer"
+          },
+          "n_input_events": {
+            "title": "N Input Events",
+            "type": "integer"
+          },
+          "physical_battery_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Physical Battery Count"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "within_cycle": {
+            "$ref": "#/components/schemas/CycleCorrelationComponent"
+          }
+        },
+        "required": [
+          "policy",
+          "status",
+          "interpretation",
+          "n_input_events",
+          "n_events",
+          "n_cycle_groups",
+          "n_batteries",
+          "declared_battery_group_count",
+          "missing_feature_count",
+          "missing_state_count",
+          "excluded_ineligible_count",
+          "within_cycle",
+          "between_cycle"
+        ],
+        "title": "CycleCorrelationDecomposition",
+        "type": "object"
+      },
+      "DeclaredConditionAnalysis": {
+        "properties": {
+          "absolute_timebase_status": {
+            "const": "NOT_ASSESSED",
+            "title": "Absolute Timebase Status",
+            "type": "string"
+          },
+          "assignment_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Assignment Status Counts",
+            "type": "object"
+          },
+          "declaration_status": {
+            "enum": [
+              "OPERATOR_DECLARED",
+              "NOT_CONFIGURED",
+              "NOT_APPLICABLE"
+            ],
+            "title": "Declaration Status",
+            "type": "string"
+          },
+          "events_assessed": {
+            "title": "Events Assessed",
+            "type": "integer"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/DeclaredConditionCorrelation"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "segment_count": {
+            "title": "Segment Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "NOT_CONFIGURED",
+              "NO_SEGMENTS"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "synchronization_status": {
+            "const": "NOT_ASSESSED",
+            "title": "Synchronization Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "declaration_status",
+          "absolute_timebase_status",
+          "synchronization_status",
+          "segment_count",
+          "events_assessed",
+          "assignment_status_counts",
+          "results",
+          "limitations"
+        ],
+        "title": "DeclaredConditionAnalysis",
+        "type": "object"
+      },
+      "DeclaredConditionCorrelation": {
+        "properties": {
+          "absolute_timebase_status": {
+            "const": "NOT_ASSESSED",
+            "title": "Absolute Timebase Status",
+            "type": "string"
+          },
+          "analysis_mode": {
+            "const": "EXPLORATORY",
+            "title": "Analysis Mode",
+            "type": "string"
+          },
+          "battery_count": {
+            "title": "Battery Count",
+            "type": "integer"
+          },
+          "battery_identity_status": {
+            "const": "NOT_ASSESSED",
+            "default": "NOT_ASSESSED",
+            "title": "Battery Identity Status",
+            "type": "string"
+          },
+          "coefficient": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coefficient"
+          },
+          "condition_axis_id": {
+            "title": "Condition Axis Id",
+            "type": "string"
+          },
+          "condition_value": {
+            "title": "Condition Value",
+            "type": "string"
+          },
+          "cycle_count": {
+            "title": "Cycle Count",
+            "type": "integer"
+          },
+          "declaration_status": {
+            "const": "OPERATOR_DECLARED",
+            "title": "Declaration Status",
+            "type": "string"
+          },
+          "excluded_ineligible_count": {
+            "title": "Excluded Ineligible Count",
+            "type": "integer"
+          },
+          "feature_code": {
+            "title": "Feature Code",
+            "type": "string"
+          },
+          "feature_variant": {
+            "title": "Feature Variant",
+            "type": "string"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          },
+          "group_count_semantics": {
+            "const": "DECLARED_BATTERY_ID",
+            "default": "DECLARED_BATTERY_ID",
+            "title": "Group Count Semantics",
+            "type": "string"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "method": {
+            "enum": [
+              "pearson",
+              "spearman"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "missing_feature_count": {
+            "title": "Missing Feature Count",
+            "type": "integer"
+          },
+          "missing_state_count": {
+            "title": "Missing State Count",
+            "type": "integer"
+          },
+          "n_input_events": {
+            "title": "N Input Events",
+            "type": "integer"
+          },
+          "n_valid_pairs": {
+            "title": "N Valid Pairs",
+            "type": "integer"
+          },
+          "physical_battery_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Physical Battery Count"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "segment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Segment Ids",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "synchronization_status": {
+            "const": "NOT_ASSESSED",
+            "title": "Synchronization Status",
+            "type": "string"
+          },
+          "time_reference_asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Time Reference Asset Ids",
+            "type": "array"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "feature_code",
+          "policy",
+          "feature_variant",
+          "gate_id",
+          "condition_axis_id",
+          "condition_value",
+          "unit",
+          "declaration_status",
+          "absolute_timebase_status",
+          "synchronization_status",
+          "method",
+          "coefficient",
+          "n_input_events",
+          "n_valid_pairs",
+          "missing_feature_count",
+          "missing_state_count",
+          "excluded_ineligible_count",
+          "battery_count",
+          "cycle_count",
+          "segment_ids",
+          "time_reference_asset_ids",
+          "analysis_mode",
+          "status",
+          "limitations"
+        ],
+        "title": "DeclaredConditionCorrelation",
+        "type": "object"
+      },
       "ErrorEnvelope": {
         "properties": {
           "error": {
@@ -437,6 +1009,381 @@
         "title": "ExtensionReadinessEnvelope",
         "type": "object"
       },
+      "FeatureCorrelationAnalysisScope": {
+        "properties": {
+          "analysis_mode": {
+            "const": "EXPLORATORY",
+            "title": "Analysis Mode",
+            "type": "string"
+          },
+          "analyzed_event_rows": {
+            "minimum": 0.0,
+            "title": "Analyzed Event Rows",
+            "type": "integer"
+          },
+          "coefficient_eligibility": {
+            "const": "analysis_eligible=true",
+            "title": "Coefficient Eligibility",
+            "type": "string"
+          },
+          "diagnostic_point_limit": {
+            "minimum": 1.0,
+            "title": "Diagnostic Point Limit",
+            "type": "integer"
+          },
+          "diagnostic_points_returned": {
+            "minimum": 0.0,
+            "title": "Diagnostic Points Returned",
+            "type": "integer"
+          },
+          "join_key": {
+            "const": "measurement_event_id",
+            "title": "Join Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "diagnostic_point_limit",
+          "analyzed_event_rows",
+          "diagnostic_points_returned",
+          "join_key",
+          "coefficient_eligibility",
+          "analysis_mode"
+        ],
+        "title": "FeatureCorrelationAnalysisScope",
+        "type": "object"
+      },
+      "FeatureCorrelationResult": {
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "analysis_mode": {
+            "title": "Analysis Mode",
+            "type": "string"
+          },
+          "battery_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Id"
+          },
+          "coefficient": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coefficient"
+          },
+          "distinct_state_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct State Count"
+          },
+          "excluded_ineligible_count": {
+            "title": "Excluded Ineligible Count",
+            "type": "integer"
+          },
+          "excluded_ineligible_unit": {
+            "title": "Excluded Ineligible Unit",
+            "type": "string"
+          },
+          "feature_code": {
+            "title": "Feature Code",
+            "type": "string"
+          },
+          "feature_variant": {
+            "title": "Feature Variant",
+            "type": "string"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          },
+          "group_identity_status": {
+            "default": "NOT_ASSESSED",
+            "title": "Group Identity Status",
+            "type": "string"
+          },
+          "independent_group_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independent Group Count"
+          },
+          "independent_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independent Unit"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "missing_count_unit": {
+            "title": "Missing Count Unit",
+            "type": "string"
+          },
+          "missing_feature_count": {
+            "title": "Missing Feature Count",
+            "type": "integer"
+          },
+          "missing_state_count": {
+            "title": "Missing State Count",
+            "type": "integer"
+          },
+          "ml_safe_selection": {
+            "title": "Ml Safe Selection",
+            "type": "boolean"
+          },
+          "n_input": {
+            "title": "N Input",
+            "type": "integer"
+          },
+          "n_input_unit": {
+            "title": "N Input Unit",
+            "type": "string"
+          },
+          "n_valid": {
+            "title": "N Valid",
+            "type": "integer"
+          },
+          "n_valid_unit": {
+            "title": "N Valid Unit",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "state_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Electrochemical phase slice: overall, charge, discharge, or rest; not an experiment condition_id.",
+            "title": "State Scope"
+          },
+          "state_variable": {
+            "title": "State Variable",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "feature_code",
+          "gate_id",
+          "feature_variant",
+          "state_variable",
+          "scope",
+          "method",
+          "coefficient",
+          "n_input",
+          "n_input_unit",
+          "n_valid",
+          "n_valid_unit",
+          "missing_feature_count",
+          "missing_state_count",
+          "missing_count_unit",
+          "excluded_ineligible_count",
+          "excluded_ineligible_unit",
+          "analysis_mode",
+          "ml_safe_selection",
+          "status"
+        ],
+        "title": "FeatureCorrelationResult",
+        "type": "object"
+      },
+      "FeatureCorrelationsData": {
+        "properties": {
+          "alignment_assessment": {
+            "$ref": "#/components/schemas/CorrelationAlignmentAssessment"
+          },
+          "declared_condition_analysis": {
+            "$ref": "#/components/schemas/DeclaredConditionAnalysis"
+          },
+          "feature_code": {
+            "title": "Feature Code",
+            "type": "string"
+          },
+          "inference_assessment": {
+            "$ref": "#/components/schemas/CorrelationInferenceAssessment"
+          },
+          "n_events": {
+            "title": "N Events",
+            "type": "integer"
+          },
+          "soc": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureCorrelationResult"
+            },
+            "title": "Soc",
+            "type": "array"
+          },
+          "soc_battery_decomposition": {
+            "additionalProperties": true,
+            "title": "Soc Battery Decomposition",
+            "type": "object"
+          },
+          "soc_by_battery_condition": {
+            "description": "Backward-compatible property name. Rows are Battery × overall/charge/discharge/rest slices, not experiment condition slices.",
+            "items": {
+              "$ref": "#/components/schemas/FeatureCorrelationResult"
+            },
+            "title": "Soc By Battery Condition",
+            "type": "array"
+          },
+          "soc_by_cycle": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureCorrelationResult"
+            },
+            "title": "Soc By Cycle",
+            "type": "array"
+          },
+          "soc_cycle_decomposition": {
+            "$ref": "#/components/schemas/CycleCorrelationDecomposition"
+          },
+          "soc_diagnostic_scatter": {
+            "additionalProperties": true,
+            "title": "Soc Diagnostic Scatter",
+            "type": "object"
+          },
+          "soh": {
+            "$ref": "#/components/schemas/FeatureCorrelationResult"
+          },
+          "soh_cycle_summary": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Soh Cycle Summary",
+            "type": "array"
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/FeatureCorrelationResult"
+          }
+        },
+        "required": [
+          "feature_code",
+          "n_events",
+          "soc",
+          "soc_battery_decomposition",
+          "soc_diagnostic_scatter",
+          "soc_by_battery_condition",
+          "soc_by_cycle",
+          "soc_cycle_decomposition",
+          "alignment_assessment",
+          "inference_assessment",
+          "temperature",
+          "soh",
+          "soh_cycle_summary",
+          "declared_condition_analysis"
+        ],
+        "title": "FeatureCorrelationsData",
+        "type": "object"
+      },
+      "FeatureCorrelationsEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/FeatureCorrelationsData"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FeatureCorrelationsMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "FeatureCorrelationsEnvelope",
+        "type": "object"
+      },
+      "FeatureCorrelationsMeta": {
+        "properties": {
+          "analysis_scope": {
+            "$ref": "#/components/schemas/FeatureCorrelationAnalysisScope"
+          },
+          "gate_calibration_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Calibration Id"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "policy_versions": {
+            "$ref": "#/components/schemas/CorrelationPolicyVersions"
+          }
+        },
+        "required": [
+          "policy",
+          "policy_versions",
+          "analysis_scope",
+          "note"
+        ],
+        "title": "FeatureCorrelationsMeta",
+        "type": "object"
+      },
       "FutureContractDescriptor": {
         "properties": {
           "activation_gate": {
@@ -497,6 +1444,639 @@
         "required": [
           "data"
         ],
+        "type": "object"
+      },
+      "TargetDatasetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "battery_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Battery Ids",
+            "type": "array"
+          },
+          "contract_version": {
+            "const": "target-dataset/1.0",
+            "default": "target-dataset/1.0",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "experiment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Experiment Ids",
+            "type": "array"
+          },
+          "feature_locators": {
+            "items": {
+              "$ref": "#/components/schemas/TargetFeatureLocator"
+            },
+            "minItems": 1,
+            "title": "Feature Locators",
+            "type": "array"
+          },
+          "label_provenance": {
+            "$ref": "#/components/schemas/TargetLabelProvenance"
+          },
+          "minimum_independent_states": {
+            "anyOf": [
+              {
+                "minimum": 3.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "SOH-only cycle-state readiness threshold; repeated event rows do not count as states.",
+            "title": "Minimum Independent States"
+          },
+          "target_grain": {
+            "enum": [
+              "MEASUREMENT_EVENT",
+              "CYCLE",
+              "EXPERIMENT",
+              "BATTERY"
+            ],
+            "title": "Target Grain",
+            "type": "string"
+          },
+          "target_id": {
+            "enum": [
+              "reference_soc_percent",
+              "temperature_c",
+              "soh_capacity_reference_percent"
+            ],
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_ids",
+          "experiment_ids",
+          "target_id",
+          "target_grain",
+          "feature_locators",
+          "label_provenance"
+        ],
+        "title": "TargetDatasetRequest",
+        "type": "object"
+      },
+      "TargetFeatureLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_name": {
+            "minLength": 1,
+            "title": "Feature Name",
+            "type": "string"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          }
+        },
+        "required": [
+          "feature_name"
+        ],
+        "title": "TargetFeatureLocator",
+        "type": "object"
+      },
+      "TargetLabelProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "definition": {
+            "minLength": 1,
+            "title": "Definition",
+            "type": "string"
+          },
+          "independent_unit": {
+            "const": "BATTERY",
+            "title": "Independent Unit",
+            "type": "string"
+          },
+          "method_id": {
+            "minLength": 1,
+            "title": "Method Id",
+            "type": "string"
+          },
+          "method_version": {
+            "minLength": 1,
+            "title": "Method Version",
+            "type": "string"
+          },
+          "semantic_type": {
+            "enum": [
+              "DIRECT_MEASUREMENT",
+              "DERIVED_REFERENCE_LABEL",
+              "DERIVED_HEALTH_STATE"
+            ],
+            "title": "Semantic Type",
+            "type": "string"
+          },
+          "source_references": {
+            "items": {
+              "$ref": "#/components/schemas/TargetSourceEvidence"
+            },
+            "minItems": 1,
+            "title": "Source References",
+            "type": "array"
+          },
+          "uncertainty": {
+            "$ref": "#/components/schemas/TargetUncertainty"
+          },
+          "unit": {
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "semantic_type",
+          "method_id",
+          "method_version",
+          "definition",
+          "unit",
+          "independent_unit",
+          "source_references",
+          "uncertainty"
+        ],
+        "title": "TargetLabelProvenance",
+        "type": "object"
+      },
+      "TargetSourceEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "source_reference": {
+            "minLength": 1,
+            "title": "Source Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "source_reference",
+          "sha256"
+        ],
+        "title": "TargetSourceEvidence",
+        "type": "object"
+      },
+      "TargetSourceEvidenceValidationData": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_availability": {
+            "const": "NOT_ASSESSED",
+            "title": "Feature Availability",
+            "type": "string"
+          },
+          "label_source_semantics": {
+            "const": "NOT_ASSESSED",
+            "title": "Label Source Semantics",
+            "type": "string"
+          },
+          "materialization_enabled": {
+            "const": false,
+            "title": "Materialization Enabled",
+            "type": "boolean"
+          },
+          "source_integrity": {
+            "const": "VERIFIED",
+            "title": "Source Integrity",
+            "type": "string"
+          },
+          "status": {
+            "const": "SOURCE_EVIDENCE_VERIFIED",
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "enum": [
+              "reference_soc_percent",
+              "temperature_c",
+              "soh_capacity_reference_percent"
+            ],
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_readiness": {
+            "const": "NOT_ASSESSED",
+            "title": "Target Readiness",
+            "type": "string"
+          },
+          "verified_sources": {
+            "items": {
+              "$ref": "#/components/schemas/TargetSourceVerificationResult"
+            },
+            "minItems": 1,
+            "title": "Verified Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "target_id",
+          "verified_sources",
+          "source_integrity",
+          "label_source_semantics",
+          "target_readiness",
+          "feature_availability",
+          "materialization_enabled"
+        ],
+        "title": "TargetSourceEvidenceValidationData",
+        "type": "object"
+      },
+      "TargetSourceEvidenceValidationEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TargetSourceEvidenceValidationData"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "TargetSourceEvidenceValidationEnvelope",
+        "type": "object"
+      },
+      "TargetSourceVerificationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "parser_provenance": {
+            "enum": [
+              "VERIFIED",
+              "NOT_AVAILABLE",
+              "NOT_RECORDED",
+              "CHECKSUM_VERIFIED_PATH_NOT_RECORDED"
+            ],
+            "title": "Parser Provenance",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "verified": {
+            "const": true,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "asset_id",
+          "verified",
+          "sha256",
+          "parser_provenance"
+        ],
+        "title": "TargetSourceVerificationResult",
+        "type": "object"
+      },
+      "TargetUncertainty": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "standard_uncertainty": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standard Uncertainty"
+          },
+          "status": {
+            "enum": [
+              "QUANTIFIED",
+              "UNKNOWN"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TargetUncertainty",
+        "type": "object"
+      },
+      "TimebaseAnchor": {
+        "properties": {
+          "absolute_start_time": {
+            "format": "date-time",
+            "title": "Absolute Start Time",
+            "type": "string"
+          },
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "source_reference": {
+            "minLength": 1,
+            "title": "Source Reference",
+            "type": "string"
+          },
+          "source_sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Source Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "absolute_start_time",
+          "source_reference",
+          "source_sha256"
+        ],
+        "title": "TimebaseAnchor",
+        "type": "object"
+      },
+      "TimebaseEvidencePreflightData": {
+        "additionalProperties": false,
+        "properties": {
+          "source_integrity": {
+            "const": "VERIFIED",
+            "title": "Source Integrity",
+            "type": "string"
+          },
+          "status": {
+            "const": "SOURCE_FILES_VERIFIED",
+            "title": "Status",
+            "type": "string"
+          },
+          "verified_evidence": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TimebaseVerifiedEvidenceFile"
+            },
+            "title": "Verified Evidence",
+            "type": "object"
+          }
+        },
+        "required": [
+          "status",
+          "source_integrity",
+          "verified_evidence"
+        ],
+        "title": "TimebaseEvidencePreflightData",
+        "type": "object"
+      },
+      "TimebaseEvidencePreflightEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TimebaseEvidencePreflightData"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "TimebaseEvidencePreflightEnvelope",
+        "type": "object"
+      },
+      "TimebaseEvidencePreflightRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "battery_id": {
+            "minLength": 1,
+            "title": "Battery Id",
+            "type": "string"
+          },
+          "contract_version": {
+            "const": "timebase-evidence-preflight/1.0",
+            "default": "timebase-evidence-preflight/1.0",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "experiment_id": {
+            "minLength": 1,
+            "title": "Experiment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "evidence_refs"
+        ],
+        "title": "TimebaseEvidencePreflightRequest",
+        "type": "object"
+      },
+      "TimebaseReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "ambiguity_free_assets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ambiguity Free Assets",
+            "type": "array"
+          },
+          "decision": {
+            "enum": [
+              "ACCEPT",
+              "REJECT",
+              "REVOKE"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "error_by_asset_s": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Error By Asset S",
+            "type": "object"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "operator_identity": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Operator Identity",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "operator_identity",
+          "rationale"
+        ],
+        "title": "TimebaseReviewRequest",
+        "type": "object"
+      },
+      "TimebaseValidationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "anchors": {
+            "items": {
+              "$ref": "#/components/schemas/TimebaseAnchor"
+            },
+            "minItems": 1,
+            "title": "Anchors",
+            "type": "array"
+          },
+          "battery_id": {
+            "title": "Battery Id",
+            "type": "string"
+          },
+          "contract_version": {
+            "const": "timebase-validation/1.1",
+            "default": "timebase-validation/1.1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "experiment_id": {
+            "title": "Experiment Id",
+            "type": "string"
+          },
+          "maximum_allowed_error_s": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Maximum Allowed Error S",
+            "type": "number"
+          },
+          "timezone": {
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "battery_id",
+          "experiment_id",
+          "timezone",
+          "anchors",
+          "evidence_refs"
+        ],
+        "title": "TimebaseValidationRequest",
+        "type": "object"
+      },
+      "TimebaseVerifiedEvidenceFile": {
+        "additionalProperties": false,
+        "properties": {
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sha256",
+          "size_bytes"
+        ],
+        "title": "TimebaseVerifiedEvidenceFile",
         "type": "object"
       },
       "ValidationError": {
@@ -1464,6 +3044,61 @@
         ]
       }
     },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/analysis-plan-status": {
+      "get": {
+        "description": "Read the exact-pair study plan status without enabling inference.",
+        "operationId": "analysis_plan_status_api_v1_experiments__battery_id___experiment_id__analysis_plan_status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Analysis Plan Status Api V1 Experiments  Battery Id   Experiment Id  Analysis Plan Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analysis Plan Status",
+        "tags": [
+          "scientific-resources",
+          "artifacts"
+        ]
+      }
+    },
     "/api/v1/experiments/{battery_id}/{experiment_id}/archive": {
       "post": {
         "operationId": "archive_experiment_api_v1_experiments__battery_id___experiment_id__archive_post",
@@ -2072,11 +3707,13 @@
             }
           },
           {
+            "description": "Maximum event points in the diagnostic scatter plot. All joined events are used for correlation statistics regardless of this display limit.",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
               "default": 2000,
+              "description": "Maximum event points in the diagnostic scatter plot. All joined events are used for correlation statistics regardless of this display limit.",
               "maximum": 4000,
               "minimum": 10,
               "title": "Limit",
@@ -2089,9 +3726,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Feature Correlations Api V1 Experiments  Battery Id   Experiment Id  Feature Correlations Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FeatureCorrelationsEnvelope"
                 }
               }
             },
@@ -2182,7 +3817,7 @@
     },
     "/api/v1/experiments/{battery_id}/{experiment_id}/feature-target-ranking": {
       "post": {
-        "description": "BRW-021R2 — descriptive feature × target ranking.\n\nExploratory mode uses all eligible MeasurementEvents and is explicitly\nNot ML-safe. TRAIN_ONLY_ML_SAFE requires a Grouped Split and restricts\nthe correlation input STRUCTURALLY to that fold's TRAIN rows — held-out\ntargets are never loaded into the analysis input. Ranking describes\nstatistical association only: no best / causal / predictive guarantee.",
+        "description": "BRW-021R2 — descriptive feature × target ranking.\n\nExploratory mode uses all eligible MeasurementEvents and is explicitly\nNot ML-safe. TRAIN_ONLY_ML_SAFE requires a Grouped Split and restricts\nthe correlation input STRUCTURALLY to that fold's TRAIN rows — held-out\ntargets are never loaded into the analysis input. Ranking describes\nstatistical association only: no best / causal / predictive guarantee.\n\n``features`` must contain at most 12 string codes. Larger requests are\nrejected rather than silently truncated, so every accepted candidate is\nincluded in the returned ranking (except explicitly blocked/deduplicated\naliases).",
         "operationId": "feature_target_ranking_api_v1_experiments__battery_id___experiment_id__feature_target_ranking_post",
         "parameters": [
           {
@@ -3692,6 +5327,316 @@
         "summary": "List Targets",
         "tags": [
           "feature-workbench"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/timebase-evidence-preflight": {
+      "post": {
+        "description": "Read-only file integrity check used to populate source hashes in the UI.",
+        "operationId": "preflight_timebase_evidence_api_v1_experiments__battery_id___experiment_id__timebase_evidence_preflight_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimebaseEvidencePreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimebaseEvidencePreflightEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preflight Timebase Evidence",
+        "tags": [
+          "timebase-validation"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/timebase-validations": {
+      "get": {
+        "operationId": "list_timebase_validation_records_api_v1_experiments__battery_id___experiment_id__timebase_validations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Timebase Validation Records Api V1 Experiments  Battery Id   Experiment Id  Timebase Validations Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Timebase Validation Records",
+        "tags": [
+          "timebase-validation"
+        ]
+      },
+      "post": {
+        "operationId": "create_timebase_validation_api_v1_experiments__battery_id___experiment_id__timebase_validations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimebaseValidationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Timebase Validation Api V1 Experiments  Battery Id   Experiment Id  Timebase Validations Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Timebase Validation",
+        "tags": [
+          "timebase-validation"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/timebase-validations/{validation_id}": {
+      "get": {
+        "operationId": "get_timebase_validation_api_v1_experiments__battery_id___experiment_id__timebase_validations__validation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "validation_id",
+            "required": true,
+            "schema": {
+              "title": "Validation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Timebase Validation Api V1 Experiments  Battery Id   Experiment Id  Timebase Validations  Validation Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Timebase Validation",
+        "tags": [
+          "timebase-validation"
+        ]
+      }
+    },
+    "/api/v1/experiments/{battery_id}/{experiment_id}/timebase-validations/{validation_id}/review": {
+      "post": {
+        "operationId": "review_timebase_api_v1_experiments__battery_id___experiment_id__timebase_validations__validation_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "battery_id",
+            "required": true,
+            "schema": {
+              "title": "Battery Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "validation_id",
+            "required": true,
+            "schema": {
+              "title": "Validation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimebaseReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Review Timebase Api V1 Experiments  Battery Id   Experiment Id  Timebase Validations  Validation Id  Review Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Timebase",
+        "tags": [
+          "timebase-validation"
         ]
       }
     },
@@ -5559,6 +7504,48 @@
         "tags": [
           "scientific-resources",
           "artifacts"
+        ]
+      }
+    },
+    "/api/v1/target-datasets/validate-source-evidence": {
+      "post": {
+        "description": "Read-only preflight for manifest identity and raw-source checksums.\n\nThis verifies source evidence only. It does not assess scientific target\nreadiness, resolve feature availability, or materialize a dataset.",
+        "operationId": "validate_target_source_evidence_api_v1_target_datasets_validate_source_evidence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetSourceEvidenceValidationEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Target Source Evidence",
+        "tags": [
+          "scientific-resources"
         ]
       }
     },

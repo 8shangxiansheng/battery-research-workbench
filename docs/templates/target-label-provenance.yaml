@@ -1,0 +1,49 @@
+# Companion worksheet for collecting label evidence before target-dataset review.
+# This is NOT an executable request or importable manifest. Do not infer values.
+# Keep null/empty fields until supported by a study protocol or source evidence.
+
+worksheet_version: "target-label-provenance-worksheet/1.0"
+contract_version: "target-dataset/1.0" # request identity only; this worksheet is not submitted
+
+# Choose only after the study endpoint and evidence are reviewed.
+target_id: null # reference_soc_percent | temperature_c | soh_capacity_reference_percent
+target_grain: null # MEASUREMENT_EVENT for SOC/temperature; CYCLE for SOH
+minimum_independent_states: null # SOH-only software gate; omit/null for SOC and temperature
+
+# List exact Battery/Experiment pairs in the same order; never infer identities from filenames.
+battery_ids: []
+experiment_ids: []
+
+# Populate after feature selection. A locator is feature_name plus optional gate_id.
+feature_locators: []
+# Example structure only; replace with documented values, do not keep example rows as data:
+# - feature_name: null
+#   gate_id: null
+
+label_provenance:
+  semantic_type: null # DIRECT_MEASUREMENT | DERIVED_REFERENCE_LABEL | DERIVED_HEALTH_STATE
+  method_id: null
+  method_version: null
+  definition: null # Operational method/formula and reference protocol; do not write only a label name.
+  unit: null
+  independent_unit: BATTERY
+  source_references: []
+  # Each source reference must resolve to an electrical DataAsset and its registered raw-relative path.
+  # - asset_id: null
+  #   source_reference: null
+  #   sha256: null
+  uncertainty:
+    status: null # QUANTIFIED | UNKNOWN; choose only from evidence
+    standard_uncertainty: null
+    unit: null
+    method: null
+    evidence_refs: []
+    reason: null # Required when status is UNKNOWN; no numeric estimate in that case.
+
+# Additional scientific review notes; these do not alter or satisfy the API contract.
+evidence_review:
+  protocol_reference: null
+  measurement_grain_rationale: null
+  known_limitations: []
+  reviewer: null
+  reviewed_at: null # ISO-8601 with timezone when an actual review occurs

@@ -71,4 +71,5 @@ until `fs` is known.
 - `waveforms.zarr/{ultrasound_asset_id}/waveform` stores one `int32` frame × sample array per DataAsset.
 - Multiple DataAssets may restart `frame_index_raw` at zero; `ultrasound_asset_id` remains part of frame identity.
 - When manifest `file_start_time` is available, `absolute_timestamp` is mechanically calculated as `file_start_time + elapsed_time_s`. This is not validated multimodal synchronization.
-- `sampling_rate_hz` remains `null` until supported by reliable external evidence.
+- In the raw parser output, `sampling_rate_hz` remains `null`; frame cadence is not waveform sampling frequency.
+- A downstream physical-feature pipeline may use a separately registered sampling-rate value only when its parameter provenance is `VERIFIED`. That derived use must retain the ParameterSet reference and does not validate absolute timestamps or multimodal synchronization.
