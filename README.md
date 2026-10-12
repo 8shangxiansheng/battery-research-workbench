@@ -8,7 +8,7 @@
 
 当前 CELL_001 / EXP_001 是单电池、两循环样例。**截至 2026-10-12 的本地 `data/processed` 快照**中，ParameterSet `PS::091640eaac26f6f3b4392f90` 记录 50 MHz、`USER_SUPPLIED/VERIFIED`；但 canonical envelope-peak TOF 工件完整性核验返回 `GATE_CALIBRATION_CHANGED` 与 `INPUT_PATH_NONCANONICAL:gate_calibration_record`，所以不能作为当前有效 TOF 结果，须通过正常流程重建。采样率参数已验证不等于派生 TOF 工件仍新鲜，也不等于声电同步已验证。声电绝对时间基准仍为 `PROVISIONAL`（`validated_sync=false`）。Reference SOC 是回顾性参考标签；原始电学 XLSX 有 T1 auxTemp，按 Electrical DataAsset + `record_index_raw` 精确关联到 3,995 条唯一 MeasurementEvent，但传感器位置/校准证据未验证，因此温度建模 target 仍为 `BLOCKED_BY_VALIDATION`；SOH 独立状态数量有限。不要把该样例表述为跨电池泛化或超参数调优结论；2026-10-06 基线报告是历史快照，不代表当前 ignored processed 工件状态。其它部署实例的状态须在该实例单独查询，不能由本地快照推断。
 
-科研数据扩展、代码阶段和真实数据验收门见[科研可用性改进计划](docs/scientific-research-improvement-plan.md)。计划区分软件可实现项与需要新增实验数据/测量协议的前置条件。
+科研数据的采集与纳入要求见[数据采集与纳入 SOP](docs/data-collection-sop.md)；当前用户流程与科学限制见[使用指南](docs/USER_GUIDE.md)。
 
 V1.1 已将核心数据模型升级为：
 
