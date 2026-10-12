@@ -375,6 +375,89 @@ class TestCorrelation:
             ))
         return rows
 
+    def test_requested_feature_locator_excludes_other_features_and_variants(self):
+        requested = [
+            _row(i, feature_code="A", value=float(i), reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+        unrelated = [
+            _row(i, feature_code="B", value=float(2 - i), reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+        variant = [
+            _row(i, feature_code="A", feature_variant="SMOOTHED",
+                 value=100.0 + i, reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+
+        result = correlate_feature_state(
+            requested + unrelated + variant,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="locator-filter",
+            feature_code="A",
+        )
+
+        assert result.coefficient == pytest.approx(1.0)
+        assert result.n_input == 3
+        assert result.n_valid == 3
+
+    def test_requested_gate_locator_is_exact(self):
+        rows = [
+            _row(i, feature_code="TDSTD", gate_id="G1", value=float(i),
+                 reference_soc_percent=float(i))
+            for i in range(3)
+        ] + [
+            _row(i, feature_code="TDSTD", gate_id="G2", value=float(2 - i),
+                 reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+
+        result = correlate_feature_state(
+            rows,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="gate-filter",
+            feature_code="TDSTD",
+            gate_id="G1",
+        )
+
+        assert result.coefficient == pytest.approx(1.0)
+        assert result.n_valid == 3
+
+    def test_locator_agnostic_decomposition_rejects_mixed_features(self):
+        rows = [_row(i) for i in range(3)] + [
+            _row(i, feature_code="SWA") for i in range(3)
+        ]
+
+        with pytest.raises(ValueError, match="one FeatureLocator"):
+            battery_decomposed_soc_correlation(rows)
+
+    def test_stratified_and_scatter_helpers_use_requested_locator(self):
+        requested = [
+            _row(i, feature_code="SWA", gate_id="G1", value=float(i),
+                 reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+        unrelated = [
+            _row(i, feature_code="SWA", gate_id="G2", value=float(2 - i),
+                 reference_soc_percent=float(i))
+            for i in range(3)
+        ]
+
+        cycles = cycle_stratified_soc(
+            requested + unrelated, analysis_id="cycle-locator",
+            feature_code="SWA", gate_id="G1",
+        )
+        scatter = battery_scatter_diagnostic(
+            requested + unrelated, feature_code="SWA", gate_id="G1",
+        )
+
+        assert len(cycles) == 1
+        assert cycles[0].n_input == 3
+        assert scatter["n_input"] == 3
+        assert scatter["gate_id"] == "G1"
+
     def test_c11_ambiguous_sync_excluded(self):
         rows = self._suite()
         rows.append(_row(999, analysis_eligible=False, value=1e9,
@@ -720,6 +803,7 @@ class TestCorrelation:
                 i,
                 battery_id=battery,
                 state=scope,
+                feature_code="SWA",
                 reference_soc_percent=float(i),
                 value=float(i * 2),
             )
@@ -728,8 +812,9 @@ class TestCorrelation:
             for i in range(start, start + 3)
         ]
         rows.extend([
-            _row(90, battery_id="CELL_A", state="charge", value=None),
-            _row(91, battery_id="CELL_A", state="charge", analysis_eligible=False),
+            _row(90, battery_id="CELL_A", state="charge", feature_code="SWA", value=None),
+            _row(91, battery_id="CELL_A", state="charge", feature_code="SWA",
+                 analysis_eligible=False),
         ])
 
         result = battery_condition_stratified_soc(
@@ -762,15 +847,19 @@ class TestCorrelation:
 
     def test_p4_battery_scatter_is_deterministic_bounded_and_means_use_all_pairs(self):
         rows = [
-            _row(i, battery_id="CELL_A", value=float(i), reference_soc_percent=float(i + 10))
+            _row(i, battery_id="CELL_A", feature_code="SWA", value=float(i),
+                 reference_soc_percent=float(i + 10))
             for i in range(10)
         ] + [
-            _row(i + 10, battery_id="CELL_B", value=float(i + 100), reference_soc_percent=float(i + 20))
+            _row(i + 10, battery_id="CELL_B", feature_code="SWA", value=float(i + 100),
+                 reference_soc_percent=float(i + 20))
             for i in range(10)
         ]
         rows.extend([
-            _row(30, battery_id="CELL_A", value=None, reference_soc_percent=50.0),
-            _row(31, battery_id="CELL_B", value=999.0, reference_soc_percent=50.0,
+            _row(30, battery_id="CELL_A", feature_code="SWA", value=None,
+                 reference_soc_percent=50.0),
+            _row(31, battery_id="CELL_B", feature_code="SWA", value=999.0,
+                 reference_soc_percent=50.0,
                  analysis_eligible=False),
         ])
 

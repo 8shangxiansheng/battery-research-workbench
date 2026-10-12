@@ -238,6 +238,44 @@ def _assert_unique_measurement_event_features(rows: list[FeatureStateRow]) -> No
         seen.add(locator)
 
 
+def _select_feature_locator(
+    rows: list[FeatureStateRow],
+    *,
+    feature_code: str,
+    gate_id: str | None,
+    feature_variant: str,
+) -> list[FeatureStateRow]:
+    """Select exactly the requested FeatureLocator before calculating."""
+    _assert_event_owners(rows)
+    return [
+        row for row in rows
+        if row.feature_code == feature_code
+        and row.gate_id == gate_id
+        and row.feature_variant == feature_variant
+    ]
+
+
+def _assert_event_owners(rows: list[FeatureStateRow]) -> None:
+    event_owner: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        owner = (row.battery_id, row.experiment_id)
+        previous_owner = event_owner.setdefault(row.measurement_event_id, owner)
+        if previous_owner != owner:
+            raise ValueError(
+                "MeasurementEvent identity maps to multiple Battery/Experiment groups"
+            )
+
+
+def _assert_single_feature_locator(rows: list[FeatureStateRow]) -> None:
+    """Fail closed when a locator-agnostic summary receives mixed features."""
+    locators = {
+        (row.feature_code, row.gate_id, row.feature_variant)
+        for row in rows
+    }
+    if len(locators) > 1:
+        raise ValueError("analysis requires rows from one FeatureLocator")
+
+
 def build_event_grain_table(rows: list[FeatureStateRow]) -> list[FeatureStateRow]:
     """Filter to analysis-eligible rows; keep excluded count accounting.
 
@@ -279,6 +317,7 @@ def battery_decomposed_soc_correlation(
     structural threshold neither verifies physical identity nor permits
     inferential claims; coefficients are descriptive only.
     """
+    _assert_single_feature_locator(rows)
     _assert_unique_measurement_event_features(rows)
     eligible_rows = [row for row in rows if row.analysis_eligible]
     eligible = [
@@ -374,6 +413,8 @@ def battery_scatter_diagnostic(
     rows: list[FeatureStateRow],
     *,
     feature_code: str,
+    gate_id: str | None = None,
+    feature_variant: str = "RAW",
     max_points: int = 300,
     random_seed: int = 21,
 ) -> dict[str, Any]:
@@ -387,6 +428,10 @@ def battery_scatter_diagnostic(
     if max_points < 1:
         raise ValueError("max_points must be positive")
 
+    rows = _select_feature_locator(
+        rows, feature_code=feature_code, gate_id=gate_id,
+        feature_variant=feature_variant,
+    )
     _assert_unique_measurement_event_features(rows)
     eligible = [row for row in rows if row.analysis_eligible]
     complete = [
@@ -457,6 +502,8 @@ def battery_scatter_diagnostic(
     return {
         "policy": SCATTER_DIAGNOSTIC_POLICY_ID,
         "feature_code": feature_code,
+        "gate_id": gate_id,
+        "feature_variant": feature_variant,
         "target_id": "reference_soc_percent",
         "n_input": len(rows),
         "n_valid": n_valid,
@@ -487,6 +534,7 @@ def cycle_decomposed_soc_correlation(
     correlations are suppressed below three groups because two group means
     would force a correlation of exactly +1 or -1.
     """
+    _assert_single_feature_locator(rows)
     _assert_unique_measurement_event_features(rows)
     eligible_rows = [row for row in rows if row.analysis_eligible]
     complete = [
@@ -603,6 +651,10 @@ def correlate_feature_state(
     scope: str = "overall",
 ) -> CorrelationResult:
     """One correlation computation with full honest accounting."""
+    rows = _select_feature_locator(
+        rows, feature_code=feature_code, gate_id=gate_id,
+        feature_variant=feature_variant,
+    )
     _assert_unique_measurement_event_features(rows)
     total = len(rows)
     eligible = [r for r in rows if r.analysis_eligible]
@@ -920,9 +972,13 @@ def condition_stratified_soc(
 
 def cycle_stratified_soc(
     rows: list[FeatureStateRow], *, analysis_id: str, feature_code: str,
-    gate_id: str | None = None,
+    gate_id: str | None = None, feature_variant: str = "RAW",
 ) -> list[CorrelationResult]:
     """Per-cycle SOC correlation (C16)."""
+    rows = _select_feature_locator(
+        rows, feature_code=feature_code, gate_id=gate_id,
+        feature_variant=feature_variant,
+    )
     out: list[CorrelationResult] = []
     for cycle in sorted({r.cycle for r in rows}):
         scoped = [r for r in rows if r.cycle == cycle]
@@ -930,7 +986,8 @@ def cycle_stratified_soc(
             correlate_feature_state(
                 scoped, state_variable="reference_soc_percent", method="pearson",
                 analysis_id=f"{analysis_id}:cycle{cycle}", feature_code=feature_code,
-                gate_id=gate_id, scope=f"cycle:{cycle}",
+                gate_id=gate_id, feature_variant=feature_variant,
+                scope=f"cycle:{cycle}",
             )
         )
     return out
@@ -942,8 +999,13 @@ def battery_condition_stratified_soc(
     analysis_id: str,
     feature_code: str,
     gate_id: str | None = None,
+    feature_variant: str = "RAW",
 ) -> list[dict[str, Any]]:
     """Return descriptive SOC correlations by battery and operating state."""
+    rows = _select_feature_locator(
+        rows, feature_code=feature_code, gate_id=gate_id,
+        feature_variant=feature_variant,
+    )
     out: list[dict[str, Any]] = []
     for battery_id in sorted({row.battery_id for row in rows}):
         battery_rows = [row for row in rows if row.battery_id == battery_id]
@@ -960,6 +1022,7 @@ def battery_condition_stratified_soc(
                 analysis_id=f"{analysis_id}:{battery_id}:{scope}",
                 feature_code=feature_code,
                 gate_id=gate_id,
+                feature_variant=feature_variant,
                 scope=f"battery:{battery_id}:{scope}",
             )
             out.append({
@@ -974,6 +1037,7 @@ def soh_cycle_summary(
     rows: list[FeatureStateRow],
 ) -> list[dict[str, Any]]:
     """Cycle-level SOH descriptive summary (§39) — no frame-level claims."""
+    _assert_single_feature_locator(rows)
     eligible = build_event_grain_table(rows)
     out: list[dict[str, Any]] = []
     for cycle in sorted({r.cycle for r in eligible}):
