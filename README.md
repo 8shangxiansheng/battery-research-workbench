@@ -6,7 +6,7 @@
 
 工作台已有实验导入、Overview、Waveform、Analysis、Models 和 Report 等用户流程。第一次使用请先阅读[使用指南](docs/USER_GUIDE.md)；它说明 Docker / Windows 部署、实验导入、分析步骤及当前科学限制。本文其余内容主要记录数据架构、开发和部署细节。
 
-当前 CELL_001 / EXP_001 是单电池、两循环样例。最近本地工件核查显示，波形采样率参数仍记录为 50 MHz、`USER_SUPPLIED/VERIFIED`；但当前工作区 canonical envelope-peak TOF 工件未通过 freshness 校验（gate calibration 已变化、calibration record 路径非规范、FeatureSet manifest 输入 checksum 不匹配），不能作为该工作区的当前结果使用，须通过正常流程重建。2026-10-08 的浏览器会话曾显示 TOF `READY`、gate calibration version 96；其后端和 `data/processed/` 挂载尚未核实是否与本工作区相同，因此部署实例的 TOF 状态目前未能对账。声电绝对时间基准仍为 `PROVISIONAL`（时区未知、同步未验证）。Reference SOC 是回顾性参考标签；原始电学 XLSX 有 T1 auxTemp，按 Electrical DataAsset + `record_index_raw` 精确关联到 3,995 条唯一 MeasurementEvent，但传感器位置/校准证据未验证，因此温度建模 target 仍为 `BLOCKED_BY_VALIDATION`；SOH 独立状态数量有限。不要把该样例表述为跨电池泛化或超参数调优结论；2026-10-06 基线报告是历史快照，不代表当前 ignored processed 工件状态。
+当前 CELL_001 / EXP_001 是单电池、两循环样例。**截至 2026-10-12 的本地 `data/processed` 快照**中，ParameterSet `PS::091640eaac26f6f3b4392f90` 记录 50 MHz、`USER_SUPPLIED/VERIFIED`；但 canonical envelope-peak TOF 工件完整性核验返回 `GATE_CALIBRATION_CHANGED` 与 `INPUT_PATH_NONCANONICAL:gate_calibration_record`，所以不能作为当前有效 TOF 结果，须通过正常流程重建。采样率参数已验证不等于派生 TOF 工件仍新鲜，也不等于声电同步已验证。声电绝对时间基准仍为 `PROVISIONAL`（`validated_sync=false`）。Reference SOC 是回顾性参考标签；原始电学 XLSX 有 T1 auxTemp，按 Electrical DataAsset + `record_index_raw` 精确关联到 3,995 条唯一 MeasurementEvent，但传感器位置/校准证据未验证，因此温度建模 target 仍为 `BLOCKED_BY_VALIDATION`；SOH 独立状态数量有限。不要把该样例表述为跨电池泛化或超参数调优结论；2026-10-06 基线报告是历史快照，不代表当前 ignored processed 工件状态。其它部署实例的状态须在该实例单独查询，不能由本地快照推断。
 
 科研数据扩展、代码阶段和真实数据验收门见[科研可用性改进计划](docs/scientific-research-improvement-plan.md)。计划区分软件可实现项与需要新增实验数据/测量协议的前置条件。
 
