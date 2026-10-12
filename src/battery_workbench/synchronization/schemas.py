@@ -74,6 +74,10 @@ class TimeAnchorOverride(BaseModel):
     anchor_datetime: datetime
     elapsed_time_s_at_anchor: float = 0.0
     reason: str = ""
+    timezone_known: bool = False
+    timezone_name: str | None = None
+    source_reference: str | None = None
+    source_sha256: str | None = None
 
 
 class TimeAnchorEvidence(BaseModel):
@@ -174,6 +178,7 @@ class TimeAnchorState(BaseModel):
     assets: list[AssetAnchorAssessment]
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    timebase_validation_id: str | None = None
     validated_sync: bool = False
 
 

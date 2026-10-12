@@ -18,6 +18,7 @@ def build_dataset_id(
     label_checksum: str,
     selected_features: list[str] | None = None,
     gate_calibration_id: str | None = None,
+    canonical_tof_checksum: str = "",
 ) -> str:
     """Build the deterministic ``DS::<hash>`` dataset id.
 
@@ -40,6 +41,8 @@ def build_dataset_id(
     # Preserve all legacy ids when no experiment gate record participates.
     if gate_calibration_id:
         identity["gate_calibration_id"] = gate_calibration_id
+    if canonical_tof_checksum:
+        identity["canonical_tof_checksum"] = canonical_tof_checksum
     canonical = json.dumps(
         identity,
         sort_keys=True,

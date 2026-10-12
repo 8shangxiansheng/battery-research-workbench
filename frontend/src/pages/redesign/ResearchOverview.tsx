@@ -34,7 +34,9 @@ function MetaItem({ label, entry, format }: {
   const available = entry.status === "AVAILABLE";
   const display = available
     ? (format ? format(entry) : String(entry.value ?? "—"))
-    : entry.status === "PROVISIONAL" ? "临时基准" : "未配置";
+    : entry.status === "PROVISIONAL" ? "临时基准"
+      : entry.status === "INTEGRITY_BLOCKED" ? "完整性阻断"
+        : "未配置";
   return <div className="meta-item" data-testid={`meta-${label}`}>
     <span className="muted">{META_LABELS[label] ?? label}</span>
     <span className={`text-sm font-medium ${available ? "" : "muted"}`}>{display}</span>
@@ -119,7 +121,7 @@ function Sparkline({ values, color, label }: { values: (number | null)[]; color:
 const READINESS_LABELS: Record<string, string> = {
   READY: "就绪", BLOCKED: "阻断", LIMITED: "受限", PROVISIONAL: "临时基准",
   READY_FOR_LIMITED_EVALUATION: "受限评估", UNAVAILABLE: "不可用",
-  NOT_CONFIGURED: "未配置",
+  NOT_CONFIGURED: "未配置", INTEGRITY_BLOCKED: "完整性阻断",
 };
 
 const READINESS_FIELD_LABELS: Record<string, string> = {
@@ -185,7 +187,7 @@ export function ResearchOverview() {
         <MetaItem label="Channel" entry={{ status: d.metadata.channel.status }}/>
         <MetaItem label="Date" entry={{ status: d.metadata.acquisition_window.start ? "AVAILABLE" : "NOT_CONFIGURED",
           value: d.metadata.acquisition_window.start?.slice(0, 10) }}/>
-        <MetaItem label="Timebase" entry={{ status: "PROVISIONAL", value: d.metadata.timebase.status }}/>
+        <MetaItem label="Timebase" entry={{ status: d.metadata.timebase.status, value: d.metadata.timebase.status }}/>
       </div>
     </section>
 
@@ -196,6 +198,12 @@ export function ResearchOverview() {
           <h2 className="flex gap-2 items-center"><Battery size={16}/>电学快照</h2>
           <Badge variant="outline">{d.electrical.status}</Badge>
         </div>
+        {d.electrical.status === "INTEGRITY_BLOCKED" ? (
+          <div className="notice mt-3 text-sm" role="alert" data-testid="overview-electrical-integrity-blocked">
+            电学来源解析清单无效，记录、温度和时间摘要已隐藏。请先
+            <Link className="underline ml-1" to={`${base}/runs`}>重新解析并复核来源追溯</Link>。
+          </div>
+        ) : <>
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
           <span className="muted">记录数</span><span className="font-mono">{numberText(d.electrical.record_count, 0)}</span>
           <span className="muted">循环 / 工步</span><span className="font-mono">{numberText(d.electrical.cycle_count, 0)} / {numberText(d.electrical.step_count, 0)}</span>
@@ -216,6 +224,7 @@ export function ResearchOverview() {
           </tr>)}</tbody>
         </table>
         <p className="text-[10px] muted mt-1">表观库仑效率 = 解析器报告的 coulombic_efficiency_percent（仅 2 循环，非长期库仑效率结论）。{d.electrical.cycles[0]?.protocol === "PROTOCOL_FROM_PARSER" ? "协议：解析器记录。" : ""}</p>
+        </>}
       </section>
 
       <section className="panel !p-5" data-testid="tof-snapshot">
@@ -223,6 +232,12 @@ export function ResearchOverview() {
           <h2 className="flex gap-2 items-center"><Waves size={16}/>超声 / TOF 快照</h2>
           <Badge variant={tof.status === "READY" ? "secondary" : "outline"}>{tof.status}</Badge>
         </div>
+        {tof.status === "INTEGRITY_BLOCKED" ? (
+          <div className="notice mt-3 text-sm" role="alert" data-testid="overview-tof-integrity-blocked">
+            来源解析清单无效，当前 TOF 汇总和跨模态覆盖已隐藏。请先
+            <Link className="underline ml-1" to={`${base}/runs`}>重新解析并复核来源追溯</Link>。
+          </div>
+        ) : <>
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
           <span className="muted">规范方法</span>
           <span className="font-mono text-xs truncate" title={tof.tof_method_id}>{tof.tof_method_id}</span>
@@ -242,6 +257,7 @@ export function ResearchOverview() {
           当前校准定义与 fs/registry {tof.artifact_current ? "一致" : "不一致（需要刷新）——canonical TOF 工件需重算"}。
           {/* A-scan + peaks 图形预览在波形工作台；此处保持低噪声 */}
         </p>
+        </>}
       </section>
     </div>
 
@@ -299,16 +315,42 @@ export function ResearchOverview() {
     </div>
 
     {/* Model baseline comparison */}
-    <section className="panel !p-5" data-testid="model-baseline-comparison">
+      <section className="panel !p-5" data-testid="model-baseline-comparison">
       <div className="flex justify-between items-center flex-wrap gap-2">
         <h2>模型基线对比（Dummy 优先）</h2>
-        {d.model_comparison.feature_definition.refresh_required && (
+        {d.model_comparison.status === "INTEGRITY_BLOCKED" ? (
+          <Badge variant="destructive" data-testid="model-chain-integrity-blocked-badge">
+            来源完整性阻断 · 历史分数已隐藏
+          </Badge>
+        ) : d.model_comparison.status === "STALE" ? (
+          <Badge variant="outline" className="text-amber-800" data-testid="model-chain-stale-badge">
+            数据源已变化 · 历史分数已隐藏
+          </Badge>
+        ) : d.model_comparison.feature_definition.refresh_required && (
           <Badge variant="outline" className="text-[#9b782e]" data-testid="model-refresh-required">
             <RefreshCw size={11} className="mr-1"/>使用历史特征定义 · 需要刷新
           </Badge>
         )}
       </div>
-      <table className="mt-3 w-full text-sm" data-testid="model-comparison-table">
+      {d.model_comparison.status === "INTEGRITY_BLOCKED" ? (
+        <div className="notice mt-3 text-sm" role="alert" data-testid="model-chain-integrity-blocked">
+          <p className="font-medium">原始来源解析清单无效，当前无法确认数据来源；模型分数与科学结论已隐藏。</p>
+          {d.model_comparison.freshness_reasons?.length ? (
+            <p className="mt-1 text-xs">校验原因：{d.model_comparison.freshness_reasons.join("、")}</p>
+          ) : null}
+          <p className="mt-1">请先 <Link className="underline" to={`${base}/runs`}>重新解析原始文件并复核来源追溯</Link>，再重建受影响的分析工件。</p>
+        </div>
+      ) : d.model_comparison.status === "STALE" ? (
+        <div className="notice mt-3 text-sm" role="alert" data-testid="model-chain-stale">
+          <p className="font-medium">模型评估依赖的数据来源已变化，旧分数不能代表当前数据，因此已隐藏。</p>
+          {d.model_comparison.freshness_reasons?.length ? (
+            <p className="mt-1 text-xs">校验原因：{d.model_comparison.freshness_reasons.join("、")}</p>
+          ) : null}
+          <p className="mt-1">请先在 <Link className="underline" to={`${base}/dataset`}>Dataset 工作台</Link>重建数据集，再重新划分并运行模型评估。</p>
+        </div>
+      ) : d.model_comparison.status === "UNAVAILABLE" ? (
+        <p className="muted text-sm mt-3" data-testid="model-comparison-unavailable">当前没有可用的模型评估结果。</p>
+      ) : <table className="mt-3 w-full text-sm" data-testid="model-comparison-table">
         <thead><tr>
           <th className="text-left muted py-1">策略</th><th className="text-right muted">Macro MAE</th>
           <th className="text-right muted">相对 Dummy</th><th className="text-right muted">Macro R²</th>
@@ -321,12 +363,12 @@ export function ResearchOverview() {
           <td className="text-right font-mono">{numberText(s.macro_r2, 2)}</td>
           <td className="text-right text-xs muted">{s.strategy === "DUMMY_MEAN" ? "有效（当前结论依据）" : "可用（未用于当前结论）"}</td>
         </tr>)}</tbody>
-      </table>
-      <p className="text-xs muted mt-2" data-testid="model-evidence-note">
+      </table>}
+      {d.model_comparison.status !== "STALE" && d.model_comparison.status !== "INTEGRITY_BLOCKED" && <p className="text-xs muted mt-2" data-testid="model-evidence-note">
         {d.model_comparison.dummy_first_conclusion ?? "尚无同口径对比结论。"}
         {" "}当前模型工件使用 FS v{d.model_comparison.feature_definition.dataset_definition_version ?? "?"}（历史特征定义），从未使用 canonical 包络峰值 TOF；
         可用 / 有效 / 已选 / 已用 的区分见建模评估页。
-      </p>
+      </p>}
     </section>
   </div>;
 }
@@ -343,4 +385,3 @@ function ResumeResearchButton({ batteryId, experimentId, base }: { batteryId: st
     </Button>
   );
 }
-

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { WorkflowContextPayload } from "../src/api/client";
 
@@ -133,6 +133,17 @@ describe("W04 — current_step derivation", () => {
     expect(statuses.FEATURES).toBe("CURRENT");
     expect(statuses.TARGET).toBe("COMPLETE");
   });
+
+  it("keeps a blocked current step visibly blocked", async () => {
+    const { deriveStepperStatuses } = await import("../src/hooks/useWorkflowContext");
+    const statuses = deriveStepperStatuses("TARGET", {
+      TARGET: "BLOCKED", ALIGNMENT: "BLOCKED", FEATURES: "BLOCKED",
+      PREVIEW: "BLOCKED", DATASET: "BLOCKED", SPLIT: "BLOCKED",
+      MODELS: "BLOCKED", REPORT: "BLOCKED",
+    }, {});
+    expect(statuses.TARGET).toBe("BLOCKED");
+    expect(statuses.REPORT).toBe("BLOCKED");
+  });
 });
 
 describe("W05 — seven stepper visual states", () => {
@@ -158,19 +169,30 @@ describe("W05 — seven stepper visual states", () => {
     expect(statuses.REPORT).toBe("NOT_STARTED");
   });
 
-  it("STALE derivation for dataset/models/report", async () => {
+  it("STALE derivation for feature analysis, dataset, models and report", async () => {
     const { deriveStepperStatuses } = await import("../src/hooks/useWorkflowContext");
     const statuses = deriveStepperStatuses("REPORT", {
       TARGET: "COMPLETE", ALIGNMENT: "COMPLETE", FEATURES: "COMPLETE",
       PREVIEW: "COMPLETE", DATASET: "COMPLETE", SPLIT: "COMPLETE",
       MODELS: "COMPLETE", REPORT: "COMPLETE",
-    }, { dataset: "LEGACY", models: "STALE", report: "STALE" });
-    // DATASET and MODELS are before current_step, so they use backend status
-    // but freshness is LEGACY/STALE → STALE
+    }, { feature_analysis: "LEGACY", dataset: "LEGACY", models: "STALE", report: "STALE" });
+    // Freshness is authoritative even when a stale artifact is the current page.
+    expect(statuses.FEATURES).toBe("STALE");
     expect(statuses.DATASET).toBe("STALE");
     expect(statuses.MODELS).toBe("STALE");
-    // REPORT is current_step → CURRENT (overrides freshness)
-    expect(statuses.REPORT).toBe("CURRENT");
+    expect(statuses.REPORT).toBe("STALE");
+  });
+
+  it("does not present a NOT_STARTED model step as READY when its lineage is stale", async () => {
+    const { deriveStepperStatuses } = await import("../src/hooks/useWorkflowContext");
+    const statuses = deriveStepperStatuses("SPLIT", {
+      TARGET: "COMPLETE", ALIGNMENT: "COMPLETE", FEATURES: "COMPLETE",
+      PREVIEW: "COMPLETE", DATASET: "COMPLETE", SPLIT: "COMPLETE",
+      MODELS: "NOT_STARTED", REPORT: "BLOCKED",
+    }, { dataset: "CURRENT", models: "STALE", report: "STALE" });
+    expect(statuses.SPLIT).toBe("CURRENT");
+    expect(statuses.MODELS).toBe("STALE");
+    expect(statuses.REPORT).toBe("STALE");
   });
 });
 
@@ -233,7 +255,10 @@ describe("W13/W17 — Deep-link prerequisite panel", () => {
     );
     expect(screen.getByTestId("prerequisite-panel")).toBeInTheDocument();
     expect(screen.getByText("前置条件未满足 / Prerequisites not met")).toBeInTheDocument();
-    expect(screen.getByText("数据集未物化")).toBeInTheDocument();
+    const panel = screen.getByTestId("prerequisite-panel");
+    expect(within(panel).getByText("数据集未物化")).toHaveClass("text-amber-800");
+    expect(within(panel).getByText("分组划分必须建立在已物化数据集上")).toHaveClass("text-muted-foreground");
+    expect(within(panel).getByTestId("prerequisite-status")).toHaveClass("text-muted-foreground");
     expect(screen.getByTestId("prerequisite-next-action")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/analysis?step=dataset");
   });
 });

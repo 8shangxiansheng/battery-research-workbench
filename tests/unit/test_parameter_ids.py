@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from battery_workbench.orchestrator.nodes import ParameterSetNode
+from battery_workbench.orchestrator.schemas import AnalysisPlan, PlanProject
 from battery_workbench.parameters.schemas import ParameterConfig
 from battery_workbench.parameters.service import build_parameter_set
 
@@ -175,7 +177,72 @@ def test_manifest_checksum_t57(tmp_path: Path) -> None:
     report = build_parameter_set(output_root=tmp_path, config=_config(), **inputs)
     manifest = json.loads(Path(report.artifacts["manifest"]).read_text(encoding="utf-8"))
     assert "parameter_set_id" in manifest
-    assert manifest["output_checksums"]["records"] != ""
+    assert set(manifest["output_checksums"]) == {
+        "records",
+        "effective_parameters",
+        "capability_matrix",
+    }
+    assert all(manifest["output_checksums"].values())
+    assert len(manifest["input_checksums"]["waveform_store"]) == 64
+
+
+def test_parameter_set_cache_rejects_output_and_waveform_changes(tmp_path: Path) -> None:
+    root = tmp_path / "processed"
+    battery_id, experiment_id = "CELL_X", "EXP_X"
+    events = root / "multimodal" / battery_id / experiment_id / "measurement_events.parquet"
+    events.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {"measurement_event_id": ["ME::1"], "battery_id": [battery_id], "experiment_id": [experiment_id]}
+    ).to_parquet(events, index=False)
+    cycles = root / "electrical" / battery_id / experiment_id / "cycles.parquet"
+    cycles.parent.mkdir(parents=True)
+    pd.DataFrame({"cycle_index_raw": [1], "discharge_capacity_ah": [11.0]}).to_parquet(
+        cycles, index=False
+    )
+    waveform_store = root / "ultrasound" / battery_id / experiment_id / "waveforms.zarr"
+    waveform_store.parent.mkdir(parents=True)
+    import numpy as np
+    import zarr
+
+    group = zarr.open_group(str(waveform_store), mode="w")
+    group.create_array("US001/waveform", data=np.zeros((2, 16), dtype="int16"))
+    label_manifest = root / "labels" / battery_id / experiment_id / "label_manifest.json"
+    label_manifest.parent.mkdir(parents=True)
+    label_manifest.write_text("{}\n", encoding="utf-8")
+    report = build_parameter_set(
+        output_root=root,
+        config=_config(),
+        measurement_events_path=events,
+        cycles_path=cycles,
+        waveform_store_path=waveform_store,
+        label_manifest_path=label_manifest,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
+    plan = AnalysisPlan(
+        profile="SCIENTIFIC_ANALYSIS",
+        project=PlanProject(battery_id=battery_id, experiment_id=experiment_id),
+        parameters={"parameter_set_id": report.parameter_set_id},
+    )
+    node = ParameterSetNode()
+    intact, reason = node.resolve_existing_output(plan, {}, root)
+    assert intact is not None, reason
+
+    effective = Path(report.artifacts["effective_parameters"])
+    effective_bytes = effective.read_bytes()
+    effective.write_text("{}\n", encoding="utf-8")
+    tampered, reason = node.resolve_existing_output(plan, {}, root)
+    assert tampered is None
+    assert "OUTPUT_CHECKSUM_MISMATCH:effective_parameters" in reason
+
+    # Restore the output bytes, then prove chunk-level waveform changes stale the set.
+    effective.write_bytes(effective_bytes)
+    group = zarr.open_group(str(waveform_store), mode="a")
+    waveform = group["US001/waveform"]
+    waveform[0, 0] = 1
+    stale, reason = node.resolve_existing_output(plan, {}, root)
+    assert stale is None
+    assert "waveform_store' changed since the artifact was produced" in reason
 
 
 def test_capability_matrix_t58(tmp_path: Path) -> None:

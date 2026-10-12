@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,6 +27,128 @@ def _post(client: TestClient, path: str, body: dict) -> dict:
     response = client.post(path, json=body)
     assert response.status_code == 200, response.text
     return response.json()["data"]
+
+
+def _write_fresh_dataset(processed: Path, dataset_id: str) -> None:
+    dataset_dir = processed / "datasets/CELL_001/EXP_001/SOC" / dataset_id
+    dataset_dir.mkdir(parents=True)
+    feature_dir = processed / "features/CELL_001/EXP_001/FS::contract"
+    feature_dir.mkdir(parents=True)
+    label_dir = processed / "labels/CELL_001/EXP_001"
+    label_dir.mkdir(parents=True)
+    slice_path = processed / "analysis_slices/CELL_001/EXP_001/AS::contract/analysis_slice.parquet"
+    slice_path.parent.mkdir(parents=True)
+    slice_path.write_bytes(b"analysis slice fixture")
+    waveform_store = processed / "waveform_inputs/CELL_001/EXP_001/waveforms.zarr"
+    waveform_store.mkdir(parents=True)
+    (waveform_store / "chunk.bin").write_bytes(b"waveform fixture")
+    dataset_path = dataset_dir / "dataset.parquet"
+    feature_path = feature_dir / "ultrasound_features.parquet"
+    definitions_path = feature_dir / "feature_definitions.json"
+    feature_manifest_path = feature_dir / "feature_set_manifest.json"
+    label_path = label_dir / "event_labels.parquet"
+    cycle_label_path = label_dir / "cycle_labels.parquet"
+    label_manifest_path = label_dir / "label_manifest.json"
+    event_ids = ["CELL_001::ME::contract::1", "CELL_001::ME::contract::2"]
+    pd.DataFrame(
+        {
+            "measurement_event_id": event_ids,
+            "battery_id": ["CELL_001"] * 2,
+            "experiment_id": ["EXP_001"] * 2,
+            "cycle_group_id": ["CYCLE::1", "CYCLE::2"],
+            "soc_reference_percent": [25.0, 50.0],
+            "waveform_rms_a_u": [0.25, 0.5],
+        }
+    ).to_parquet(dataset_path, index=False)
+    pd.DataFrame({"measurement_event_id": event_ids, "waveform_rms_a_u": [0.25, 0.5]}).to_parquet(
+        feature_path, index=False
+    )
+    pd.DataFrame(
+        {"measurement_event_id": event_ids, "soc_reference_percent": [25.0, 50.0]}
+    ).to_parquet(label_path, index=False)
+    pd.DataFrame({"cycle": [1, 2], "soh_capacity_reference_percent": [99.0, 98.0]}).to_parquet(
+        cycle_label_path, index=False
+    )
+    definitions_path.write_text(
+        json.dumps({"features": [{"name": "waveform_rms_a_u", "version": "1.0", "unit": "a.u."}]}),
+        encoding="utf-8",
+    )
+
+    def checksum(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def tree_checksum(path: Path) -> str:
+        digest = hashlib.sha256()
+        for item in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
+            digest.update(item.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(item.read_bytes())
+        return digest.hexdigest()
+
+    feature_manifest_path.write_text(
+        json.dumps(
+            {
+                "feature_set_id": "FS::contract",
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "analysis_slice_id": "AS::contract",
+                "analysis_slice_path": str(slice_path.relative_to(processed)),
+                "analysis_slice_checksum": checksum(slice_path),
+                "waveform_store_path": str(waveform_store.relative_to(processed)),
+                "waveform_store_checksum": tree_checksum(waveform_store),
+                "output_paths": {
+                    "features": str(feature_path.relative_to(processed)),
+                    "definitions": str(definitions_path.relative_to(processed)),
+                },
+                "output_checksums": {
+                    "features": checksum(feature_path),
+                    "definitions": checksum(definitions_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    label_manifest_path.write_text(
+        json.dumps(
+            {
+                "label_set_id": "LB::contract",
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "output_paths": {
+                    "event_labels": str(label_path.relative_to(processed)),
+                    "cycle_labels": str(cycle_label_path.relative_to(processed)),
+                },
+                "output_checksums": {
+                    "event_labels": checksum(label_path),
+                    "cycle_labels": checksum(cycle_label_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = {
+        "dataset_id": dataset_id,
+        "dataset_family": "SOC",
+        "dataset_status": "READY_WITH_LIMITATIONS",
+        "battery_id": "CELL_001",
+        "experiment_id": "EXP_001",
+        "feature_set_id": "FS::contract",
+        "feature_set_path": str(feature_path.relative_to(processed)),
+        "feature_set_checksum": checksum(feature_path),
+        "feature_set_manifest_path": str(feature_manifest_path.relative_to(processed)),
+        "feature_set_manifest_checksum": checksum(feature_manifest_path),
+        "label_set_id": "LB::contract",
+        "label_set_path": str(label_path.relative_to(processed)),
+        "label_set_checksum": checksum(label_path),
+        "label_set_manifest_path": str(label_manifest_path.relative_to(processed)),
+        "label_set_manifest_checksum": checksum(label_manifest_path),
+        "target_name": "soc_reference_percent",
+        "target_column": "soc_reference_percent",
+        "predictor_columns": ["waveform_rms_a_u"],
+        "output_checksum": checksum(dataset_path),
+    }
+    (dataset_dir / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_t15_parameters_use_registry_and_preserve_provenance(
@@ -114,7 +238,8 @@ def test_t19_dataset_contract_and_reuse(api: tuple[TestClient, object, Path]) ->
 
 
 def test_t20_split_is_grouped_and_deterministic(api: tuple[TestClient, object, Path]) -> None:
-    client, _, _ = api
+    client, _, processed = api
+    _write_fresh_dataset(processed, "DS::example")
     body = {
         "battery_id": "CELL_001",
         "experiment_id": "EXP_001",
@@ -129,7 +254,8 @@ def test_t20_split_is_grouped_and_deterministic(api: tuple[TestClient, object, P
 
 
 def test_t21_model_is_fixed_baseline_and_reused(api: tuple[TestClient, object, Path]) -> None:
-    client, _, _ = api
+    client, _, processed = api
+    _write_fresh_dataset(processed, "DS::example")
     body = {
         "battery_id": "CELL_001",
         "experiment_id": "EXP_001",
@@ -386,7 +512,7 @@ def test_t46_t52_scientific_preservation(api: tuple[TestClient, object, Path]) -
     limitations = client.get("/api/v1/experiments/CELL_001/EXP_001/limitations").json()["data"][
         "limitations"
     ]
-    assert any(item["code"] == "LIMITED_CROSS_CYCLE_GENERALIZATION" for item in limitations)
+    assert any(item["code"] == "NO_CROSS_BATTERY_EVALUATION" for item in limitations)
     assert status["soc"]["value"] is None
     assert "not true SOC" in status["soc"]["reason"]
 

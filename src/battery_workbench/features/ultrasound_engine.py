@@ -32,6 +32,7 @@ from battery_workbench.features.validation import (
     validate_locator,
 )
 from battery_workbench.features.xcorr import compute_relative_xcorr_features
+from battery_workbench.provenance.processed_manifest import feature_waveform_store_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,14 @@ _CONTEXT_COLS = [
 
 
 def _sha256(path: Path) -> str:
-    if not path.exists() or path.is_dir():
+    if not path.exists():
         return ""
     digest = hashlib.sha256()
+    if path.is_dir():
+        checksum = feature_waveform_store_sha256(path)
+        if not checksum:
+            raise ValueError(f"waveform store is missing or contains a symlink: {path}")
+        return checksum
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -72,7 +78,8 @@ def _sha256(path: Path) -> str:
 
 def _zarr_provenance(zpath: Path) -> str:
     group = zarr.open_group(str(zpath), mode="r")
-    return "|".join(sorted(str(k) for k in group)) or "empty"
+    groups = "|".join(sorted(str(k) for k in group)) or "empty"
+    return f"{groups}|tree-sha256:{_sha256(zpath)}"
 
 
 def _sampling_rate(root: Any) -> float | None:

@@ -123,6 +123,24 @@ def test_predictor_policy_change_t43() -> None:
     assert a != b
 
 
+def test_canonical_tof_source_checksum_changes_tof_dataset_identity() -> None:
+    common = {
+        "feature_set_id": "FS::A",
+        "label_set_id": "LB::A",
+        "parameter_set_id": "PS::A",
+        "target_name": "soc_reference_percent",
+        "config": _config(),
+        "feature_checksum": "c1",
+        "label_checksum": "c2",
+        "selected_features": ["tof_us"],
+    }
+
+    first = build_dataset_id(**common, canonical_tof_checksum="tof-manifest-a")
+    second = build_dataset_id(**common, canonical_tof_checksum="tof-manifest-b")
+
+    assert first != second
+
+
 def test_leakage_policy_change_t44() -> None:
     a = build_dataset_id(
         feature_set_id="FS::A",

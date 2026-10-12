@@ -84,12 +84,16 @@ export function ExperimentDetailPage() {
           <ul>
             <li>
               Electrical：{quality.data.data.electrical
-                ? `${quality.data.data.electrical.records} records / ${quality.data.data.electrical.cycles} cycles`
+                ? quality.data.data.electrical.status === "INTEGRITY_BLOCKED"
+                  ? "来源完整性阻断，统计已隐藏"
+                  : `${quality.data.data.electrical.records} records / ${quality.data.data.electrical.cycles} cycles`
                 : "尚未导入"}
             </li>
             <li>
               Ultrasound：{quality.data.data.ultrasound
-                ? `${quality.data.data.ultrasound.frames} frames（cadence ${quality.data.data.ultrasound.frame_cadence_s ?? "—"}s；sampling_rate UNKNOWN）`
+                ? quality.data.data.ultrasound.status === "INTEGRITY_BLOCKED"
+                  ? "来源完整性阻断，统计已隐藏"
+                  : `${quality.data.data.ultrasound.frames} frames（cadence ${quality.data.data.ultrasound.frame_cadence_s ?? "—"}s；sampling_rate UNKNOWN）`
                 : "尚未导入"}
             </li>
           </ul>

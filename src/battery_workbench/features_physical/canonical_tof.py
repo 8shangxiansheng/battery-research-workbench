@@ -9,6 +9,8 @@ never consumed here and never populate canonical tof_us.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -21,6 +23,9 @@ from battery_workbench.features.gate_calibration import (
     TOFGateBinding,
 )
 from battery_workbench.features_physical.envelope_peak_tof import envelope_peak_tof
+from battery_workbench.provenance.processed_manifest import (
+    verify_manifest_files,
+)
 
 CANONICAL_TOF_OUTPUT_COLUMNS = [
     "measurement_event_id",
@@ -45,6 +50,167 @@ CANONICAL_TOF_OUTPUT_COLUMNS = [
     "tof_quality_reason",
     "parameter_set_id",
 ]
+
+
+def verify_canonical_tof_artifact(
+    processed_root: Path,
+    manifest_path: Path,
+    manifest: Any,
+    *,
+    battery_id: str,
+    experiment_id: str,
+    feature_set_id: str,
+    feature_table_path: Path,
+    parameter_set_id: str,
+    gate_calibration: dict[str, Any],
+) -> list[str]:
+    """Check canonical TOF identity, active sources, and persisted outputs."""
+    root = Path(processed_root).resolve()
+    artifact_dir = root / "features_physical" / battery_id / experiment_id
+    expected_manifest = artifact_dir / "canonical_tof_manifest.json"
+    reasons: list[str] = []
+    if Path(manifest_path).resolve() != expected_manifest.resolve():
+        reasons.append("MANIFEST_PATH_INVALID")
+    if not isinstance(manifest, dict):
+        return [*reasons, "MANIFEST_INVALID"]
+    if manifest.get("battery_id") != battery_id:
+        reasons.append("MANIFEST_BATTERY_ID_MISMATCH")
+    if manifest.get("experiment_id") != experiment_id:
+        reasons.append("MANIFEST_EXPERIMENT_ID_MISMATCH")
+    if manifest.get("feature_set_id") != feature_set_id:
+        reasons.append("FEATURE_SET_ID_MISMATCH")
+    if manifest.get("parameter_set_id") != parameter_set_id:
+        reasons.append("PARAMETER_SET_ID_MISMATCH")
+    if not feature_set_id:
+        reasons.append("FEATURE_SET_ID_MISSING")
+    if not parameter_set_id:
+        reasons.append("PARAMETER_SET_ID_MISSING")
+    if manifest.get("gate_calibration") != gate_calibration:
+        reasons.append("GATE_CALIBRATION_CHANGED")
+
+    input_paths = manifest.get("input_paths")
+    expected_inputs = {
+        "ultrasound_features": Path(feature_table_path),
+        "feature_set_manifest": Path(feature_table_path).parent / "feature_set_manifest.json",
+        "analysis_slice": root
+        / "analysis_slices"
+        / battery_id
+        / experiment_id
+        / Path(feature_table_path).parent.parent.name
+        / "analysis_slice.parquet",
+        "measurement_events": root
+        / "multimodal"
+        / battery_id
+        / experiment_id
+        / "measurement_events.parquet",
+        "waveform_store": root / "ultrasound" / battery_id / experiment_id / "waveforms.zarr",
+        "effective_parameters": root
+        / "parameters"
+        / battery_id
+        / experiment_id
+        / parameter_set_id
+        / "effective_parameters.json",
+        "parameter_set_manifest": root
+        / "parameters"
+        / battery_id
+        / experiment_id
+        / parameter_set_id
+        / "parameter_set_manifest.json",
+    }
+    if gate_calibration.get("source") == "EXPERIMENT_CONFIRMED":
+        expected_inputs["gate_calibration_record"] = (
+            root
+            / "gate_calibrations"
+            / battery_id
+            / experiment_id
+            / f"{gate_calibration.get('gate_calibration_id')}.json"
+        )
+    if not isinstance(input_paths, dict):
+        reasons.append("INPUT_PATHS_INVALID")
+    else:
+        for key, expected_path in expected_inputs.items():
+            try:
+                actual_path = Path(input_paths.get(key, "")).resolve()
+                actual_path.relative_to(root)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                reasons.append(f"INPUT_PATH_INVALID:{key}")
+                continue
+            if actual_path != expected_path.resolve():
+                reasons.append(f"INPUT_PATH_NONCANONICAL:{key}")
+
+    required_inputs = set(expected_inputs)
+    if "gate_calibration_record" in expected_inputs:
+        required_inputs.add("gate_calibration_record")
+    reasons.extend(
+        verify_manifest_files(
+            root,
+            manifest,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            required_inputs=required_inputs,
+            required_outputs={"canonical_tof", "audit"},
+        )
+    )
+    expected_outputs = {
+        "canonical_tof": artifact_dir / "canonical_tof.parquet",
+        "audit": artifact_dir / "canonical_tof_audit.json",
+    }
+    output_paths = manifest.get("output_paths")
+    if isinstance(output_paths, dict):
+        for key, expected_path in expected_outputs.items():
+            try:
+                actual_path = Path(output_paths.get(key, "")).resolve()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                reasons.append(f"OUTPUT_PATH_INVALID:{key}")
+                continue
+            if actual_path != expected_path.resolve():
+                reasons.append(f"OUTPUT_PATH_NONCANONICAL:{key}")
+    return list(dict.fromkeys(reasons))
+
+
+def canonical_tof_integrity_reasons(
+    processed_root: Path, battery_id: str, experiment_id: str
+) -> list[str]:
+    """Assess the persisted canonical TOF against its current byte sources."""
+    root = Path(processed_root)
+    manifest_path = (
+        root
+        / "features_physical"
+        / battery_id
+        / experiment_id
+        / "canonical_tof_manifest.json"
+    )
+    try:
+        manifest_path.resolve(strict=True).relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return ["CANONICAL_TOF_MANIFEST_MISSING_OR_INVALID"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ["CANONICAL_TOF_MANIFEST_UNREADABLE"]
+    if not isinstance(manifest, dict):
+        return ["MANIFEST_INVALID"]
+    input_paths = manifest.get("input_paths")
+    if not isinstance(input_paths, dict):
+        return ["INPUT_PATHS_INVALID"]
+    from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
+
+    calibration = resolve_tof_gate_calibration(battery_id, experiment_id, root)
+    try:
+        feature_table_path = Path(input_paths.get("ultrasound_features", ""))
+    except (TypeError, ValueError):
+        return ["INPUT_PATH_INVALID:ultrasound_features"]
+    return verify_canonical_tof_artifact(
+        root,
+        manifest_path,
+        manifest,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        feature_set_id=str(manifest.get("feature_set_id") or ""),
+        feature_table_path=feature_table_path,
+        parameter_set_id=str(manifest.get("parameter_set_id") or ""),
+        gate_calibration=calibration,
+    )
 
 
 def canonical_tof_values_by_event(

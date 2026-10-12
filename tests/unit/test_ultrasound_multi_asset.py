@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from battery_workbench.io.ultrasound.service import (
     parse_ultrasound_experiment,
     write_ultrasound_experiment,
 )
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
 
 
 def test_multiple_assets_keep_local_raw_ids_and_separate_zarr_groups(
@@ -36,7 +38,9 @@ def test_multiple_assets_keep_local_raw_ids_and_separate_zarr_groups(
     ]
 
     parsed = parse_ultrasound_experiment(experiment, assets, tmp_path)
-    output = write_ultrasound_experiment(parsed, tmp_path / "processed")
+    output = write_ultrasound_experiment(
+        parsed, tmp_path / "processed" / "ultrasound"
+    )
 
     frames = pd.read_parquet(output.frames_path)
     assert list(frames.groupby("ultrasound_asset_id")["frame_index_raw"].first()) == [0, 0]
@@ -47,3 +51,8 @@ def test_multiple_assets_keep_local_raw_ids_and_separate_zarr_groups(
     assert root["U001/waveform"].shape == (2, 1250)
     assert root["U002/waveform"].shape == (2, 1250)
     assert output.manifest_path.is_file()
+    parser_manifest = json.loads(output.manifest_path.read_text(encoding="utf-8"))
+    assert set(parser_manifest["output_checksums"]) == {"frames", "waveforms"}
+    assert parser_output_integrity_reasons(
+        tmp_path / "processed", "CELL_TEST", "EXP_TEST"
+    ) == {"ultrasound": []}

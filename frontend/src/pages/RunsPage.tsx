@@ -5,8 +5,10 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useParams } from "react-router-dom";
 import { client } from "../api/client";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { useInvalidateWorkflow, useWorkflowContext } from "../hooks/useWorkflowContext";
 
 const STATUS_LABELS: Record<string, string> = {
   SUCCEEDED: "成功",
@@ -18,10 +20,55 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function RunsPage() {
   const qc = useQueryClient();
+  const { batteryId = "", experimentId = "" } = useParams();
+  const workflow = useWorkflowContext(batteryId, experimentId);
+  const invalidateWorkflow = useInvalidateWorkflow();
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [actionValues, setActionValues] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<unknown>(null);
   const [flowMessage, setFlowMessage] = useState<string | null>(null);
+  const invalidModalities = workflow.data?.meta.invalid_modalities ?? [];
+  const sourceIntegrityBlocked = workflow.data?.meta.source_integrity_status === "INTEGRITY_BLOCKED";
+  const alignmentRecoveryRequired = workflow.data?.steps.ALIGNMENT?.blocking?.required_action
+    === "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT";
+  const reparse = useMutation({
+    mutationFn: () => client.startRun({
+      profile: "INGEST_TO_MEASUREMENT_EVENTS",
+      battery_id: batteryId,
+      experiment_id: experimentId,
+      stages: invalidModalities.flatMap((modality) =>
+        modality === "electrical"
+          ? ["ELECTRICAL_CANONICAL"]
+          : modality === "ultrasound"
+            ? ["ULTRASOUND_CANONICAL"]
+            : [],
+      ),
+    }),
+    onSuccess: () => {
+      setFlowMessage("来源重新解析已完成；请复核 lineage 后再继续下游分析。");
+      invalidateWorkflow(batteryId, experimentId);
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+    onError: (error) => setActionError(error),
+  });
+  const rebuildAlignment = useMutation({
+    mutationFn: () => client.startRun({
+      profile: "INGEST_TO_MEASUREMENT_EVENTS",
+      battery_id: batteryId,
+      experiment_id: experimentId,
+    }),
+    onSuccess: (result) => {
+      setFlowMessage("时间基准与下游同步链已提交重建；请检查运行结果和新的对齐状态。重建不会把时间基准标记为已验证。");
+      setActionError(null);
+      invalidateWorkflow(batteryId, experimentId);
+      void qc.invalidateQueries({ queryKey: ["run", result.data.run_id] });
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+      for (const key of ["synchronization", "alignment-summary", "alignment-samples", "alignment-exclusions"]) {
+        void qc.invalidateQueries({ queryKey: [key, batteryId, experimentId] });
+      }
+    },
+    onError: (error) => setActionError(error),
+  });
 
   const runs = useQuery({
     queryKey: ["runs"],
@@ -68,6 +115,44 @@ export function RunsPage() {
     <section aria-labelledby="runs-title">
       <h2 id="runs-title">运行记录 Runs</h2>
 
+      {sourceIntegrityBlocked && (
+        <section className="notice mb-5" role="alert" data-testid="source-integrity-recovery">
+          <h3 className="font-medium">来源解析清单完整性阻断</h3>
+          <p className="text-sm mt-1">
+            {invalidModalities.length
+              ? `受影响模态：${invalidModalities.join("、")}。将只重解析对应原始来源，不运行同步、特征或模型步骤。`
+              : "系统未能确定可安全重解析的模态，请先检查原始来源清单。"}
+          </p>
+          <button
+            type="button"
+            data-testid="reparse-source-assets"
+            disabled={!invalidModalities.length || reparse.isPending}
+            onClick={() => reparse.mutate()}
+          >
+            {reparse.isPending ? "正在重新解析…" : "重新解析无效来源"}
+          </button>
+          {reparse.error && <ErrorBanner error={reparse.error} />}
+        </section>
+      )}
+
+      {alignmentRecoveryRequired && (
+        <section className="notice mb-5" role="alert" data-testid="timebase-chain-recovery">
+          <h3 className="font-medium">时间基准 / 同步工件需要重建</h3>
+          <p className="text-sm mt-1">
+            当前时间锚点或 timestamp 来源、输出与现状不一致。运行完整导入与关联链以重建 TimeAnchor、timestamps、Synchronization 和 MeasurementEvents；这只修复工件新鲜度，不证明设备时钟准确，也不会将同步标记为已验证。
+          </p>
+          <button
+            type="button"
+            data-testid="rebuild-timebase-chain"
+            disabled={rebuildAlignment.isPending}
+            onClick={() => rebuildAlignment.mutate()}
+          >
+            {rebuildAlignment.isPending ? "正在提交重建…" : "重建时间基准与同步链"}
+          </button>
+          {rebuildAlignment.error && <ErrorBanner error={rebuildAlignment.error} />}
+        </section>
+      )}
+
       {runs.isLoading ? (
         <p role="status">加载运行记录…</p>
       ) : runs.error ? (
@@ -75,32 +160,35 @@ export function RunsPage() {
       ) : (runs.data?.data.runs.length ?? 0) === 0 ? (
         <p data-testid="no-runs">暂无运行记录。</p>
       ) : (
-        <table data-testid="runs-table">
-          <thead>
-            <tr>
-              <th>run_id</th>
-              <th>状态</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {(runs.data?.data.runs ?? []).map((r) => (
-              <tr key={r.run_id}>
-                <td>
-                  <code>{r.run_id}</code>
-                </td>
-                <td>
-                  {r.status}（{STATUS_LABELS[r.status] ?? "未知"}）
-                </td>
-                <td>
-                  <button type="button" onClick={() => setSelectedRun(r.run_id)}>
-                    查看
-                  </button>
-                </td>
+        <details data-testid="run-list-disclosure" open={selectedRun === null}>
+          <summary>运行列表（{runs.data?.data.runs.length ?? 0} 条）</summary>
+          <table data-testid="runs-table">
+            <thead>
+              <tr>
+                <th>run_id</th>
+                <th>状态</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(runs.data?.data.runs ?? []).map((r) => (
+                <tr key={r.run_id}>
+                  <td>
+                    <code>{r.run_id}</code>
+                  </td>
+                  <td>
+                    {r.status}（{STATUS_LABELS[r.status] ?? "未知"}）
+                  </td>
+                  <td>
+                    <button type="button" onClick={() => setSelectedRun(r.run_id)}>
+                      查看
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       )}
 
       {selectedRun ? (
@@ -113,9 +201,12 @@ export function RunsPage() {
           ) : runDetail.error ? (
             <ErrorBanner error={runDetail.error} />
           ) : (
-            <pre style={{ background: "#f6f6f6", padding: "0.5rem", overflowX: "auto" }}>
-              {JSON.stringify(runDetail.data?.data, null, 2)}
-            </pre>
+            <details>
+              <summary>查看运行技术详情（原始 JSON）</summary>
+              <pre style={{ background: "#f6f6f6", padding: "0.5rem", overflowX: "auto" }}>
+                {JSON.stringify(runDetail.data?.data, null, 2)}
+              </pre>
+            </details>
           )}
 
           <h4 data-testid="pending-actions-title">待处理科学动作（UserActionRequired）</h4>
@@ -197,6 +288,14 @@ export function RunsPage() {
                       if (!name || name === "none") {
                         return <p key={`${a.action_id}-none`}><small>该动作无需附加字段 — 直接提交确认即可。</small></p>;
                       }
+                      if (a.action_type === "CONFIRM_FEATURE_SELECTION" && name === "selection_id") {
+                        return (
+                          <div key={`${a.action_id}-${name}`} className="block text-sm mt-1">
+                            {name}： <code>{rf.value ?? "—"}</code>
+                            <small className="muted ml-2">后端生成的选择身份，只读回传，不可编辑。</small>
+                          </div>
+                        );
+                      }
                       return (
                         <label key={`${a.action_id}-${name}`} className="block text-sm mt-1">
                           {name}：
@@ -239,19 +338,26 @@ export function RunsPage() {
                     submitAction.mutate({ actionId: a.action_id, values });
                   }}
                 >
-                  提交动作（POST user-actions）
+                  {a.action_type === "CONFIRM_FEATURE_SELECTION"
+                    ? "确认上述特征并继续"
+                    : a.action_type === "MISSING_SAMPLING_RATE"
+                      ? "提交采样参数并继续"
+                      : "提交并继续"}
                 </button>
-                <button
-                  type="button"
-                  data-testid="resume-run"
-                  disabled={resume.isPending}
-                  onClick={() => resume.mutate()}
-                >
-                  Resume
-                </button>
+                <small className="muted ml-2">提交后运行会自动继续。</small>
               </div>
             ))
           )}
+          {actions.length === 0 && runDetail.data?.data.status === "WAITING_FOR_USER" ? (
+            <button
+              type="button"
+              data-testid="resume-run"
+              disabled={resume.isPending}
+              onClick={() => resume.mutate()}
+            >
+              恢复运行
+            </button>
+          ) : null}
           {flowMessage ? (
             <p role="status" data-testid="flow-message">
               {flowMessage}

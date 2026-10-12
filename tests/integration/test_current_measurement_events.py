@@ -17,6 +17,7 @@ SYNC_DIR = PROCESSED_ROOT / "synchronization" / "CELL_001" / "EXP_001"
 ALIGNED = SYNC_DIR / "aligned_ultrasound_frames.parquet"
 CANDIDATES = SYNC_DIR / "synchronization_candidates.parquet"
 RECORDS = PROCESSED_ROOT / "electrical" / "CELL_001" / "EXP_001" / "records.parquet"
+AUX_TEMP = PROCESSED_ROOT / "electrical" / "CELL_001" / "EXP_001" / "aux_temperature.parquet"
 CONFIG = MeasurementEventConfig()
 
 AMBIG = {691, 1914, 2094, 3998}
@@ -124,6 +125,42 @@ def test_current_real_golden_frames_t31(tmp_path: Path) -> None:
     row3998 = out[out["frame_index_raw"] == 3998].iloc[0]
     assert row3998["event_quality_status"] == "AMBIGUOUS_SYNC"
     assert pd.isna(row3998["electrical_record_locator"])
+
+
+@pytest.mark.skipif(
+    not (ALIGNED.exists() and CANDIDATES.exists() and RECORDS.exists() and AUX_TEMP.exists()),
+    reason="CELL_001 multimodal and aux temperature inputs not present",
+)
+def test_current_real_temperature_exact_join_t33(tmp_path: Path) -> None:
+    """T33: temperature joins only by selected asset + shared raw record index."""
+    build_measurement_events(
+        aligned_frames_path=ALIGNED,
+        sync_candidates_path=CANDIDATES,
+        electrical_records_path=RECORDS,
+        aux_temperature_path=AUX_TEMP,
+        output_dir=tmp_path,
+        config=CONFIG,
+    )
+    out = pd.read_parquet(
+        tmp_path / "multimodal" / "CELL_001" / "EXP_001" / "measurement_events.parquet"
+    )
+    aux = pd.read_parquet(AUX_TEMP)
+    matched = out[out["event_quality_status"] == "READY"].copy()
+    expected = matched.merge(
+        aux[["electrical_asset_id", "record_index_raw", "temperature_c"]],
+        left_on=["electrical_asset_id", "electrical_row_index"],
+        right_on=["electrical_asset_id", "record_index_raw"],
+        how="left",
+        validate="one_to_one",
+        suffixes=("", "_expected"),
+    )
+    assert len(matched) == 3995
+    assert int(matched["temperature_c"].notna().sum()) == 3995
+    assert set(matched["temperature_channel_id"].dropna()) == {"T1"}
+    assert expected["temperature_c"].equals(expected["temperature_c_expected"])
+    ambiguous = out[out["event_quality_status"] == "AMBIGUOUS_SYNC"]
+    assert len(ambiguous) == 4
+    assert ambiguous["temperature_c"].isna().all()
 
 
 @pytest.mark.skipif(

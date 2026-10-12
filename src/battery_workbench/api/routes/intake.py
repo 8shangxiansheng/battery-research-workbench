@@ -75,6 +75,11 @@ def _experiment_summary(engine: IntakeEngine, record: ExperimentRecord) -> dict[
         "name": record.name,
         "status": record.status,
         "is_demo": record.is_demo,
+        "start_time": record.start_time,
+        "end_time": record.end_time,
+        "protocol": record.protocol,
+        "condition_id": record.condition_id,
+        "condition_description": record.condition_description,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
         "notes": record.notes,
@@ -165,6 +170,11 @@ def create_experiment(request: Request, body: dict[str, Any]) -> dict[str, Any]:
             name=name,
             is_demo=bool(body.get("is_demo", False)),
             notes=str(body.get("notes", "")),
+            start_time=str(body["start_time"]) if body.get("start_time") else None,
+            end_time=str(body["end_time"]) if body.get("end_time") else None,
+            protocol=str(body.get("protocol", "")),
+            condition_id=str(body.get("condition_id", "")),
+            condition_description=str(body.get("condition_description", "")),
         )
     except IntakePolicyError as exc:
         raise _policy_error(exc) from exc
@@ -253,18 +263,51 @@ def patch_experiment(
         record = engine.load_experiment(battery_id, experiment_id)
     except KeyError as e:
         raise APIError(ErrorCode.NOT_FOUND, "experiment not found in library") from e
+    proposed_start = (
+        (str(body["start_time"]) if body["start_time"] else None)
+        if "start_time" in body
+        else record.start_time
+    )
+    proposed_end = (
+        (str(body["end_time"]) if body["end_time"] else None)
+        if "end_time" in body
+        else record.end_time
+    )
+    try:
+        engine.validate_experiment_time_range(proposed_start, proposed_end)
+    except IntakePolicyError as exc:
+        raise _policy_error(exc) from exc
     if "name" in body:
         record.name = str(body["name"])
     if "notes" in body:
         record.notes = str(body["notes"])
+    if "start_time" in body:
+        record.start_time = str(body["start_time"]) if body["start_time"] else None
+    if "end_time" in body:
+        record.end_time = str(body["end_time"]) if body["end_time"] else None
+    for field_name in ("protocol", "condition_id", "condition_description"):
+        if field_name in body:
+            setattr(record, field_name, str(body[field_name] or "").strip())
     allowed_status = {"DRAFT", "AWAITING_DATA", "READY_FOR_PIPELINE", "ARCHIVED"}
     if "status" in body:
         if body["status"] not in allowed_status:
             raise APIError(ErrorCode.VALIDATION_ERROR, "status transition not allowed via PATCH")
         record.status = body["status"]
-    record.updated_at = record.updated_at
+    from battery_workbench.intake.models import utc_now_iso
+
+    record.updated_at = utc_now_iso()
+    try:
+        engine.sync_experiment_manifest_metadata(record)
+    except IntakePolicyError as exc:
+        raise _policy_error(exc) from exc
     engine.save_experiment(record)
-    engine.append_event("EXPERIMENT_UPDATED", detail={"composite_id": record.composite_id})
+    engine.append_event(
+        "EXPERIMENT_UPDATED",
+        detail={
+            "composite_id": record.composite_id,
+            "updated_fields": sorted(body),
+        },
+    )
     return {"data": _experiment_summary(engine, record), "meta": {}}
 
 

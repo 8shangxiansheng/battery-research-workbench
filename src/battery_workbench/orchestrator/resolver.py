@@ -9,33 +9,24 @@ are resolved against the active processed root.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from battery_workbench.provenance.processed_manifest import content_sha256
+
 if TYPE_CHECKING:
     from battery_workbench.orchestrator.schemas import ArtifactRef as ArtifactRefModel
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return content_sha256(path)
 
 
 def _sha256_tree(path: Path) -> str:
-    h = hashlib.sha256()
-    for f in sorted(p for p in path.rglob("*") if p.is_file()):
-        h.update(str(f.relative_to(path)).encode())
-        with f.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-    return h.hexdigest()
+    return content_sha256(path)
 
 
 def content_hash(path: Path) -> str:
@@ -73,6 +64,8 @@ class ArtifactRequirements(BaseModel):
     expected_version: str = ""  # node's module version; "" = don't check
     provenance: dict[str, Any] = Field(default_factory=dict)
     extra_match: dict[str, Any] = Field(default_factory=dict)
+    required_output_checksums: set[str] = Field(default_factory=set)
+    required_input_checksums: set[str] = Field(default_factory=set)
     scan: bool = True  # whether to scan sibling dirs when no id pinned
 
 
@@ -211,6 +204,21 @@ def find_existing_artifact(
         ok, reason = _manifest_matches(manifest, req, artifact_id)
         if not ok:
             continue
+        if req.required_output_checksums or req.required_input_checksums:
+            from battery_workbench.provenance.processed_manifest import (
+                verify_manifest_files,
+            )
+
+            integrity_reasons = verify_manifest_files(
+                root,
+                manifest,
+                battery_id=req.identity.battery_id,
+                experiment_id=req.identity.experiment_id,
+                required_outputs=req.required_output_checksums,
+                required_inputs=req.required_input_checksums,
+            )
+            if integrity_reasons:
+                continue
         return ArtifactRef(
             artifact_type=req.artifact_type,
             artifact_id=str(manifest.get(req.id_key, "")) if req.id_key else out_dir.name,
@@ -239,8 +247,6 @@ def current_input_checksums(
         if not raw:
             continue
         p = _resolve_manifest_path(manifest_root, raw)
-        if p.is_file():
-            result[key] = _sha256_file(p)
-        elif p.is_dir():
-            result[key] = _sha256_tree(p)
+        if p.is_file() or p.is_dir():
+            result[key] = content_sha256(p)
     return result

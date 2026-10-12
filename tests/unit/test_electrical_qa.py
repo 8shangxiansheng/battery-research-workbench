@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from battery_workbench.electrical.qa import ElectricalQAConfig, run_electrical_qa
@@ -38,6 +39,24 @@ def test_perfect_synthetic_experiment_passes(
         "aux_temperature": 4,
         "aux_voltage": 4,
     }
+
+
+def test_parser_output_tampering_is_a_critical_qa_failure(
+    electrical_qa_input_factory: Callable[..., Path], tmp_path: Path
+) -> None:
+    input_dir = electrical_qa_input_factory()
+    records_path = input_dir / "records.parquet"
+    records = pd.read_parquet(records_path)
+    records.loc[0, "voltage_v"] += 0.25
+    records.to_parquet(records_path, index=False)
+
+    report = run_electrical_qa(
+        "CELL_TEST", "EXP_TEST", input_dir, tmp_path / "artifacts", ElectricalQAConfig()
+    )
+
+    assert report.status == "FAIL"
+    anomaly = next(item for item in report.anomalies if item.code == "PARSER_OUTPUT_INTEGRITY_INVALID")
+    assert "OUTPUT_CHECKSUM_MISMATCH:records" in anomaly.metadata["integrity_reasons"]
 
 
 @pytest.mark.parametrize(

@@ -100,6 +100,31 @@ def test_two_unique_source_datasets_on_distinct_batteries_are_accepted() -> None
     )
 
 
+def test_cohort_accepts_multiple_experiments_per_battery_without_counting_them_as_batteries() -> None:
+    payload = _valid_request()
+    sources = [
+        _source("DATASET::A::1", "BATTERY::A", "EXPERIMENT::A1"),
+        _source("DATASET::A::2", "BATTERY::A", "EXPERIMENT::A2"),
+        _source("DATASET::B::1", "BATTERY::B", "EXPERIMENT::B1"),
+    ]
+    source_ids = [source["source_dataset_id"] for source in sources]
+    payload["source_datasets"] = sources
+    payload["target_mapping"]["source_target_ids"] = {
+        source_id: "reference_soc_percent" for source_id in source_ids
+    }
+    payload["feature_mappings"][0]["source_feature_ids"] = {
+        source_id: "peak_to_peak_v" for source_id in source_ids
+    }
+    payload["unit_mapping"]["ultrasound_peak_to_peak"]["source_units"] = {
+        source_id: "V" for source_id in source_ids
+    }
+
+    request = CohortDatasetRequest.model_validate(payload)
+
+    assert len(request.source_datasets) == 3
+    assert len({source.battery_id for source in request.source_datasets}) == 2
+
+
 @pytest.mark.parametrize(
     "reserved_feature_id",
     [
@@ -141,16 +166,16 @@ def test_cohort_request_rejects_feature_ids_that_shadow_identity_or_target_colum
     [
         [
             _source("DATASET::A::1", "BATTERY::A", "EXPERIMENT::A"),
-            _source("DATASET::B::1", "BATTERY::A", "EXPERIMENT::B"),
+            _source("DATASET::A::1", "BATTERY::B", "EXPERIMENT::B"),
         ],
         [
             _source("DATASET::A::1", "BATTERY::A", "EXPERIMENT::A"),
-            _source("DATASET::A::1", "BATTERY::B", "EXPERIMENT::B"),
+            _source("DATASET::A::2", "BATTERY::A", "EXPERIMENT::A"),
         ],
     ],
-    ids=["duplicate-battery-identity", "duplicate-source-dataset-identity"],
+    ids=["duplicate-source-dataset-identity", "duplicate-battery-experiment-pair"],
 )
-def test_duplicate_battery_or_source_dataset_identity_is_rejected(
+def test_duplicate_source_or_battery_experiment_identity_is_rejected(
     sources: list[dict[str, str]],
 ) -> None:
     _require_contract_fields("source_datasets", *REQUIRED_REQUEST_FIELDS[1:])
@@ -172,6 +197,23 @@ def test_cohort_request_rejects_client_supplied_source_paths() -> None:
                 ]
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("identity_key", "identity_value"),
+    [("battery_id", " BATTERY::A"), ("experiment_id", "EXPERIMENT::B ")],
+)
+def test_cohort_request_rejects_untrimmed_battery_or_experiment_identity(
+    identity_key: str, identity_value: str
+) -> None:
+    sources = [
+        _source("DATASET::A::1", "BATTERY::A", "EXPERIMENT::A"),
+        _source("DATASET::B::1", "BATTERY::B", "EXPERIMENT::B"),
+    ]
+    sources[0][identity_key] = identity_value
+
+    with pytest.raises(ValidationError, match="non-empty trimmed strings"):
+        CohortDatasetRequest.model_validate(_valid_request(source_datasets=sources))
 
 
 def test_cohort_id_rejects_path_traversal() -> None:
@@ -238,6 +280,78 @@ def test_builder_harmonizes_rows_and_preserves_battery_provenance() -> None:
     assert cohort["reference_soc_percent"].tolist() == [20.0, 40.0, 20.0, 40.0]
     assert provenance["target_method_version"] == "soc-formula/1.0"
     assert provenance["predictor_columns"] == ["ultrasound_peak_to_peak"]
+
+
+def test_builder_preserves_multiple_experiments_under_one_battery_group() -> None:
+    payload = _valid_request()
+    source_specs = [
+        ("DATASET::A::1", "BATTERY::A", "EXPERIMENT::A1", "EVENT::SHARED", [1.0, 2.0]),
+        ("DATASET::A::2", "BATTERY::A", "EXPERIMENT::A2", "EVENT::SHARED", [2.0, 3.0]),
+        ("DATASET::B::1", "BATTERY::B", "EXPERIMENT::B1", "EVENT::B", [3.0, 4.0]),
+    ]
+    source_ids = [source[0] for source in source_specs]
+    payload["source_datasets"] = [
+        _source(source_id, battery_id, experiment_id)
+        for source_id, battery_id, experiment_id, _, _ in source_specs
+    ]
+    payload["target_mapping"]["source_target_ids"] = {
+        source_id: "reference_soc_percent" for source_id in source_ids
+    }
+    payload["feature_mappings"][0]["source_feature_ids"] = {
+        source_id: "peak_to_peak_v" for source_id in source_ids
+    }
+    payload["unit_mapping"]["ultrasound_peak_to_peak"]["source_units"] = {
+        source_id: "V" for source_id in source_ids
+    }
+    request = CohortDatasetRequest.model_validate(payload)
+    sources = {}
+    for source_id, battery_id, experiment_id, event_id, values in source_specs:
+        manifest, frame = _source_payload(source_id, battery_id, event_id, values)
+        manifest["experiment_id"] = experiment_id
+        frame["experiment_id"] = experiment_id
+        sources[source_id] = (manifest, frame)
+
+    cohort, provenance = build_cohort_frame(request, sources)
+
+    assert provenance["battery_count"] == 2
+    assert cohort["experiment_id"].nunique() == 3
+    assert cohort["measurement_event_id"].is_unique
+    battery_a_rows = cohort[cohort["battery_id"] == "BATTERY::A"]
+    assert battery_a_rows["experiment_id"].nunique() == 2
+    assert len(battery_a_rows) == 4
+
+
+@pytest.mark.parametrize("invalid_value", [float("inf"), float("-inf")])
+@pytest.mark.parametrize("column", ["peak_to_peak_v", "soc_reference_percent"])
+def test_builder_rejects_non_finite_model_values(invalid_value: float, column: str) -> None:
+    request = CohortDatasetRequest.model_validate(_valid_request())
+    source_b = _source_payload("DATASET::B::1", "BATTERY::B", "EVENT::B", [3.0, 4.0])
+    source_frame = source_b[1]
+    source_column = (
+        "peak_to_peak_v" if column == "peak_to_peak_v" else "soc_reference_percent"
+    )
+    source_frame.loc[1, source_column] = invalid_value
+    sources = {
+        "DATASET::A::1": _source_payload("DATASET::A::1", "BATTERY::A", "EVENT::A", [1.0, 2.0]),
+        "DATASET::B::1": source_b,
+    }
+
+    with pytest.raises(CohortMaterializationError, match="only finite values"):
+        build_cohort_frame(request, sources)
+
+
+def test_builder_rejects_nonnumeric_model_values() -> None:
+    request = CohortDatasetRequest.model_validate(_valid_request())
+    source_b = _source_payload("DATASET::B::1", "BATTERY::B", "EVENT::B", [3.0, 4.0])
+    source_b[1]["peak_to_peak_v"] = source_b[1]["peak_to_peak_v"].astype(object)
+    source_b[1].loc[1, "peak_to_peak_v"] = "not-a-number"
+    sources = {
+        "DATASET::A::1": _source_payload("DATASET::A::1", "BATTERY::A", "EVENT::A", [1.0, 2.0]),
+        "DATASET::B::1": source_b,
+    }
+
+    with pytest.raises(CohortMaterializationError, match="must be numeric"):
+        build_cohort_frame(request, sources)
 
 
 def test_builder_rejects_incompatible_soc_method_or_temporality() -> None:

@@ -13,16 +13,26 @@ import { displayName, modelComparison, numberText } from "../../lib/presentation
 import { StaleBanner } from "./WorkbenchShell";
 import { useWorkflowContext } from "../../hooks/useWorkflowContext";
 import { partitionResultsByDataset } from "../../lib/result-freshness";
+import { startGroupedSplitRun } from "../../lib/grouped-split";
 
 function ComparisonTable({rows}:{rows:ResultRecord[]}) {
   const [sorting,setSorting]=useState<SortingState>([]);
   const columns=useMemo<ColumnDef<ResultRecord>[]>(()=>[
     {accessorKey:"strategy",header:"模型",cell:ctx=><span className="font-medium">{displayName(String(ctx.getValue()))}{ctx.getValue()==="DUMMY_MEAN" && <Badge variant="secondary" className="ml-3">参考基线</Badge>}</span>},
     {accessorKey:"value",header:"宏观 MAE（%）",cell:ctx=><span className="tabular-nums">{numberText(ctx.getValue())}</span>},
-    {accessorKey:"scientific_status",header:"范围",cell:()=>"有限评估"},
+    {accessorKey:"scientific_status",header:"范围",cell:ctx=>ctx.getValue()==="PARTIAL_FOLD_COVERAGE"?"折覆盖不全 · 仅诊断":ctx.getValue()==="READY_FOR_LIMITED_EVALUATION"?"有限评估":"待核验"},
   ],[]);
   const table=useReactTable({data:rows,columns,state:{sorting},onSortingChange:setSorting,getCoreRowModel:getCoreRowModel(),getSortedRowModel:getSortedRowModel()});
   return <Table><TableHeader>{table.getHeaderGroups().map(g=><TableRow key={g.id}>{g.headers.map(h=><TableHead key={h.id}><button onClick={h.column.getToggleSortingHandler()} aria-label={`按 ${h.column.id} 排序`}>{flexRender(h.column.columnDef.header,h.getContext())}</button></TableHead>)}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.map(r=><TableRow key={r.id} className={r.original.strategy==="DUMMY_MEAN"?"bg-[#f1f5f4]":""}>{r.getVisibleCells().map(c=><TableCell key={c.id}>{flexRender(c.column.columnDef.cell,c.getContext())}</TableCell>)}</TableRow>)}</TableBody></Table>;
+}
+
+function normalizedJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(normalizedJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${normalizedJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 export function modelingRunRequest(
@@ -30,6 +40,8 @@ export function modelingRunRequest(
   experimentId: string,
   selectedFeatures: string[],
   strategies: string[],
+  splitId?: string,
+  foldIndex = 1,
 ) {
   return {
     profile: "FULL_PRE_MODEL",
@@ -38,7 +50,8 @@ export function modelingRunRequest(
     stages: ["DATASET", "SPLIT", "FEATURE_ANALYSIS", "SOC_MODELING", "SCIENTIFIC_REPORT"],
     target: "soc_reference_percent",
     features: { selected_features: selectedFeatures },
-    fold_index: 1,
+    ...(splitId ? { split_id: splitId } : {}),
+    fold_index: foldIndex,
     split: {
       strategy: "LEAVE_ONE_GROUP_OUT",
       split_unit: "CYCLE",
@@ -48,7 +61,8 @@ export function modelingRunRequest(
       analysis_mode: "TRAIN_ONLY_ML_SAFE",
       target: "soc_reference_percent",
       candidate_features: selectedFeatures,
-      fold_index: 1,
+      ...(splitId ? { split_id: splitId } : {}),
+      fold_index: foldIndex,
       methods: ["descriptive", "spearman"],
       selection: {
         requested: true,
@@ -68,6 +82,7 @@ function CohortLOBOPanel({ batteryId, experimentId }: { batteryId: string; exper
   });
   const eligible = (cohorts.data?.data ?? []).find((item) =>
     item.status === "READY_FOR_BATTERY_SPLIT" && item.battery_count >= 2 &&
+    item.identity_verification_status === "VERIFIED" && item.scientific_generalization_eligible === true &&
     item.source_datasets.some((source) => source.battery_id === batteryId && source.experiment_id === experimentId),
   );
   const evaluate = useMutation({
@@ -81,7 +96,7 @@ function CohortLOBOPanel({ batteryId, experimentId }: { batteryId: string; exper
     {cohorts.isLoading && <p className="text-sm mt-3" role="status">正在检查可用队列…</p>}
     {cohorts.error && <p className="text-sm mt-3 text-[#9b782e]" role="alert">队列状态暂时无法读取。<button className="underline ml-1" onClick={() => void cohorts.refetch()}>重试</button></p>}
     {!cohorts.isLoading && !cohorts.error && !eligible && <p className="notice text-sm mt-3" data-testid="cohort-lobo-blocked">
-      尚无包含当前实验且至少有 2 块独立电池的已验证队列；跨电池泛化仍为阻断状态。登记电池数或 CELL_001 自身循环数不构成该证据。
+      尚无包含当前实验且实体身份经过独立审核的队列；跨电池泛化仍为阻断状态。技术分组或登记电池数不构成独立电池证据。
     </p>}
     {eligible && <div className="mt-3 flex items-center gap-3 flex-wrap">
       <Badge variant="secondary">队列就绪 · {eligible.battery_count} 块电池 · {eligible.row_count} 条事件</Badge>
@@ -90,14 +105,20 @@ function CohortLOBOPanel({ batteryId, experimentId }: { batteryId: string; exper
       {evaluate.error && <span className="text-sm text-[#9b782e]" role="alert">评估未完成：{(evaluate.error as Error).message}</span>}
     </div>}
     {result && <div className="mt-4" data-testid="cohort-lobo-result">
-      <p className="text-sm font-medium">LOBO 有限评估 · {result.battery_count} 块留出电池 · 等权宏观 MAE（%）</p>
+      <p className="text-sm font-medium">声明 ID 分组的技术 LOBO · {result.declared_group_count} 组 · 等权宏观 MAE（%）</p>
+      <p className="notice text-sm mt-2" data-testid="cohort-lobo-uncertainty">
+        分组身份：未评估（{result.uncertainty_assessment.declared_group_count} 个声明 ID）；不能视为独立 Battery 数。置信区间未估计：尚无预先声明的分组重采样方案。
+      </p>
+      <p className="text-xs muted mt-1" data-testid="cohort-lobo-coverage">
+        按声明 ID 的留出预测覆盖：{result.held_out_prediction_coverage.observed_prediction_rows} / {result.held_out_prediction_coverage.expected_prediction_rows} 行，{result.held_out_prediction_coverage.status}；各策略覆盖 {Object.values(result.held_out_prediction_coverage.observed_declared_group_count_per_strategy).join(" / ")} 个组。
+      </p>
       <div className="flex flex-wrap gap-3 mt-2">{Object.entries(result.macro_by_strategy).map(([strategy, metrics]) =>
         <span className="badge" key={strategy}>{displayName(strategy)}：{numberText(metrics.macro_MAE)}</span>)}
       </div>
       <div className="panel !p-0 overflow-hidden mt-4"><Table><TableHeader><TableRow>
-        <TableHead>模型</TableHead><TableHead>留出电池</TableHead><TableHead>Fold</TableHead><TableHead>事件行数</TableHead><TableHead>MAE（%）</TableHead>
-      </TableRow></TableHeader><TableBody>{result.battery_results.map((row) => <TableRow key={`${row.strategy}-${row.battery_id}`}>
-        <TableCell>{displayName(row.strategy)}</TableCell><TableCell>{row.battery_id}</TableCell><TableCell>{row.fold}</TableCell><TableCell>{row.row_count}</TableCell><TableCell>{numberText(row.overall.MAE)}</TableCell>
+        <TableHead>模型</TableHead><TableHead>留出声明 ID</TableHead><TableHead>Fold</TableHead><TableHead>事件行数</TableHead><TableHead>MAE（%）</TableHead>
+      </TableRow></TableHeader><TableBody>{result.declared_group_results.map((row) => <TableRow key={`${row.strategy}-${row.declared_group_id}`}>
+        <TableCell>{displayName(row.strategy)}</TableCell><TableCell>{row.declared_group_id}</TableCell><TableCell>{row.fold}</TableCell><TableCell>{row.row_count}</TableCell><TableCell>{numberText(row.overall.MAE)}</TableCell>
       </TableRow>)}</TableBody></Table></div>
       <p className="text-xs muted mt-2">Pooled-row diagnostic MAE：{numberText(result.pooled_row_diagnostic_by_strategy.DUMMY_MEAN?.MAE)}。池化行仅作诊断，不替代按电池等权结果；合成验证不代表真实跨电池泛化。</p>
       {result.provenance && <details className="mt-3 text-xs muted"><summary>来源与 harmonization provenance</summary>
@@ -256,14 +277,56 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
   const steps = wf?.steps ?? {};
   const datasetId = (steps.DATASET?.committed as { dataset_id?: string } | undefined)?.dataset_id
     ?? (steps.SPLIT?.committed as { dataset_id?: string } | undefined)?.dataset_id ?? null;
+  const selectedFeatures = ((steps.DATASET?.committed as { selected_features?: string[] } | undefined)?.selected_features ?? []);
   const hasSplit = !!(steps.SPLIT?.committed as { split_id?: string } | undefined)?.split_id
     || (splitsQ.data?.data.splits ?? []).length > 0;
+  const currentSplitId = (steps.SPLIT?.committed as { split_id?: string } | undefined)?.split_id
+    ?? splitsQ.data?.data.splits[0]?.split_id ?? null;
+  const foldsQ = useQuery({
+    queryKey: ["split-folds", batteryId, experimentId, currentSplitId],
+    queryFn: () => client.listSplitFolds(batteryId, experimentId, currentSplitId!),
+    enabled: !!currentSplitId,
+  });
+  const analysesQ = useQuery({
+    queryKey: ["materialized-analyses", batteryId, experimentId],
+    queryFn: () => client.listMaterializedAnalyses(batteryId, experimentId),
+  });
+  const [selectedFold, setSelectedFold] = useState<string | null>(null);
+  const foldOptions = foldsQ.data?.data.folds ?? [];
+  const effectiveFold = selectedFold && foldOptions.some((fold) => fold.fold === selectedFold)
+    ? selectedFold : foldOptions[0]?.fold ?? "fold1";
+  const foldIndex = Number(effectiveFold.replace(/^fold/, "")) || 1;
+  const foldAnalyses = (analysesQ.data?.data.analyses ?? []).filter((analysis) =>
+    analysis.availability === "AVAILABLE" && analysis.status !== "INTEGRITY_BLOCKED" &&
+    analysis.analysis_mode === "TRAIN_ONLY_ML_SAFE" && analysis.target === "soc_reference_percent" &&
+    analysis.dataset_id === datasetId && analysis.split_id === currentSplitId &&
+    analysis.fold_index != null &&
+    normalizedJson([...analysis.candidate_features].sort()) === normalizedJson([...selectedFeatures].sort()) &&
+    normalizedJson(analysis.methods) === normalizedJson(["descriptive", "spearman"]) &&
+    normalizedJson(analysis.selection_policy) === normalizedJson({ min_abs_spearman: 0.15, max_missing_fraction: 0.05 }),
+  );
+  const selectionByFold = new Map<number, string>();
+  const selectionPriority: Record<string, number> = {
+    CONFIRMED: 4, AWAITING_CONFIRMATION: 3, NO_SELECTION: 2, NOT_REQUESTED: 1,
+  };
+  for (const analysis of foldAnalyses) {
+    const current = selectionByFold.get(analysis.fold_index!);
+    if (!current || (selectionPriority[analysis.selection_status] ?? 0) > (selectionPriority[current] ?? 0)) {
+      selectionByFold.set(analysis.fold_index!, analysis.selection_status);
+    }
+  }
+  const allFoldsConfirmed = foldOptions.length > 0 && foldOptions.every((fold) =>
+    selectionByFold.get(Number(fold.fold.replace(/^fold/, ""))) === "CONFIRMED");
   const waitingRun = (runsQ.data?.data.runs ?? []).find(r => r.status === "WAITING_FOR_USER" && r.experiment_id === experimentId);
   const createSplit = useMutation({
-    mutationFn: () => client.createSplit({ battery_id: batteryId, experiment_id: experimentId, dataset_id: datasetId! }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] }); },
+    mutationFn: () => startGroupedSplitRun(batteryId, experimentId, selectedFeatures),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["workflow-context", batteryId, experimentId] });
+      void qc.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] });
+      void qc.invalidateQueries({ queryKey: ["experiment", batteryId, experimentId] });
+      void qc.invalidateQueries({ queryKey: ["datasets"] });
+    },
   });
-  const selectedFeatures = ((steps.DATASET?.committed as { selected_features?: string[] } | undefined)?.selected_features ?? []);
   const strategiesQ = useQuery({ queryKey: ["modeling-strategies"], queryFn: () => client.listModelingStrategies() });
   const available: ModelingStrategy[] = (strategiesQ.data?.data.strategies ?? []).length > 0
     ? strategiesQ.data!.data.strategies
@@ -272,7 +335,9 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
   const effectiveStrategies = selectedStrategies.filter((s) => available.some((a) => a.strategy === s));
   const toggleStrategy = (strategy: string) => setSelectedStrategies((prev) =>
     prev.includes(strategy) ? prev.filter((s) => s !== strategy) : [...prev, strategy]);
-  const request = modelingRunRequest(batteryId, experimentId, selectedFeatures, effectiveStrategies);
+  const request = modelingRunRequest(
+    batteryId, experimentId, selectedFeatures, effectiveStrategies, currentSplitId ?? undefined, foldIndex,
+  );
   const dryRun = useMutation({ mutationFn: () => client.dryRun(request) });
   const startRun = useMutation({
     mutationFn: () => client.startRun(request),
@@ -281,15 +346,43 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
   const planned = (dryRun.data?.data as { nodes?: { node_id: string; state: string }[] } | undefined)?.nodes ?? [];
   return <section className="panel !p-5 mt-6" data-testid="modeling-launcher">
     <h3 className="text-base font-medium">建模流程接入 / Modeling handoff</h3>
-    <p className="text-sm muted mt-1">链路：数据集 → 分组划分 → 训练运行（官方编排器 FULL_PRE_MODEL）。特征锁定确认在运行页以“用户动作”完成，系统不会自动重建或自动训练。</p>
+    <p className="text-sm muted mt-1">链路：数据集 → 分组划分 → 每折 TRAIN-only 特征确认 → 固定基线评估。特征锁定确认在运行页完成；每个 fold 独立分析，系统不会自动重建或自动训练。</p>
     <p className="text-sm mt-3" data-testid="launcher-chain">
       数据集: <strong>{datasetId ? "已就绪" : "未构建"}</strong> · 分组划分: <strong>{hasSplit ? "已就绪" : "缺失"}</strong>
     </p>
     {!datasetId && <p className="text-sm mt-2">先到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/analysis?step=dataset`}>特征分析 → 数据集</Link> 构建数据集。</p>}
-    {datasetId && !hasSplit && <p className="mt-2"><Button variant="outline" size="sm" data-testid="launcher-create-split" disabled={createSplit.isPending}
-      onClick={() => createSplit.mutate()}>{createSplit.isPending ? "创建中…" : "创建分组划分 / Create grouped split"}</Button></p>}
+    {datasetId && !hasSplit && <p className="mt-2"><Button variant="outline" size="sm" data-testid="launcher-create-split" disabled={createSplit.isPending || !selectedFeatures.length}
+      onClick={() => createSplit.mutate()}>{createSplit.isPending ? "运行中…" : "运行分组划分 / Build grouped split"}</Button>
+      {!selectedFeatures.length && <span className="ml-2 text-xs muted">Dataset 未记录可用特征选择，先从分析页重新构建 Dataset。</span>}
+      {createSplit.isSuccess && <span className="ml-2 text-sm" role="status">Split 已物化（{String(createSplit.data.readinessStatus ?? "SUCCEEDED")}），工作流正在刷新。</span>}
+      {createSplit.error && <span className="ml-2 text-sm text-[#9b782e]" role="alert">Split run 未完成：{(createSplit.error as Error).message} <Link className="underline" to="/runs">查看运行</Link></span>}
+    </p>}
     {waitingRun && <p className="notice text-sm mt-2" role="status" data-testid="launcher-waiting-run">
       有一个运行正在等待你的确认（特征选择/参数）：<Link className="underline" to="/runs">前往运行页处理</Link></p>}
+    {currentSplitId && <div className="mt-4" data-testid="model-fold-coverage">
+      <p className="text-sm font-medium">训练内特征选择覆盖</p>
+      {foldsQ.isLoading && <p className="text-xs muted mt-1" role="status">正在读取 split folds…</p>}
+      {foldsQ.error && <p className="text-xs text-[#9b782e] mt-1" role="alert">Fold 清单读取失败；不能确认评估覆盖。<button className="underline ml-1" onClick={() => void foldsQ.refetch()}>重试</button></p>}
+      {analysesQ.error && <p className="text-xs text-[#9b782e] mt-1" role="alert">特征选择状态读取失败；请重试后再判断覆盖情况。<button className="underline ml-1" onClick={() => void analysesQ.refetch()}>重试</button></p>}
+      {!foldsQ.isLoading && !foldsQ.error && foldOptions.length > 0 && <>
+        <div className="flex flex-wrap gap-2 mt-2" role="group" aria-label="选择待分析的 fold">
+          {foldOptions.map((fold) => {
+            const index = Number(fold.fold.replace(/^fold/, ""));
+            const status = selectionByFold.get(index) ?? "MISSING";
+            const label = status === "CONFIRMED" ? "已确认" : status === "AWAITING_CONFIRMATION" ? "待确认" : status === "NO_SELECTION" ? "无特征入选" : "未分析";
+            return <button key={fold.fold} type="button" data-testid={`model-fold-${fold.fold}`}
+              aria-pressed={effectiveFold === fold.fold}
+              className={`text-xs rounded-full border px-3 py-1 ${effectiveFold === fold.fold ? "border-primary bg-[#e9f1ef]" : ""}`}
+              onClick={() => setSelectedFold(fold.fold)}>
+              {fold.fold} · TRAIN {fold.train_rows}/HELD {fold.held_out_rows} · {label}
+            </button>;
+          })}
+        </div>
+        <p className="text-xs muted mt-2" role="status" data-testid="model-fold-coverage-status">
+          {allFoldsConfirmed ? "全部 folds 的 TRAIN-only 特征均已确认；评估可覆盖完整 Split。" : "尚未完成所有 folds 的 TRAIN-only 特征确认；若现在运行，结果只作部分折诊断，不代表完整 Split 评估。"}
+        </p>
+      </>}
+    </div>}
     <fieldset className="mt-4">
       <legend className="text-sm font-medium">建模策略（固定基线协议 · 无调参）</legend>
       {strategiesQ.isLoading && <p className="text-sm muted mt-2" role="status">正在读取可用策略…</p>}
@@ -303,7 +396,7 @@ function ModelingLauncher({ batteryId, experimentId, wf }: { batteryId: string; 
     <div className="flex gap-3 mt-3 items-center flex-wrap">
       <Button variant="outline" size="sm" data-testid="launcher-dry-run" disabled={!datasetId || !hasSplit || dryRun.isPending}
         onClick={() => dryRun.mutate()}>{dryRun.isPending ? "计划中…" : "查看运行计划（只读 dry-run）"}</Button>
-      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !selectedFeatures.length || effectiveStrategies.length === 0 || !!waitingRun || startRun.isPending}
+      <Button size="sm" data-testid="launcher-start-run" disabled={!datasetId || !hasSplit || !selectedFeatures.length || effectiveStrategies.length === 0 || !!waitingRun || startRun.isPending || foldsQ.isError || analysesQ.isError}
         onClick={() => startRun.mutate()}>{startRun.isPending ? "启动中…" : "启动建模运行 / Start run"}</Button>
       {startRun.isSuccess && <span className="text-sm">已启动：<code>{String((startRun.data as { data?: { run_id?: string } })?.data?.run_id ?? "").slice(0, 28)}</code> · <Link className="underline" to="/runs">运行页跟踪与确认</Link></span>}
       {startRun.error && <span className="text-sm text-[#9b782e]" data-testid="launcher-start-error">启动失败：{(startRun.error as Error).message?.slice(0, 120)}</span>}
@@ -325,6 +418,7 @@ export function ModelsWorkbench() {
   const currentDatasetId = committed?.dataset_id ?? null;
   const partition = partitionResultsByDataset(results.data?.data ?? [], currentDatasetId);
   const rows=partition.current;const {macro,dummy,beats}=modelComparison(rows);
+  const partialFoldCoverage = macro.some((result) => result.scientific_status === "PARTIAL_FOLD_COVERAGE");
   const historicalComparison=modelComparison(partition.historical).macro;
   const datasetIds=[...new Set(rows.map(r=>r.dataset_id).filter((d): d is string => !!d))];
   return <><PageHeader eyebrow="先看证据，再谈性能" title="SOC 建模" description="有没有模型跑赢简单基线？" actions={<Button variant="outline" asChild><Link to={`/experiments/${batteryId}/${experimentId}/report`}>Open report<ArrowRight/></Link></Button>}/>
@@ -335,8 +429,8 @@ export function ModelsWorkbench() {
     {!macro.length ? <EmptyState title="当前数据集尚无模型评估" to={`/experiments/${batteryId}/${experimentId}/analysis?step=selection`} action="复核分组划分与特征选择">
       当前数据集 <code>{currentDatasetId ?? "尚未提交"}</code> 没有匹配的模型结果。历史结果不会被用于当前结论；先确认 grouped split，再启动固定基线运行。
     </EmptyState> : <>
-      <Badge variant="secondary">评估完成 · 有限范围</Badge><div className="finding"><h2>{beats===false?"当前没有任何模型跑赢 Dummy 基准。":beats===true?"有模型在本次评估中跑赢了 Dummy。":"暂无可比的 Dummy 基线。"}</h2><p className="muted mt-4 max-w-2xl">{beats===false?"当前特征尚未展现出预测优势。这是科学结论，不是处理故障。":"该对比不能证明跨电池泛化或生产可用性。"}</p></div>
-      {dummy && <p className="mb-7 text-sm"><span className="muted">Dummy 均值 · 宏观 MAE</span><strong className="text-2xl ml-4 tabular-nums">{numberText(dummy.value)}<span className="text-sm muted ml-1">%</span></strong></p>}
+      <Badge variant="secondary">{partialFoldCoverage ? "诊断结果 · 折覆盖不全" : "评估完成 · 有限范围"}</Badge><div className="finding"><h2>{partialFoldCoverage?"当前只有部分 folds 的诊断结果，不能判断完整 Split 是否跑赢 Dummy。":beats===false?"当前没有任何模型跑赢 Dummy 基准。":beats===true?"有模型在本次评估中跑赢了 Dummy。":"暂无可比的 Dummy 基线。"}</h2><p className="muted mt-4 max-w-2xl">{partialFoldCoverage?"已覆盖的折仅用于检查流程与基线，不构成完整模型结论；请补齐其余 fold 的 TRAIN-only 特征确认后重跑。":beats===false?"当前特征尚未展现出预测优势。这是科学结论，不是处理故障。":"该对比不能证明跨电池泛化或生产可用性。"}</p></div>
+      {dummy && <p className="mb-7 text-sm"><span className="muted">{partialFoldCoverage?"已评估 folds 的 Dummy MAE":"Dummy 均值 · 宏观 MAE"}</span><strong className="text-2xl ml-4 tabular-nums">{numberText(dummy.value)}<span className="text-sm muted ml-1">%</span></strong></p>}
       <section className="panel !p-0 overflow-hidden" data-testid="model-comparison-current"><div className="p-5 border-b"><h3>Model comparison · current dataset</h3><p className="text-xs muted mt-1">Lower MAE is better. Values are reported by the scientific service.</p></div><ComparisonTable rows={macro}/></section>
       <SelectedFeaturesPanel datasetId={datasetIds[0]} />
       <details className="mt-5"><summary>Advanced evaluation details</summary><Table><TableHeader><TableRow><TableHead>模型</TableHead><TableHead>指标</TableHead><TableHead>折</TableHead><TableHead>数值</TableHead><TableHead>证据</TableHead></TableRow></TableHeader><TableBody>{rows.filter(r=>r.result_type==="MODEL_METRIC").map(r=><TableRow key={r.result_id}><TableCell>{displayName(r.strategy??"")}</TableCell><TableCell>{r.name}</TableCell><TableCell>{r.fold_index??"—"}</TableCell><TableCell>{numberText(r.value)} {r.units}</TableCell><TableCell>{displayName(r.evidence_type)}</TableCell></TableRow>)}</TableBody></Table><p className="muted text-sm mt-3">OOB 与方向性指标仅在后端提供时显示。此处不计算池化行指标。</p></details>

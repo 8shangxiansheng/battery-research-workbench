@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 PlanProfile = Literal[
     "INGEST_TO_MEASUREMENT_EVENTS",
     "SCIENTIFIC_ANALYSIS",
+    "EVALUATION_SPLIT",
     "BUILD_DATASET",
     "FULL_PRE_MODEL",
 ]
@@ -63,7 +64,7 @@ PROFILE_STAGES: dict[str, list[str]] = {
         "FEATURE_LABEL_ANALYSIS",
         "FEATURE_ANALYSIS",
     ],
-    "EVALUATION_SPLIT": ["DATASET", "SPLIT", "FEATURE_ANALYSIS"],
+    "EVALUATION_SPLIT": ["DATASET", "SPLIT"],
     "BUILD_DATASET": [
         "MEASUREMENT_EVENTS",
         "ANALYSIS_SLICE",
@@ -92,6 +93,7 @@ class AnalysisPlan(BaseModel):
     project: PlanProject
     stages: list[str] = Field(default_factory=list)
     analysis_slice: dict[str, Any] = Field(default_factory=dict)
+    measurement_events: dict[str, Any] = Field(default_factory=dict)
     gates: dict[str, Any] = Field(default_factory=dict)
     features: dict[str, Any] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -121,6 +123,7 @@ class AnalysisPlan(BaseModel):
                 "experiment_id": self.project.experiment_id,
                 "stages": self.stages,
                 "analysis_slice": self.analysis_slice,
+                "measurement_events": self.measurement_events,
                 "gates": self.gates,
                 "features": self.features,
                 "parameters": self.parameters,

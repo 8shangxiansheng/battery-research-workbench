@@ -243,8 +243,11 @@ def electrical_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
         step_mismatch: bool = False,
         voltage_outlier: bool = False,
     ) -> Path:
-        input_dir = tmp_path / f"input-{len(list(tmp_path.iterdir()))}"
-        input_dir.mkdir()
+        from battery_workbench.provenance.processed_manifest import content_sha256
+
+        case_root = tmp_path / f"electrical-case-{len(list(tmp_path.iterdir()))}"
+        input_dir = case_root / "electrical" / "CELL_TEST" / "EXP_TEST"
+        input_dir.mkdir(parents=True)
         start = pd.Timestamp("2024-01-01 00:00:00")
         seconds = [0, 1, 2, 3]
         if duplicate:
@@ -346,6 +349,11 @@ def electrical_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
         records.to_parquet(input_dir / "records.parquet", index=False)
         cycles.to_parquet(input_dir / "cycles.parquet", index=False)
         steps.to_parquet(input_dir / "steps.parquet", index=False)
+        output_files = {
+            name: f"{name}.parquet"
+            for name in ("records", "cycles", "steps", "aux_temperature", "aux_voltage")
+            if (input_dir / f"{name}.parquet").is_file()
+        }
         (input_dir / "parser_manifest.json").write_text(
             json.dumps(
                 {
@@ -354,6 +362,11 @@ def electrical_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
                     "parser": "custom_excel",
                     "parser_version": "0.1.0",
                     "source_assets": ["E_TEST"],
+                    "output_files": output_files,
+                    "output_checksums": {
+                        name: content_sha256(input_dir / filename)
+                        for name, filename in output_files.items()
+                    },
                 }
             ),
             encoding="utf-8",
@@ -398,8 +411,11 @@ def ultrasound_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
         elapsed_times: list[float] | None = None,
         missing_column: str | None = None,
     ) -> Path:
+        from battery_workbench.provenance.processed_manifest import content_sha256
+
         input_dir = tmp_path / f"qa-input-{len(list(tmp_path.iterdir()))}"
-        input_dir.mkdir()
+        input_dir = input_dir / "ultrasound" / "CELL_TEST" / "EXP_TEST"
+        input_dir.mkdir(parents=True)
         if waveforms is None:
             phase = np.linspace(0, 4 * np.pi, 1250)
             base = np.rint(1000 * np.sin(phase)).astype(np.int32)
@@ -465,6 +481,14 @@ def ultrasound_qa_input_factory(tmp_path: Path) -> Callable[..., Path]:
             ],
             "row_counts": {"frames": len(values)},
             "warnings": [],
+            "output_files": {
+                "frames": "frames.parquet",
+                "waveforms": "waveforms.zarr",
+            },
+            "output_checksums": {
+                "frames": content_sha256(input_dir / "frames.parquet"),
+                "waveforms": content_sha256(input_dir / "waveforms.zarr"),
+            },
         }
         (input_dir / "parser_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return input_dir

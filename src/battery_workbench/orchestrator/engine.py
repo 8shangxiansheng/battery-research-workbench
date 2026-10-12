@@ -35,6 +35,8 @@ from battery_workbench.orchestrator.dag import (
 def _required_dependencies(node_id: str, plan: AnalysisPlan) -> list[str]:
     """Return mode-aware hard dependencies while preserving ordered DAG edges."""
     deps = list(NODE_DEPENDENCIES.get(node_id, []))
+    if node_id == "DATASET" and "tof_us" in (plan.features.get("selected_features") or []):
+        deps.append("CANONICAL_TOF_FEATURES")
     if node_id == "FEATURE_ANALYSIS":
         mode = str((plan.feature_analysis or {}).get("analysis_mode", "EXPLORATORY_FULL_DATA"))
         if mode == "TRAIN_ONLY_ML_SAFE":
@@ -50,6 +52,36 @@ def _all_dependencies(node_id: str, plan: AnalysisPlan) -> list[str]:
             + (["FEATURE_LABEL_ANALYSIS"] if node_id == "FEATURE_ANALYSIS" else [])
         )
     )
+
+
+def _stages_for_plan(plan: AnalysisPlan) -> list[str]:
+    """Expand executable stages for selected features with required artifacts."""
+    stages = list(plan.stages)
+    tof_added = (
+        "DATASET" in stages
+        and "tof_us" in (plan.features.get("selected_features") or [])
+        and "CANONICAL_TOF_FEATURES" not in stages
+    )
+    if tof_added:
+        stages.append("CANONICAL_TOF_FEATURES")
+    if tof_added or plan.profile == "EVALUATION_SPLIT":
+        pending = list(stages)
+        expanded: set[str] = set()
+        while pending:
+            node_id = pending.pop(0)
+            if node_id in expanded:
+                continue
+            expanded.add(node_id)
+            for dependency in _required_dependencies(node_id, plan):
+                if dependency not in stages:
+                    stages.append(dependency)
+                pending.append(dependency)
+    return stages
+
+
+def _dependency_map_for_plan(plan: AnalysisPlan) -> dict[str, list[str]]:
+    """Include mode/selection-aware dependencies when ordering a run plan."""
+    return {node_id: _all_dependencies(node_id, plan) for node_id in _stages_for_plan(plan)}
 from battery_workbench.orchestrator.nodes import default_nodes
 from battery_workbench.orchestrator.resolver import content_hash
 from battery_workbench.orchestrator.schemas import (
@@ -62,6 +94,24 @@ from battery_workbench.orchestrator.schemas import (
     RunState,
     UserActionRequired,
 )
+
+
+def _validate_selection_confirmation(action: dict[str, Any], user_inputs: dict[str, Any]) -> None:
+    """Reject confirmation payloads that do not echo the pending proposal ID."""
+    if action.get("action_type") != "CONFIRM_FEATURE_SELECTION":
+        return
+    selection_fields = [
+        field_spec
+        for field_spec in action.get("required_fields", [])
+        if field_spec.get("field") == "selection_id"
+    ]
+    if len(selection_fields) != 1:
+        raise ValueError("pending feature selection action has an invalid selection_id contract")
+    expected = selection_fields[0].get("value")
+    if not isinstance(expected, str) or not expected.strip():
+        raise ValueError("pending feature selection action has no valid selection_id")
+    if user_inputs.get("selection_id") != expected:
+        raise ValueError("selection_id does not match the pending feature selection")
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -100,6 +150,75 @@ class PipelineOrchestrator:
             else self.processed_root.parent / "artifacts" / "runs"
         )
         self.nodes = {n.node_type: n for n in default_nodes()}
+        for node in self.nodes.values():
+            node.raw_root = self.raw_root
+
+    def _preflight_parser_sources(self, plan: AnalysisPlan) -> tuple[AnalysisPlan, str | None]:
+        """Require current parser provenance before any direct engine consumer runs."""
+        from battery_workbench.provenance.parser_manifest import (
+            invalid_parser_source_modalities,
+            parser_output_integrity_reasons,
+        )
+
+        battery_id = plan.project.battery_id
+        experiment_id = plan.project.experiment_id
+        invalid_sources = invalid_parser_source_modalities(
+            self.processed_root, self.raw_root, battery_id, experiment_id
+        )
+        output_reasons = parser_output_integrity_reasons(
+            self.processed_root, battery_id, experiment_id
+        )
+        invalid_outputs = {
+            modality for modality, reasons in output_reasons.items() if reasons
+        }
+        parser_stages = {
+            "ELECTRICAL_CANONICAL": "electrical",
+            "ULTRASOUND_CANONICAL": "ultrasound",
+        }
+        if (
+            plan.profile == "INGEST_TO_MEASUREMENT_EVENTS"
+            and plan.stages
+            and set(plan.stages).issubset(parser_stages)
+        ):
+            requested_modalities = {parser_stages[stage] for stage in plan.stages}
+            invalid_outputs &= requested_modalities
+        invalid = sorted(set(invalid_sources) | invalid_outputs)
+        if not invalid:
+            return plan, None
+        parser_node_by_modality = {
+            "electrical": "ELECTRICAL_CANONICAL",
+            "ultrasound": "ULTRASOUND_CANONICAL",
+        }
+        required_stages = {parser_node_by_modality[modality] for modality in invalid}
+        parser_only_recovery = (
+            plan.profile == "INGEST_TO_MEASUREMENT_EVENTS"
+            and len(plan.stages) == len(required_stages)
+            and set(plan.stages) == required_stages
+        )
+        if parser_only_recovery:
+            forced = sorted(set(plan.execution.force_recompute) | required_stages)
+            return plan.model_copy(
+                update={
+                    "execution": plan.execution.model_copy(update={"force_recompute": forced})
+                }
+            ), None
+        reasons = []
+        if invalid_sources:
+            reasons.append(
+                "parser source integrity is invalid for "
+                f"{', '.join(sorted(invalid_sources))}"
+            )
+        if invalid_outputs:
+            reasons.append(
+                "parser output integrity is invalid for "
+                f"{', '.join(sorted(invalid_outputs))}"
+            )
+        reason = (
+            "; ".join(reasons)
+            + "; only parser-only recovery is allowed "
+            f"(required stages: {', '.join(sorted(required_stages))})"
+        )
+        return plan, reason
 
     # ------------------------------------------------------------------
     # Plan
@@ -119,7 +238,7 @@ class PipelineOrchestrator:
     ) -> AnalysisPlan:
         from battery_workbench.orchestrator.schemas import build_plan
 
-        return build_plan(
+        plan = build_plan(
             profile=profile,
             battery_id=battery_id,
             experiment_id=experiment_id,
@@ -128,6 +247,24 @@ class PipelineOrchestrator:
             force_recompute=force_recompute or [],
             **plan_fields,
         )
+        if "SCIENTIFIC_REPORT" in plan.stages:
+            from battery_workbench.analysis.plan_registry import (
+                resolve_experiment_analysis_plan,
+            )
+
+            assessment = resolve_experiment_analysis_plan(
+                self.raw_root,
+                battery_id=battery_id,
+                experiment_id=experiment_id,
+            )
+            scientific_report = dict(plan.scientific_report)
+            scientific_report["analysis_plan_assessment"] = assessment
+            scientific_report["analysis_plan_sha256"] = assessment.get("plan_sha256")
+            plan = plan.model_copy(
+                update={"scientific_report": scientific_report, "plan_id": ""}
+            )
+            plan = type(plan).model_validate(plan.model_dump(mode="python"))
+        return plan
 
     # ------------------------------------------------------------------
     # Dry run
@@ -138,12 +275,22 @@ class PipelineOrchestrator:
 
         Dry run writes no scientific artifacts.
         """
-        order = topological_order(plan.stages, NODE_DEPENDENCIES)
+        plan, source_block_reason = self._preflight_parser_sources(plan)
+        order = topological_order(_stages_for_plan(plan), _dependency_map_for_plan(plan))
         states: dict[str, NodeState] = {}
         results: dict[str, NodeResult] = {}
 
         for node_id in order:
             node = self.nodes[node_id]
+            if source_block_reason:
+                result = NodeResult(
+                    node_id=node_id,
+                    state=NodeState.BLOCKED,
+                    reason=source_block_reason,
+                )
+                results[node_id] = result
+                states[node_id] = result.state
+                continue
             deps = _required_dependencies(node_id, plan)
             all_deps = _all_dependencies(node_id, plan)
             dep_states = [states[d] for d in deps if d in states]
@@ -159,11 +306,19 @@ class PipelineOrchestrator:
                     node_id=node_id, state=NodeState.RUNNING, reason="forced recompute"
                 )
             elif any(s == NodeState.RUNNING for s in dep_states):
-                result = NodeResult(
-                    node_id=node_id,
-                    state=NodeState.RUNNING,
-                    reason="upstream invalidated (will re-evaluate)",
-                )
+                readiness = node.validate_readiness(plan, dep_refs)
+                if not readiness.ok and not readiness.deferable:
+                    result = NodeResult(
+                        node_id=node_id,
+                        state=NodeState.BLOCKED,
+                        reason=readiness.reason,
+                    )
+                else:
+                    result = NodeResult(
+                        node_id=node_id,
+                        state=NodeState.RUNNING,
+                        reason="upstream invalidated (will re-evaluate)",
+                    )
             elif plan.execution.reuse_existing and ref is not None:
                 status_note = f" [status={ref.status}]" if ref.status else ""
                 result = NodeResult(
@@ -220,7 +375,9 @@ class PipelineOrchestrator:
         return self._execute(plan, ctx)
 
     def _execute(self, plan: AnalysisPlan, ctx: RunContext) -> dict[str, Any]:
-        order = topological_order(plan.stages, NODE_DEPENDENCIES)
+        plan, source_block_reason = self._preflight_parser_sources(plan)
+        self._write_plan(plan, ctx.run_dir)
+        order = topological_order(_stages_for_plan(plan), _dependency_map_for_plan(plan))
         node_states: dict[str, NodeState] = {}
         user_actions: list[UserActionRequired] = []
         run_status = RunState.RUNNING
@@ -230,6 +387,16 @@ class PipelineOrchestrator:
         node_results: dict[str, NodeResult] = {}
         for node_id in order:
             node = self.nodes[node_id]
+            if source_block_reason:
+                result = NodeResult(
+                    node_id=node_id,
+                    node_version=node.node_version,
+                    state=NodeState.BLOCKED,
+                    reason=source_block_reason,
+                )
+                node_results[node_id] = result
+                node_states[node_id] = result.state
+                continue
             dep_inputs = {
                 d: resolved[d]
                 for d in _all_dependencies(node_id, plan)
@@ -259,12 +426,15 @@ class PipelineOrchestrator:
                     - set(_required_dependencies(node_id, plan))
                 )
                 if not readiness.ok and (
-                    _deps_scheduled_this_run(
-                        node_id,
-                        {node_id: _required_dependencies(node_id, plan)},
-                        node_states,
+                    readiness.deferable
+                    and (
+                        _deps_scheduled_this_run(
+                            node_id,
+                            {node_id: _required_dependencies(node_id, plan)},
+                            node_states,
+                        )
+                        or optional_dep_pending
                     )
-                    or optional_dep_pending
                 ):
                     # a required dep is READY and will execute in pass 2;
                     # re-validate readiness with real inputs at run time
@@ -309,20 +479,40 @@ class PipelineOrchestrator:
             optional_deps = [
                 dep for dep in _all_dependencies(node_id, plan) if dep not in deps
             ]
-            dep_states = [node_states.get(d) for d in deps if d in node_states]
-            if any(
-                s
+            blocked_deps = [
+                dep
+                for dep in deps
+                if node_states.get(dep)
                 in (
                     NodeState.FAILED,
                     NodeState.BLOCKED,
                     NodeState.WAITING_FOR_USER,
                     NodeState.PENDING,
                 )
-                for s in dep_states
-            ):
+            ]
+            if blocked_deps:
                 if result.state in (NodeState.READY, NodeState.PENDING):
                     result.state = NodeState.BLOCKED
-                    result.reason = result.reason or "upstream not available"
+                    upstream_reasons = [
+                        f"{dep}: {node_results[dep].reason}"
+                        for dep in blocked_deps
+                        if node_results.get(dep) is not None and node_results[dep].reason
+                    ]
+                    result.reason = "blocked by upstream stages: " + "; ".join(
+                        upstream_reasons or blocked_deps
+                    )
+                elif result.state == NodeState.WAITING_FOR_USER:
+                    action = result.user_action_required
+                    if action is not None:
+                        user_actions.append(action)
+                        self._append_event(
+                            ctx.run_dir,
+                            "USER_ACTION_REQUIRED",
+                            node_id=node_id,
+                            detail=action.model_dump(mode="json"),
+                        )
+                        if action.blocking:
+                            run_status = RunState.WAITING_FOR_USER
                 node_states[node_id] = result.state
                 continue
             if result.state == NodeState.REUSED:
@@ -551,6 +741,7 @@ class PipelineOrchestrator:
                     raise ValueError(
                         f"user action {action_id} requires a non-empty value for {field_name}"
                     )
+            _validate_selection_confirmation(action, user_inputs)
         plan = self._read_plan(run_dir)
         merged_overrides = dict(plan.parameters.get("user_overrides") or {})
         plan_updates: dict[str, Any] = {}
@@ -722,7 +913,12 @@ class PipelineOrchestrator:
             json.dumps(
                 {
                     "plan_id": plan.plan_id,
-                    "node_order": [n for n in topological_order(plan.stages, NODE_DEPENDENCIES)],
+                    "node_order": [
+                        n
+                        for n in topological_order(
+                            _stages_for_plan(plan), _dependency_map_for_plan(plan)
+                        )
+                    ],
                     "nodes": [
                         {"node_id": n.node_id, "state": n.state.value, "reason": n.reason}
                         for n in results.values()

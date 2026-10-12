@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { TriangleAlert } from "lucide-react";
 import { ApiError, client, type FeatureRankingEntry, type FeatureRankingResponse, type RankingDetail } from "../../api/client";
@@ -38,6 +38,9 @@ const ERROR_COPY: Record<RankingErrorKind, string> = {
 const DIRECTION_LABEL: Record<string, string> = {
   SAME_DIRECTION: "方向一致", DIRECTION_DEPENDENT: "方向依赖",
   WEAK_ASSOCIATION: "弱关联", INSUFFICIENT_VARIATION: "变化不足", UNAVAILABLE: "不可用",
+};
+const SCOPE_LABEL: Record<string, string> = {
+  overall: "总体", charge: "充电", discharge: "放电", rest: "搁置",
 };
 
 function DirectionBadge({ entry }: { entry: FeatureRankingEntry }) {
@@ -103,6 +106,7 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
   });
   const isSoh = targetId === "soh_capacity_reference_percent";
   const isDirect = targetId === "voltage_v" || targetId === "current_a";
+  const rankingColumnCount = 8 + (!isDirect && !isSoh ? 3 : 0) + (onSelectedChange ? 1 : 0);
   const d: FeatureRankingResponse | undefined = rank.data?.data ?? undefined;
   const rows = useMemo(() => {
     const r = [...(d?.ranking ?? [])];
@@ -146,7 +150,10 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
       </select>}
     </div>
     <p className="text-xs muted mt-2">Ranking 仅描述统计关联：不代表因果关系、不保证预测能力、不指“科学最优”。 / Higher association does not imply causation or guaranteed predictive value.</p>
-    {features.length > 12 && <p className="text-xs text-[#9b782e] mt-1" data-testid="ranking-cap-note">已选 {features.length} 个特征 — 后端最多对前 12 个做 ranking（超出部分未参与）。</p>}
+    {d?.target_readiness === "BLOCKED_BY_VALIDATION" && <p className="notice mt-3 text-sm" role="status" data-testid="ranking-target-validation-notice">
+      Target 尚未通过验证：当前系数仅用于探索性查看，不能传入特征选择/建模。{d.target_limitation ? ` ${d.target_limitation}` : ""}
+    </p>}
+    {features.length > 12 && <p className="text-xs text-[#9b782e] mt-1" data-testid="ranking-cap-note">已选 {features.length} 个特征 — ranking 每次最多接受 12 项；请减少选择后重试，系统不会静默丢弃候选。</p>}
     {rank.isPending && <LoadingState />}
     {err && <div role="alert" className="notice mt-3" data-testid="ranking-error">
       <p className="font-medium">{ERROR_COPY[err.kind]}</p>
@@ -158,6 +165,9 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
       别名去重：{d.alias_dedup!.map(a => `${a.dropped} ≡ ${a.kept}`).join(" · ")}（同一序列只排名一次）</p>}
     {d && (d.blocked_forbidden?.length ?? 0) > 0 && <p className="text-xs text-[#9b782e] mt-2" data-testid="forbidden-blocked">
       已按目标泄漏策略 BLOCK（不排名、不可提交）：{d.blocked_forbidden!.map(b => b.feature_code).join(", ")}</p>}
+    {d?.alignment_assessment && <p className="notice mt-3 text-sm" role="status" data-testid="ranking-alignment-assessment">
+      声电绝对时间基准：{d.alignment_assessment.status}；关系范围 EXPLORATORY_ONLY，确认性推断不允许。{d.alignment_assessment.limitation}
+    </p>}
     {d && !isSoh && d.ranking.length === 0 && !err && <p className="text-sm muted mt-3" data-testid="ranking-empty">NO_ELIGIBLE_FEATURES — 当前范围内没有可排名特征。</p>}
     {d && isSoh && d.group_summary && <div className="mt-4" data-testid="soh-group-summary">
       <p className="text-sm flex gap-2 items-center"><TriangleAlert size={15} className="text-[#9b782e]" />
@@ -178,7 +188,7 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
         {!isDirect && !isSoh && <><TableHead>Charge ρ</TableHead><TableHead>Discharge ρ</TableHead><TableHead>Direction</TableHead></>}
         <TableHead>Status</TableHead>{onSelectedChange && <TableHead>Select</TableHead>}
       </TableRow></TableHeader>
-      <TableBody>{rows.map((r, i) => <TableRow key={r.feature_code} data-testid={`rank-${r.feature_code}`}>
+      <TableBody>{rows.map((r, i) => <Fragment key={r.feature_code}><TableRow data-testid={`rank-${r.feature_code}`}>
         <TableCell className="tabular-nums">{i + 1}</TableCell>
         <TableCell className="font-medium">
           <button className="text-left underline-offset-2 hover:underline" data-testid={`detail-${r.feature_code}`}
@@ -202,7 +212,18 @@ export function FeatureRankingTable({ batteryId, experimentId, targetId, feature
           disabled={r.commit_eligible === false}
           checked={(selected ?? []).includes(r.feature_code)}
           onChange={() => toggle(r.feature_code)} /></TableCell>}
-      </TableRow>)}</TableBody>
+      </TableRow>{!!r.estimate_audit?.length && <TableRow data-testid={`ranking-estimate-audit-row-${r.feature_code}`}>
+        <TableCell colSpan={rankingColumnCount} className="bg-muted/20 px-4 py-3">
+          <details className="text-xs" data-testid={`ranking-estimate-audit-${r.feature_code}`}>
+            <summary className="cursor-pointer font-medium underline-offset-2 hover:underline">相关估计样本审计（{r.estimate_audit.length} 项）</summary>
+            <ul className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">{r.estimate_audit.map(item => <li key={item.analysis_id} className="rounded border bg-background p-2 leading-5">
+              <span className="font-medium">{item.method} · {SCOPE_LABEL[item.scope] ?? item.scope}</span>：r {numberText(item.coefficient, 3)} · 输入 {item.n_input} {item.n_input_unit} · 有效配对 {item.n_valid} {item.n_valid_unit} · 声明分组 {item.independent_group_count ?? "未提供"} {item.independent_unit ?? ""}（组身份 {item.group_identity_status ?? "NOT_ASSESSED"}）{item.distinct_state_count != null && <> · 不同状态 {item.distinct_state_count}</>} · 特征缺失 {item.missing_feature_count}、状态缺失 {item.missing_state_count}、同步排除 {item.excluded_ineligible_count} · {item.status}
+              {!!item.limitations?.length && <ul className="mt-1 list-disc pl-4 muted">{item.limitations.map((limitation, index) => <li key={`${item.analysis_id}-limitation-${index}`}>{limitation}</li>)}</ul>}
+            </li>)}</ul>
+            <p className="muted mt-2">区间 {d?.inference_assessment?.confidence_interval.status ?? "未提供"}；事件行是重复测量，不按独立样本推断。p 值、多重比较及混杂调整状态见研究方案门。</p>
+          </details>
+        </TableCell>
+      </TableRow>}</Fragment>)}</TableBody>
     </Table>}
     {detailMut.data?.data?.detail && <ScatterPanel detail={detailMut.data.data.detail} />}
     {d?.summary && <p className="text-xs muted mt-2" data-testid="ranking-summary">

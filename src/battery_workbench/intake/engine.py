@@ -173,10 +173,16 @@ class IntakeEngine:
         name: str,
         is_demo: bool = False,
         notes: str = "",
+        start_time: str | None = None,
+        end_time: str | None = None,
+        protocol: str = "",
+        condition_id: str = "",
+        condition_description: str = "",
     ) -> ExperimentRecord:
         from battery_workbench.io.experiment.manifest_loader import load_experiments
 
         self._ensure_dirs()
+        self.validate_experiment_time_range(start_time, end_time)
         if experiment_id is None:
             # deterministic ID policy: EXP_%03d sequence per battery
             existing_ids = set(self.load_library().keys())
@@ -207,6 +213,11 @@ class IntakeEngine:
             name=name,
             status="AWAITING_DATA",
             is_demo=is_demo,
+            start_time=start_time,
+            end_time=end_time,
+            protocol=protocol.strip(),
+            condition_id=condition_id.strip(),
+            condition_description=condition_description.strip(),
             created_at=now,
             updated_at=now,
             notes=notes,
@@ -217,6 +228,84 @@ class IntakeEngine:
         )
         self.append_event("EXPERIMENT_CREATED", detail={"composite_id": composite})
         return record
+
+    @staticmethod
+    def validate_experiment_time_range(
+        start_time: str | None, end_time: str | None
+    ) -> None:
+        parsed: dict[str, datetime | None] = {}
+        for field_name, value in (("start_time", start_time), ("end_time", end_time)):
+            if not value:
+                parsed[field_name] = None
+                continue
+            try:
+                parsed[field_name] = datetime.fromisoformat(value)
+            except ValueError as exc:
+                raise IntakePolicyError(
+                    f"invalid {field_name}: expected ISO-8601"
+                ) from exc
+        start = parsed["start_time"]
+        end = parsed["end_time"]
+        if start is not None and end is not None:
+            start_is_aware = start.utcoffset() is not None
+            end_is_aware = end.utcoffset() is not None
+            if start_is_aware != end_is_aware:
+                raise IntakePolicyError(
+                    "start_time and end_time must both include or omit a timezone offset"
+                )
+            if end < start:
+                raise IntakePolicyError("end_time must not precede start_time")
+
+    def sync_experiment_manifest_metadata(self, record: ExperimentRecord) -> None:
+        """Persist edited experiment metadata without touching raw asset bytes."""
+        experiments_csv = self.manifests_dir / "experiments.csv"
+        if not experiments_csv.is_file():
+            return
+        with experiments_csv.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            header = list(reader.fieldnames or [])
+            rows = list(reader)
+        matches = [
+            row
+            for row in rows
+            if row.get("battery_id") == record.battery_id
+            and row.get("experiment_id") == record.experiment_id
+        ]
+        if not matches:
+            return
+        if len(matches) != 1:
+            raise IntakePolicyError(
+                f"duplicate experiment manifest identity: {record.composite_id}"
+            )
+        required_fields = [
+            "experiment_id",
+            "battery_id",
+            "start_time",
+            "end_time",
+            "protocol",
+            "notes",
+            "condition_id",
+            "condition_description",
+        ]
+        fieldnames = [*header, *[field for field in required_fields if field not in header]]
+        target = matches[0]
+        target.update(
+            {
+                "start_time": record.start_time or "",
+                "end_time": record.end_time or "",
+                "protocol": record.protocol,
+                "condition_id": record.condition_id,
+                "condition_description": record.condition_description,
+            }
+        )
+        temporary = experiments_csv.with_suffix(".csv.tmp")
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(
+                {field: row.get(field, "") or "" for field in fieldnames} for row in rows
+            )
+        temporary.replace(experiments_csv)
 
     def archive_experiment(self, battery_id: str, experiment_id: str) -> ExperimentRecord:
         record = self.load_experiment(battery_id, experiment_id)
@@ -681,6 +770,14 @@ class IntakeEngine:
             "policy_version": session.policy_version,
             "import_policy_version": "0.1.0",
             "source_type": "INTAKE_STAGING",
+            "experiment_metadata": {
+                "start_time": None,
+                "end_time": None,
+                "protocol": "",
+                "condition_id": "",
+                "condition_description": "",
+                "metadata_status": "OPERATOR_DECLARED",
+            },
             "sampling_rate_hz": None,
             "sampling_rate_status": "UNKNOWN",
             "timebase_status": "UNKNOWN",
@@ -688,6 +785,15 @@ class IntakeEngine:
             "time_anchor_evidence": [],
         }
         try:
+            experiment_record = self.load_experiment(battery_id, experiment_id)
+            import_manifest["experiment_metadata"] = {
+                "start_time": experiment_record.start_time,
+                "end_time": experiment_record.end_time,
+                "protocol": experiment_record.protocol,
+                "condition_id": experiment_record.condition_id,
+                "condition_description": experiment_record.condition_description,
+                "metadata_status": "OPERATOR_DECLARED",
+            }
             committed_asset_ids: dict[str, str] = {}
             committed_manifest_rows: dict[str, dict[str, str]] = {}
             for asset in session.assets:
@@ -716,7 +822,13 @@ class IntakeEngine:
                     # same bytes already committed → idempotent reuse
                 else:
                     shutil.move(str(self.staged_path(session, asset)), str(dest))
-                asset_id = ("E" if modality == "electrical" else "U") + f"_{uuid.uuid4().hex[:8]}"
+                asset_id_prefix = "E" if modality == "electrical" else "U"
+                asset_identity = (
+                    f"{session.session_id}\0{asset.intake_asset_id}\0{modality}"
+                ).encode()
+                asset_id = (
+                    f"{asset_id_prefix}_{hashlib.sha256(asset_identity).hexdigest()[:16]}"
+                )
                 manifest_assets.append(
                     {
                         "asset_id": asset_id,
@@ -781,7 +893,11 @@ class IntakeEngine:
                 )
             if import_manifest["time_anchor_evidence"]:
                 import_manifest["timebase_status"] = "PROVISIONAL"
-            self._append_manifest_rows(manifest_assets, battery_id=battery_id)
+            self._append_manifest_rows(
+                manifest_assets,
+                battery_id=battery_id,
+                experiment_record=experiment_record,
+            )
         except IntakePolicyError:
             session.status = "FAILED"
             session.failure_reason = "commit failed; staging preserved for recovery"
@@ -819,7 +935,13 @@ class IntakeEngine:
         self._cleanup_staging(session)
         return session.commit.model_dump(mode="json")
 
-    def _append_manifest_rows(self, assets: list[dict[str, str]], *, battery_id: str) -> None:
+    def _append_manifest_rows(
+        self,
+        assets: list[dict[str, str]],
+        *,
+        battery_id: str,
+        experiment_record: ExperimentRecord | None = None,
+    ) -> None:
         """Append committed assets to the canonical manifests (Orchestrator-compatible)."""
         assets_csv = self.manifests_dir / "data_assets.csv"
         experiments_csv = self.manifests_dir / "experiments.csv"
@@ -861,28 +983,93 @@ class IntakeEngine:
                     writer.writeheader()
                     writer.writerows(existing_rows)
                 temporary.replace(assets_csv)
-        existing_checksum_keys = set()
+        existing_rows_by_asset_id: dict[str, dict[str, str]] = {}
         if assets_csv.is_file():
-            for line in assets_csv.read_text(encoding="utf-8").splitlines()[1:]:
-                existing_checksum_keys.add(line)
+            with assets_csv.open("r", encoding="utf-8", newline="") as handle:
+                for existing_row in csv.DictReader(handle):
+                    asset_id = str(existing_row.get("asset_id") or "")
+                    if asset_id:
+                        existing_rows_by_asset_id[asset_id] = {
+                            key: str(existing_row.get(key) or "") for key in fieldnames
+                        }
         with assets_csv.open("a", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
             for asset in assets:
                 row = {k: asset.get(k, "") for k in fieldnames}
-                line = ",".join(str(v) for v in row.values())
-                if line not in existing_checksum_keys:
-                    writer.writerow(row)
-                    existing_checksum_keys.add(line)
+                asset_id = row["asset_id"]
+                existing = existing_rows_by_asset_id.get(asset_id)
+                if existing is not None:
+                    if existing != {key: str(row.get(key) or "") for key in fieldnames}:
+                        raise IntakePolicyError(
+                            f"DataAsset ID collision while recovering intake commit: {asset_id}"
+                        )
+                    continue
+                writer.writerow(row)
+                existing_rows_by_asset_id[asset_id] = {
+                    key: str(row.get(key) or "") for key in fieldnames
+                }
         if not experiments_csv.exists():
             experiments_csv.write_text(
-                "experiment_id,battery_id,start_time,end_time,protocol,notes\n", encoding="utf-8"
+                "experiment_id,battery_id,start_time,end_time,protocol,notes,"
+                "condition_id,condition_description\n",
+                encoding="utf-8",
             )
+        else:
+            with experiments_csv.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                existing_header = list(reader.fieldnames or [])
+                existing_experiments = list(reader)
+            required_experiment_fields = [
+                "experiment_id",
+                "battery_id",
+                "start_time",
+                "end_time",
+                "protocol",
+                "notes",
+                "condition_id",
+                "condition_description",
+            ]
+            migrated_header = [
+                *existing_header,
+                *[field for field in required_experiment_fields if field not in existing_header],
+            ]
+            if migrated_header != existing_header:
+                temporary = experiments_csv.with_suffix(".csv.tmp")
+                with temporary.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(
+                        handle, fieldnames=migrated_header, extrasaction="ignore"
+                    )
+                    writer.writeheader()
+                    writer.writerows(existing_experiments)
+                temporary.replace(experiments_csv)
         with experiments_csv.open("r", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
-        if not any(
-            r["experiment_id"] == assets[0]["experiment_id"] and r.get("battery_id") == battery_id
-            for r in rows
-        ):
+        experiment_id = assets[0]["experiment_id"]
+        existing_experiment = next(
+            (
+                row
+                for row in rows
+                if row.get("experiment_id") == experiment_id
+                and row.get("battery_id") == battery_id
+            ),
+            None,
+        )
+        metadata_values = {
+            "start_time": experiment_record.start_time or "" if experiment_record else "",
+            "end_time": experiment_record.end_time or "" if experiment_record else "",
+            "protocol": experiment_record.protocol if experiment_record else "",
+            "condition_id": experiment_record.condition_id if experiment_record else "",
+            "condition_description": (
+                experiment_record.condition_description if experiment_record else ""
+            ),
+        }
+        if existing_experiment is not None:
+            for key, value in metadata_values.items():
+                if str(existing_experiment.get(key) or "") != value:
+                    raise IntakePolicyError(
+                        f"experiment manifest metadata conflict for {battery_id}/{experiment_id}: {key}"
+                    )
+        else:
             with experiments_csv.open("a", encoding="utf-8", newline="") as handle:
                 writer = csv.DictWriter(
                     handle,
@@ -893,16 +1080,16 @@ class IntakeEngine:
                         "end_time",
                         "protocol",
                         "notes",
+                        "condition_id",
+                        "condition_description",
                     ],
                 )
                 writer.writerow(
                     {
-                        "experiment_id": assets[0]["experiment_id"],
+                        "experiment_id": experiment_id,
                         "battery_id": battery_id,
-                        "start_time": "",
-                        "end_time": "",
-                        "protocol": "",
-                        "notes": "created via intake",
+                        **metadata_values,
+                        "notes": experiment_record.notes if experiment_record else "created via intake",
                     }
                 )
         if not batteries_csv.exists():

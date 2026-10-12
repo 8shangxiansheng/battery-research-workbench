@@ -76,10 +76,11 @@ def build_electrical_index(
 def build_aux_index(
     aux: pd.DataFrame,
     *,
-    locator_col: str = "source_row_index",
+    record_index_col: str = "record_index_raw",
     value_col: str = "temperature_c",
-) -> dict[tuple[str, int], float]:
-    """Exact ``(electrical_asset_id, source_row_index) -> temperature_c`` map.
+    temperature_channel_id: str | None = None,
+) -> dict[tuple[str, int], tuple[float, str | None]]:
+    """Exact ``(electrical_asset_id, record_index_raw) -> (temperature, channel)`` map.
 
     A duplicated composite aux identity is an integrity error. Missing values
     are simply absent from the map (caller reports them as null).
@@ -87,19 +88,52 @@ def build_aux_index(
     if aux.empty:
         return {}
     asset_col = "electrical_asset_id"
-    required = {locator_col, value_col, asset_col}
+    channel_col = "temperature_channel"
+    required = {record_index_col, value_col, asset_col}
     missing = required - set(aux.columns)
     if missing:
         raise LocatorError(f"aux missing composite identity columns: {sorted(missing)}")
-    index: dict[tuple[str, int], float] = {}
+    resolved_channel = resolve_temperature_channel_id(aux, temperature_channel_id)
+    if channel_col in aux.columns and resolved_channel is not None:
+        aux = aux.loc[aux[channel_col].astype(str) == resolved_channel]
+    index: dict[tuple[str, int], tuple[float, str | None]] = {}
     for _, row in aux.iterrows():
         asset = normalize_asset_id(row[asset_col])
-        loc = normalize_locator(row[locator_col])
-        key = (asset, loc)
+        record_index = normalize_locator(row[record_index_col])
+        key = (asset, record_index)
         if key in index:
             raise LocatorError(f"duplicate composite aux identity {key}")
-        index[key] = float(row[value_col])
+        channel = row.get(channel_col)
+        index[key] = (
+            float(row[value_col]),
+            str(channel) if channel is not None and pd.notna(channel) else None,
+        )
     return index
+
+
+def resolve_temperature_channel_id(
+    aux: pd.DataFrame, requested_channel_id: str | None = None
+) -> str | None:
+    """Resolve a unique channel or validate an explicit multi-channel choice."""
+    channel_col = "temperature_channel"
+    if channel_col not in aux.columns:
+        if requested_channel_id is not None:
+            raise LocatorError(
+                "configured temperature channel cannot be verified because aux channel IDs are missing"
+            )
+        return None
+    available_channels = sorted(str(value) for value in aux[channel_col].dropna().unique())
+    if requested_channel_id is None:
+        if len(available_channels) > 1:
+            raise LocatorError(
+                "multiple temperature channels are present; configure temperature_channel_id explicitly"
+            )
+        return available_channels[0] if available_channels else None
+    if requested_channel_id not in available_channels:
+        raise LocatorError(
+            f"configured temperature channel {requested_channel_id!r} is not present"
+        )
+    return requested_channel_id
 
 
 class SelectedElectricalRecord(BaseModel):

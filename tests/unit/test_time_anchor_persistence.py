@@ -62,6 +62,7 @@ def test_canonical_json_contract_t17(tmp_path: Path) -> None:
         "assets",
         "warnings",
         "limitations",
+        "timebase_validation_id",
         "validated_sync",
     }
     assert payload["validated_sync"] is False

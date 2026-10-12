@@ -41,6 +41,8 @@ def load_experiments(path: str | Path) -> list[Experiment]:
                 start_time=_dt(row.get("start_time", "")),
                 end_time=_dt(row.get("end_time", "")),
                 protocol=row.get("protocol") or None,
+                condition_id=row.get("condition_id") or None,
+                condition_description=row.get("condition_description") or None,
                 metadata={"notes": row.get("notes") or ""},
             )
             for row in rows

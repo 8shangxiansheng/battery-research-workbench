@@ -46,6 +46,24 @@ def _send(planner: ResearchPlanner, session: AgentResearchSession, msg: str) -> 
     return planner.handle_message(session, msg)
 
 
+def _stub_losing_model_comparison(monkeypatch, gateway: ToolGateway) -> None:
+    """Keep interpretation unit tests independent of mutable CELL_001 artifacts."""
+    from battery_workbench.agent_tools.models import ToolResult
+
+    result = ToolResult(
+        status="SUCCEEDED",
+        data={
+            "macro": [
+                {"strategy": "DUMMY_MEAN", "value": 30.72},
+                {"strategy": "LINEAR_REGRESSION", "value": 31.4},
+            ],
+            "dummy_baseline": {"value": 30.72},
+            "real_beats_dummy": False,
+        },
+    )
+    monkeypatch.setattr(gateway, "execute", lambda *_args, **_kwargs: result)
+
+
 # ---------- Intent A01–A06 ----------
 class TestIntent:
     def test_a01_soc_goal(self, workspace):
@@ -201,6 +219,105 @@ class TestScientificSafety:
         assert "validated_sync=false" in r.message
         assert "完全验证" not in r.message
 
+    def test_model_tof_answer_fails_closed_for_stale_dataset(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from battery_workbench.agent_assistant.intents import ClassifiedIntent
+        from battery_workbench.agent_assistant.planner import ResearchPlanner
+        from battery_workbench.agent_assistant.session import AgentResearchSession
+
+        root = tmp_path / "processed"
+        dataset_dir = root / "datasets" / B / E / "DS::stale"
+        dataset_dir.mkdir(parents=True)
+        manifest = {
+            "dataset_id": "DS::stale", "battery_id": B, "experiment_id": E,
+            "tof_method_id": "CANONICAL_TOF_V1", "predictor_columns": ["tof_us"],
+        }
+        (dataset_dir / "dataset_manifest.json").write_text(json.dumps(manifest))
+        service = SimpleNamespace(processed_root=root, raw_root=None)
+        planner = ResearchPlanner(
+            gateway=SimpleNamespace(service=service), store=SimpleNamespace()
+        )
+        monkeypatch.setattr(
+            "battery_workbench.reporting.collector.latest_evaluated_chain",
+            lambda *_args: ("DS::stale", "SP::x"),
+        )
+        monkeypatch.setattr(
+            "battery_workbench.api.service.WorkbenchService.get_artifact",
+            lambda *_args: {"fields": {"freshness_status": "STALE_SOURCE"}},
+        )
+        session = AgentResearchSession(
+            session_id="test", battery_id=B, experiment_id=E
+        )
+        response = planner._on_model_tof_freshness(
+            session, "模型用了新的 TOF 吗？",
+            ClassifiedIntent(intent=ResearchIntent.MODEL_TOF_FRESHNESS),
+        )
+        assert "无法确认" in response.message
+        assert "tof_us" not in response.message
+        assert response.evidence_refs == []
+
+    def test_model_tof_answer_reports_only_current_dataset_definition(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from battery_workbench.agent_assistant.intents import ClassifiedIntent
+
+        root = tmp_path / "processed"
+        dataset_dir = root / "datasets" / B / E / "DS::current"
+        dataset_dir.mkdir(parents=True)
+        manifest = {
+            "dataset_id": "DS::current", "battery_id": B, "experiment_id": E,
+            "tof_method_id": "CANONICAL_TOF_V1", "predictor_columns": ["tof_us"],
+        }
+        (dataset_dir / "dataset_manifest.json").write_text(json.dumps(manifest))
+        planner = ResearchPlanner(
+            gateway=SimpleNamespace(
+                service=SimpleNamespace(processed_root=root, raw_root=None)
+            ),
+            store=SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "battery_workbench.reporting.collector.latest_evaluated_chain",
+            lambda *_args: ("DS::current", "SP::x"),
+        )
+        monkeypatch.setattr(
+            "battery_workbench.api.service.WorkbenchService.get_artifact",
+            lambda *_args: {"fields": {"freshness_status": "FRESH"}},
+        )
+        session = AgentResearchSession(session_id="test", battery_id=B, experiment_id=E)
+        response = planner._on_model_tof_freshness(
+            session, "模型用了新的 TOF 吗？",
+            ClassifiedIntent(intent=ResearchIntent.MODEL_TOF_FRESHNESS),
+        )
+        assert "包含 canonical tof_us" in response.message
+        assert response.evidence_refs == ["dataset_manifest.json:DS::current"]
+
+    def test_model_tof_answer_blocks_ambiguous_dataset_manifest(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from battery_workbench.agent_assistant.intents import ClassifiedIntent
+
+        root = tmp_path / "processed"
+        for location in ("datasets/CELL_001/EXP_001", "datasets/archive"):
+            dataset_dir = root / location / "DS::duplicate"
+            dataset_dir.mkdir(parents=True)
+            (dataset_dir / "dataset_manifest.json").write_text("{}")
+        planner = ResearchPlanner(
+            gateway=SimpleNamespace(service=SimpleNamespace(processed_root=root, raw_root=None)),
+            store=SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            "battery_workbench.reporting.collector.latest_evaluated_chain",
+            lambda *_args: ("DS::duplicate", "SP::x"),
+        )
+        session = AgentResearchSession(session_id="test", battery_id=B, experiment_id=E)
+        response = planner._on_model_tof_freshness(
+            session, "模型用了新的 TOF 吗？",
+            ClassifiedIntent(intent=ResearchIntent.MODEL_TOF_FRESHNESS),
+        )
+        assert "无法确认" in response.message
+        assert response.evidence_refs == []
+
     def test_a25_provisional_note_present(self, workspace):
         planner, session, _ = workspace
         r = _send(planner, session, "为什么3999只有3995？")
@@ -260,20 +377,23 @@ class TestConfirmationResume:
 
 # ---------- Interpretation A33–A38 ----------
 class TestInterpretation:
-    def test_a33_dummy_first_when_all_lose(self, workspace):
-        planner, session, _ = workspace
+    def test_a33_dummy_first_when_all_lose(self, workspace, monkeypatch):
+        planner, session, gateway = workspace
+        _stub_losing_model_comparison(monkeypatch, gateway)
         r = _send(planner, session, "这个模型效果怎么样？")
         assert "Dummy" in r.message
         assert "limited" in r.message
         assert "优于 Dummy" in r.message or "尚未表现出稳定预测优势" in r.message
 
-    def test_a34_dummy_mentioned_in_interpretation(self, workspace):
-        planner, session, _ = workspace
+    def test_a34_dummy_mentioned_in_interpretation(self, workspace, monkeypatch):
+        planner, session, gateway = workspace
+        _stub_losing_model_comparison(monkeypatch, gateway)
         r = _send(planner, session, "这个模型效果怎么样？")
         assert "Dummy" in r.message
 
-    def test_a35_scientific_conclusion_not_failure(self, workspace):
-        planner, session, _ = workspace
+    def test_a35_scientific_conclusion_not_failure(self, workspace, monkeypatch):
+        planner, session, gateway = workspace
+        _stub_losing_model_comparison(monkeypatch, gateway)
         r = _send(planner, session, "这个模型效果怎么样？")
         assert "不是处理故障" in r.message
 

@@ -1,12 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { client, type AlignmentSampleRow } from "../../api/client";
+import { Link } from "react-router-dom";
+import { ApiError, client, type AlignmentSampleRow } from "../../api/client";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../ui/dialog";
 import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from "../ui/table";
 import { LoadingState, ErrorState } from "./shared";
 import { numberText } from "../../lib/presentation";
+import { recoveryActionFor } from "../../lib/workflow-recovery";
+import { TimebaseValidationPanel } from "./TimebaseValidationPanel";
 
 export function AlignmentStatusBadge({ timebaseStatus = "PROVISIONAL", validatedSync = false }: {
   timebaseStatus?: string;
@@ -29,7 +32,26 @@ export function AlignmentSummary({ batteryId, experimentId, targetId }: {
   });
   const syncData = synchronization.data?.data;
   if (summary.isLoading) return <LoadingState />;
-  if (summary.error) return <ErrorState error={summary.error} retry={() => void summary.refetch()} />;
+  if (summary.error) {
+    const recoveryAction = summary.error instanceof ApiError
+      ? recoveryActionFor(
+        batteryId,
+        experimentId,
+        typeof summary.error.details.recovery_action === "string"
+          ? summary.error.details.recovery_action
+          : undefined,
+      )
+      : null;
+    return <>
+      <ErrorState error={summary.error} retry={() => void summary.refetch()} />
+      {recoveryAction && <div className="notice mt-3" role="status" data-testid="alignment-integrity-recovery">
+        <p className="text-sm">当前对齐工件已被完整性门阻断，重试读取不会重建工件。</p>
+        <Button asChild variant="outline" className="mt-2">
+          <Link to={recoveryAction.route} data-testid="alignment-recovery-link">{recoveryAction.label}</Link>
+        </Button>
+      </div>}
+    </>;
+  }
   const d = summary.data!.data;
   const syncCountsMismatch = Boolean(syncData && (
     syncData.match_counts?.matched_unique !== d.matched_unique
@@ -66,6 +88,7 @@ export function AlignmentSummary({ batteryId, experimentId, targetId }: {
           匹配唯一性与时间基准验证状态分开报告。PROVISIONAL 匹配仍不是完全验证同步；冲突、歧义与缺证据记录不会被自动选中。
           {syncData?.match_state ? ` 匹配状态：${syncCountsMismatch ? "INCONSISTENT" : syncData.match_state}。` : ""}
         </p>
+        <div className="mt-3"><TimebaseValidationPanel batteryId={batteryId} experimentId={experimentId} /></div>
         {syncCountsMismatch && <p className="text-xs text-destructive mt-1" role="alert" data-testid="alignment-counts-mismatch">
           帧级 MeasurementEvent 计数与同步摘要不一致；当前同步状态不可作为关联通过依据。请重新生成同步与事件产物，并确认 API 与产物版本一致。
         </p>}

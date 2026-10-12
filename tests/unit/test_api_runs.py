@@ -36,6 +36,28 @@ def test_t07_plan(client: TestClient) -> None:
     assert resp.json()["data"]["plan_id"].startswith("PLAN::")
 
 
+def test_run_plan_pins_temperature_channel_as_a_scientific_choice(client: TestClient) -> None:
+    common = {
+        "profile": "INGEST_TO_MEASUREMENT_EVENTS",
+        "battery_id": "CELL_001",
+        "experiment_id": "EXP_001",
+    }
+    t1 = client.post(
+        "/api/v1/runs/plan",
+        json={**common, "measurement_events": {"temperature_channel_id": "T1"}},
+    )
+    t2 = client.post(
+        "/api/v1/runs/plan",
+        json={**common, "measurement_events": {"temperature_channel_id": "T2"}},
+    )
+
+    assert t1.status_code == t2.status_code == 200
+    plan_t1, plan_t2 = t1.json()["data"], t2.json()["data"]
+    assert plan_t1["measurement_events"]["temperature_channel_id"] == "T1"
+    assert plan_t2["measurement_events"]["temperature_channel_id"] == "T2"
+    assert plan_t1["plan_id"] != plan_t2["plan_id"]
+
+
 def test_build_dataset_profile_preserves_user_selected_features(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/runs/plan",
@@ -55,6 +77,33 @@ def test_build_dataset_profile_preserves_user_selected_features(client: TestClie
     assert plan["stages"][-1] == "DATASET"
 
 
+def test_evaluation_split_profile_is_available_and_materializes_only_dataset_and_split(
+    client: TestClient,
+) -> None:
+    resp = client.post(
+        "/api/v1/runs/plan",
+        json={
+            "profile": "EVALUATION_SPLIT",
+            "battery_id": "CELL_001",
+            "experiment_id": "EXP_001",
+            "target": "soc_reference_percent",
+            "features": {"selected_features": ["waveform_rms_a_u"]},
+            "split": {
+                "strategy": "LEAVE_ONE_GROUP_OUT",
+                "split_unit": "CYCLE",
+                "group_column": "cycle_group_id",
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()["data"]
+    assert plan["profile"] == "EVALUATION_SPLIT"
+    assert plan["stages"] == ["DATASET", "SPLIT"]
+    assert plan["features"]["selected_features"] == ["waveform_rms_a_u"]
+    assert plan["split"]["split_unit"] == "CYCLE"
+
+
 def test_modeling_plan_preserves_fold_and_feature_analysis(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/runs/plan",
@@ -64,6 +113,7 @@ def test_modeling_plan_preserves_fold_and_feature_analysis(client: TestClient) -
             "experiment_id": "EXP_001",
             "target": "soc_reference_percent",
             "features": {"selected_features": ["SWA"]},
+            "split_id": "SPLIT::s1",
             "fold_index": 1,
             "feature_analysis": {
                 "analysis_mode": "TRAIN_ONLY_ML_SAFE",
@@ -76,6 +126,7 @@ def test_modeling_plan_preserves_fold_and_feature_analysis(client: TestClient) -
     assert resp.status_code == 200, resp.text
     plan = resp.json()["data"]
     assert plan["fold_index"] == 1
+    assert plan["split_id"] == "SPLIT::s1"
     assert plan["feature_analysis"]["analysis_mode"] == "TRAIN_ONLY_ML_SAFE"
 
 
@@ -90,6 +141,34 @@ def test_t08_dry_run(client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert "nodes" in resp.json()["data"]
+
+
+def test_temperature_dataset_dry_run_is_blocked_before_soh_family_routing(
+    client: TestClient,
+) -> None:
+    soh_manifests = set(
+        (PROCESSED / "datasets/CELL_001/EXP_001/SOH_CAPACITY").glob("*/dataset_manifest.json")
+    )
+    resp = client.post(
+        "/api/v1/runs/dry-run",
+        json={
+            "profile": "BUILD_DATASET",
+            "battery_id": "CELL_001",
+            "experiment_id": "EXP_001",
+            "target": "temperature_c",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    dataset_node = next(
+        node for node in resp.json()["data"]["nodes"] if node["node_id"] == "DATASET"
+    )
+    assert dataset_node["state"] == "BLOCKED"
+    assert "BLOCKED_BY_VALIDATION" in dataset_node["reason"]
+    assert (
+        set((PROCESSED / "datasets/CELL_001/EXP_001/SOH_CAPACITY").glob("*/dataset_manifest.json"))
+        == soh_manifests
+    )
 
 
 def test_t09_start(client: TestClient) -> None:

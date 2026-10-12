@@ -178,8 +178,10 @@ describe("BRW-025R-FE-R1 E2E A–Q", () => {
     if (!available) ctx.skip();
     const targets: any = d(await get(`/experiments/${B}/${E}/targets`));
     const temp = targets.targets.find((t: any) => t.target_id === "temperature_c");
-    expect(temp.readiness).toBe("UNAVAILABLE");
-    expect(temp.coverage.valid).toBe(0);
+    expect(temp.readiness).toBe("BLOCKED_BY_VALIDATION");
+    expect(temp.coverage.valid).toBeGreaterThan(0);
+    expect(temp.provenance.observed_channels).toContain("T1");
+    expect(temp.limitation).toMatch(/sensor location\/calibration evidence is not verified/i);
     const before: any = d(await get(`/experiments/${B}/${E}/alignment-summary`));
     const after: any = d(await get(`/experiments/${B}/${E}/alignment-summary`));
     expect(after.total_frames).toBe(before.total_frames);

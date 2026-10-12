@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Hand, MousePointer2, Plus, RotateCcw, ZoomIn } from "lucide-react";
-import { client } from "../../api/client";
+import { ApiError, client } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Badge } from "../../components/ui/badge";
@@ -14,6 +14,17 @@ import { CanonicalTofPanel } from "../../components/workbench/CanonicalTofPanel"
 import { CalibrationWorkbench } from "../../components/workbench/CalibrationWorkbench";
 import { numberText } from "../../lib/presentation";
 const WaveformPlot = lazy(()=>import("../../components/workbench/WaveformPlot"));
+
+function WaveformIntegrityNotice({ error, testId }: { error: ApiError; testId: string }) {
+  const reasons = error.details.integrity_reasons as Record<string, string[]> | undefined;
+  return <section className="panel border-amber-300 bg-amber-50/40 !p-6" role="alert" data-testid={testId}>
+    <h2 className="text-lg font-semibold">波形来源完整性未通过</h2>
+    <p className="text-sm muted mt-2">为避免展示无法追溯的波形，当前帧列表与波形已隐藏。重复读取不能修复文件或历史来源记录。</p>
+    <p className="text-xs mt-2">{error.message}</p>
+    {reasons?.ultrasound?.length ? <p className="text-xs mt-2">核验原因：{reasons.ultrasound.join("、")}</p> : null}
+    <Button asChild className="mt-4"><Link to="/runs">前往 Runs 重新解析并复核来源</Link></Button>
+  </section>;
+}
 
 export function WaveformWorkbench() {
   const {batteryId="",experimentId=""}=useParams(); const qc=useQueryClient();
@@ -31,15 +42,20 @@ export function WaveformWorkbench() {
   function select(start:number,end:number){const max=(preview.data?.data.waveform_length??1)-1; const s=Math.max(0,Math.min(start,max));const e=Math.max(s,Math.min(end,max));if(e>s){setDraft({start:s,end:e});setMessage("");}}
   function changePosition(next:number){setPosition(next);setDraft(null);setMessage("");}
   if(frames.isLoading) return <LoadingState/>;
+  if (frames.error instanceof ApiError && frames.error.code === "INTEGRITY_ERROR") {
+    return <WaveformIntegrityNotice error={frames.error} testId="waveform-integrity-blocked"/>;
+  }
   if(frames.error) return <ErrorState error={frames.error} retry={()=>void frames.refetch()}/>;
   if(!frames.data?.data.frames.length) return <EmptyState title="尚无波形数据" to={`/experiments/${batteryId}/${experimentId}/advanced/data`} action="查看实验数据">导入并处理超声数据后即可浏览波形。</EmptyState>;
   const matches=events.data?.data.events.filter(e=>e.frame_index_raw===frame?.frame_index_raw && e.ultrasound_asset_id===frame?.ultrasound_asset_id)??[];
   const unique=matches.length===1 ? matches[0] : undefined;
   const tof=status.data?.data.tof; const tofAvailable=tof?.status==="AVAILABLE" || tof?.status==="READY";
+  const eventLineageBlocked=events.error instanceof ApiError && events.error.code==="INTEGRITY_ERROR";
   return <><PageHeader eyebrow="信号工作台" title="波形与闸门" description="探索信号，框选区域即可创建闸门。" actions={<Button onClick={()=>setMode("select")}><Plus/>添加闸门</Button>}/>
+    {eventLineageBlocked && <p role="alert" className="notice text-sm">声电事件上下文已因 parser provenance 不完整而隐藏；当前可查看超声波形，但不得将其与电学状态关联。请先 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/runs`}>重新解析并复核来源</Link>。</p>}
     <section className="panel !p-0 overflow-hidden"><div className="flex flex-wrap gap-4 items-center border-b px-5 py-4"><div className="flex gap-2 items-center"><Button variant="outline" size="icon" aria-label="上一帧" disabled={position===0} onClick={()=>changePosition(position-1)}><ChevronLeft/></Button><label className="flex items-center gap-2 text-sm">Frame<Input aria-label="帧位置" className="!w-20" type="number" min={1} max={frames.data.data.frames.length} value={position+1} onChange={e=>changePosition(Math.min(frames.data!.data.frames.length-1,Math.max(0,Number(e.target.value)-1)))}/></label><span className="muted text-xs">共 {numberText(frames.data.data.frames.length,0)} 帧</span><Button variant="outline" size="icon" aria-label="下一帧" disabled={position===frames.data.data.frames.length-1} onClick={()=>changePosition(position+1)}><ChevronRight/></Button></div><div className="ml-auto flex gap-4 text-xs muted"><span>循环 {unique?.cycle_index_raw??"—"}</span><span>工步 {unique?.step_index_raw??"—"}</span><span>参考 SOC {numberText(unique?.soc_reference_percent)}%</span>{unique && <span data-testid="frame-sync-error" title="同步误差（秒）——对齐不确定性必须可见">同步 ±{unique.sync_error_s != null ? numberText(unique.sync_error_s, 3) : "—"} s</span>}{unique?.ultrasound_asset_id && <span data-testid="frame-us-asset" title="超声数据资产">超声 {String(unique.ultrasound_asset_id).replace(/^AS::/, "").slice(0, 8)}</span>}{unique?.electrical_asset_id && <span data-testid="frame-el-asset" title="电学数据资产">电学 {String(unique.electrical_asset_id).replace(/^AS::/, "").slice(0, 8)}</span>}</div></div>
       <div className="flex flex-wrap items-center gap-2 px-5 pt-4" role="toolbar" aria-label="波形控制">{([{value:"zoom",label:"缩放",icon:ZoomIn},{value:"pan",label:"平移",icon:Hand},{value:"select",label:"框选闸门",icon:MousePointer2}] as const).map(t=><Button key={t.value} variant={mode===t.value?"secondary":"ghost"} size="sm" aria-pressed={mode===t.value} onClick={()=>setMode(t.value)}><t.icon/>{t.label}</Button>)}<Button variant="ghost" size="sm" onClick={()=>setReset(v=>v+1)}><RotateCcw/>重置视图</Button><span className="ml-auto text-xs muted">包络暂不可用</span></div>
-      <div className="plot-wrap" data-testid="waveform-plot" aria-label="波形图">{preview.error ? <ErrorState error={preview.error} retry={()=>void preview.refetch()}/> : preview.data ? <Suspense fallback={<LoadingState/>}><WaveformPlot preview={preview.data.data} gates={gates.data?.data.gates??[]} draft={draft} mode={mode} reset={reset} onSelect={select}/></Suspense> : <LoadingState/>}</div>
+      <div className="plot-wrap" data-testid="waveform-plot" aria-label="波形图">{preview.error instanceof ApiError && preview.error.code === "INTEGRITY_ERROR" ? <WaveformIntegrityNotice error={preview.error} testId="waveform-preview-integrity-blocked"/> : preview.error ? <ErrorState error={preview.error} retry={()=>void preview.refetch()}/> : preview.data ? <Suspense fallback={<LoadingState/>}><WaveformPlot preview={preview.data.data} gates={gates.data?.data.gates??[]} draft={draft} mode={mode} reset={reset} onSelect={select}/></Suspense> : <LoadingState/>}</div>
       <div className="px-6 py-3 border-t text-xs muted flex gap-2 items-center"><Badge variant="outline">采样点</Badge>{mode==="select" ? "在信号上横向拖拽即可提议一个闸门。" : "滚轮缩放，双击恢复视图。"} 物理时间轴尚未验证。</div>
     </section>
     {draft && <div className="notice mt-4 items-center"><div className="flex-1"><h3>新闸门选区</h3><p className="text-sm">当前为草稿，确认后才会保存到实验。</p></div><Button variant="ghost" onClick={()=>setDraft(null)}>丢弃</Button><Button onClick={()=>{setConfirm(true);commit.reset();}}>检查闸门</Button></div>}

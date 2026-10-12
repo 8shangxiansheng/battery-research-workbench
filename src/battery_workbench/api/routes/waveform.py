@@ -15,10 +15,35 @@ from fastapi import APIRouter, Query, Request
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.service import validate_id
+from battery_workbench.provenance.parser_manifest import (
+    invalid_parser_source_modalities,
+    parser_output_integrity_reasons,
+)
 
 router = APIRouter(tags=["experiments", "runs"])
 
 MAX_PREVIEW_POINTS = 1000
+
+
+def _assert_ultrasound_provenance(
+    processed_root, raw_root, battery_id: str, experiment_id: str
+) -> None:
+    source_invalid = "ultrasound" in invalid_parser_source_modalities(
+        processed_root, raw_root, battery_id, experiment_id
+    )
+    output_reasons = parser_output_integrity_reasons(
+        processed_root, battery_id, experiment_id
+    ).get("ultrasound", [])
+    if source_invalid or output_reasons:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "ultrasound parser provenance or output integrity is invalid; waveform data is blocked",
+            {
+                "invalid_modalities": ["ultrasound"],
+                "integrity_reasons": {"ultrasound": output_reasons},
+                "recovery_action": "REPARSE_ULTRASOUND_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        )
 
 
 @router.get("/experiments/{battery_id}/{experiment_id}/waveform-frames")
@@ -26,6 +51,9 @@ def list_waveform_frames(request: Request, battery_id: str, experiment_id: str) 
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     service = get_service(request)
+    _assert_ultrasound_provenance(
+        service.processed_root, service.raw_root, battery_id, experiment_id
+    )
     frames_path = (
         service.processed_root / "ultrasound" / battery_id / experiment_id / "frames.parquet"
     )
@@ -90,6 +118,9 @@ def get_waveform_frame(
             f"preview capped at {MAX_PREVIEW_POINTS} points",
         )
     service = get_service(request)
+    _assert_ultrasound_provenance(
+        service.processed_root, service.raw_root, battery_id, experiment_id
+    )
     base = service.processed_root / "ultrasound" / battery_id / experiment_id
     frames_path = base / "frames.parquet"
     store_path = base / "waveforms.zarr"
@@ -171,6 +202,8 @@ def list_runs(
                         "run_id": data["run_id"],
                         "status": data.get("status", ""),
                         "profile": data.get("profile", data.get("plan_profile", "")),
+                        "battery_id": data.get("battery_id"),
+                        "experiment_id": data.get("experiment_id"),
                     }
                 )
             if len(runs) >= limit + (1 if cursor else 0):

@@ -86,6 +86,111 @@ class TestExperimentLibrary:
         assert data["experiment_composite_id"] == "CELL_001/EXP_001"
         assert data["is_demo"] is False
 
+    def test_experiment_protocol_condition_and_time_metadata_survive_commit(
+        self, env: tuple[TestClient, Path, Path]
+    ) -> None:
+        import csv
+        import json
+
+        client, raw, _ = env
+        if not HAS_FIXTURES:
+            pytest.skip("fixtures missing")
+        created = client.post(
+            "/api/v1/experiments",
+            json={
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "name": "25 C discharge",
+                "start_time": "2026-10-07T09:00:00+08:00",
+                "end_time": "2026-10-07T11:00:00+08:00",
+                "protocol": "CCCV-v2",
+                "condition_id": "TEMP_25C_RATE_1C",
+                "condition_description": "25 °C chamber, 1 C discharge",
+            },
+        )
+        assert created.status_code == 200, created.text
+        sid = client.post(
+            "/api/v1/experiments/CELL_001/EXP_001/intake-sessions"
+        ).json()["data"]["session_id"]
+        for role, filename in (
+            ("ELECTRICAL", "sample_electrical.xlsx"),
+            ("ULTRASOUND", "sample_ultrasound.txt"),
+        ):
+            uploaded = client.post(
+                f"/api/v1/intake-sessions/{sid}/assets",
+                files={
+                    "file": (
+                        filename,
+                        (FIXTURES / filename).read_bytes(),
+                        "application/octet-stream",
+                    )
+                },
+                data={"role": role},
+            )
+            assert uploaded.status_code == 200, uploaded.text
+        assert client.post(f"/api/v1/intake-sessions/{sid}/detect").status_code == 200
+        validation = client.post(f"/api/v1/intake-sessions/{sid}/validate")
+        assert validation.status_code == 200
+        assert validation.json()["data"]["overall_passed"] is True
+        assert client.post(f"/api/v1/intake-sessions/{sid}/commit").status_code == 200
+
+        experiment = client.get("/api/v1/experiments/CELL_001/EXP_001").json()["data"]
+        assert experiment["protocol"] == "CCCV-v2"
+        assert experiment["condition_id"] == "TEMP_25C_RATE_1C"
+        assert experiment["condition_description"] == "25 °C chamber, 1 C discharge"
+        with (raw / "manifests/experiments.csv").open(
+            encoding="utf-8", newline=""
+        ) as handle:
+            rows = list(csv.DictReader(handle))
+        assert len(rows) == 1
+        assert rows[0]["start_time"] == "2026-10-07T09:00:00+08:00"
+        assert rows[0]["end_time"] == "2026-10-07T11:00:00+08:00"
+        assert rows[0]["protocol"] == "CCCV-v2"
+        assert rows[0]["condition_id"] == "TEMP_25C_RATE_1C"
+        import_manifest = raw.parent / "artifacts/intake/import_manifests" / sid / "import_manifest.json"
+        import_payload = json.loads(import_manifest.read_text(encoding="utf-8"))
+        assert import_payload["experiment_metadata"] == {
+            "start_time": "2026-10-07T09:00:00+08:00",
+            "end_time": "2026-10-07T11:00:00+08:00",
+            "protocol": "CCCV-v2",
+            "condition_id": "TEMP_25C_RATE_1C",
+            "condition_description": "25 °C chamber, 1 C discharge",
+            "metadata_status": "OPERATOR_DECLARED",
+        }
+        patched = client.patch(
+            "/api/v1/experiments/CELL_001/EXP_001",
+            json={"condition_id": "TEMP_30C_RATE_1C", "protocol": "CCCV-v3"},
+        )
+        assert patched.status_code == 200, patched.text
+        with (raw / "manifests/experiments.csv").open(
+            encoding="utf-8", newline=""
+        ) as handle:
+            patched_rows = list(csv.DictReader(handle))
+        assert patched_rows[0]["condition_id"] == "TEMP_30C_RATE_1C"
+        assert patched_rows[0]["protocol"] == "CCCV-v3"
+        from battery_workbench.io.experiment.manifest_loader import load_experiments
+
+        canonical_experiment = load_experiments(raw / "manifests/experiments.csv")[0]
+        assert canonical_experiment.condition_id == "TEMP_30C_RATE_1C"
+        assert canonical_experiment.condition_description == "25 °C chamber, 1 C discharge"
+
+    def test_experiment_time_range_rejects_end_before_start(
+        self, env: tuple[TestClient, Path, Path]
+    ) -> None:
+        client, _, _ = env
+        response = client.post(
+            "/api/v1/experiments",
+            json={
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+                "name": "invalid time range",
+                "start_time": "2026-10-07T11:00:00+08:00",
+                "end_time": "2026-10-07T09:00:00+08:00",
+            },
+        )
+        assert response.status_code == 400
+        assert "end_time" in response.json()["error"]["message"]
+
     def test_t02_id_policy_autogenerated(self, env: tuple[TestClient, Path, Path]) -> None:
         client, _, _ = env
         data = (
@@ -680,6 +785,58 @@ class TestCommit:
         assert (
             second.json()["data"]["import_manifest_checksum"] == first["import_manifest_checksum"]
         )
+
+    def test_commit_recovers_after_manifest_append_interruption(
+        self,
+        env: tuple[TestClient, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A retry after the manifest write must not create duplicate asset rows."""
+        import csv
+
+        client, raw, _ = env
+        if not HAS_FIXTURES:
+            pytest.skip("fixtures missing")
+        sid = _validated_session(client)
+        engine = client.app.state.workbench_service.intake  # type: ignore[attr-defined]
+        append_manifest_rows = engine._append_manifest_rows
+        interrupted = False
+
+        def append_then_interrupt(
+            assets: list[dict[str, str]],
+            *,
+            battery_id: str,
+            experiment_record=None,
+        ) -> None:
+            nonlocal interrupted
+            append_manifest_rows(
+                assets,
+                battery_id=battery_id,
+                experiment_record=experiment_record,
+            )
+            if not interrupted:
+                interrupted = True
+                raise OSError("simulated interruption after manifest append")
+
+        monkeypatch.setattr(engine, "_append_manifest_rows", append_then_interrupt)
+        with pytest.raises(OSError, match="simulated interruption"):
+            engine.commit(engine.load_session(sid))
+
+        assets_csv = raw / "manifests/data_assets.csv"
+        with assets_csv.open(encoding="utf-8", newline="") as handle:
+            first_attempt_rows = list(csv.DictReader(handle))
+        assert len(first_attempt_rows) == 2
+
+        monkeypatch.setattr(engine, "_append_manifest_rows", append_manifest_rows)
+        retry_result = engine.commit(engine.load_session(sid))
+        with assets_csv.open(encoding="utf-8", newline="") as handle:
+            recovered_rows = list(csv.DictReader(handle))
+
+        assert len(recovered_rows) == 2
+        assert {row["asset_id"] for row in recovered_rows} == {
+            row["asset_id"] for row in first_attempt_rows
+        }
+        assert retry_result["session_id"] == sid
 
     def test_t32_unvalidated_blocked(self, env: tuple[TestClient, Path, Path]) -> None:
         client, _, _ = env

@@ -152,7 +152,11 @@ describe("BRW-027R E2E A–O", () => {
   it("K: 生成SOC研究报告 — no retraining claim", async (ctx) => {
     if (!available) ctx.skip();
     const d = await send("生成这次SOC研究报告");
+    expect(d.status).toBe("CONFIRMATION_REQUIRED");
+    expect(d.confirmation_id).toMatch(/^CNF::/);
+    expect(d.pending_user_action?.tool_name).toBe("generate_scientific_report");
     expect(d.message).toContain("不会重新训练");
+    expect(d.message).toContain("不会自动执行写操作");
   });
 
   it("L: 换成温度看看 — target switch, sync/features reused", async (ctx) => {

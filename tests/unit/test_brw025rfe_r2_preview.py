@@ -41,6 +41,22 @@ def client(tmp_path: Path) -> TestClient:
 
 @pytest.mark.skipif(not has_real, reason="real CELL_001/EXP_001 artifacts not available")
 class TestPreviewHardening:
+    @staticmethod
+    def _mock_current_split_assessment(
+        client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = client.app.state.workbench_service
+        monkeypatch.setattr(
+            service,
+            "get_artifact",
+            lambda artifact_id: {
+                "artifact_id": artifact_id,
+                "availability": "AVAILABLE",
+                "status": "READY",
+                "fields": {"freshness_status": "FRESH"},
+            },
+        )
+
     def test_p1_p2_preview_state_spec_hash_grain(self, client: TestClient) -> None:
         r = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",
                         json={"target_id": "reference_soc_percent", "features": ["SWA"], "limit": 10})
@@ -82,7 +98,11 @@ class TestPreviewHardening:
         eligible_ids = {r["measurement_event_id"] for r in d["rows"]}
         assert not (eligible_ids & {a["measurement_event_id"] for a in d["ambiguous_rows"]})
 
-    def test_p5_p6_p7_held_out_redaction_by_fold(self, client: TestClient) -> None:
+    def test_p5_p6_p7_held_out_redaction_by_fold(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Isolate role-redaction semantics from the mutable real artifact freshness.
+        self._mock_current_split_assessment(client, monkeypatch)
         for fold, expect_held_first in (("fold1", True), ("fold2", False)):
             d = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",
                             json={"target_id": "reference_soc_percent", "features": ["SWA"],
@@ -103,6 +123,74 @@ class TestPreviewHardening:
                               "split_id": "SPLIT::nonexistent"})
         assert r.status_code == 404
         assert r.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_p8d_split_integrity_is_checked_before_preview_read(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = client.app.state.workbench_service
+        monkeypatch.setattr(
+            service,
+            "get_artifact",
+            lambda artifact_id: {
+                "artifact_id": artifact_id,
+                "availability": "BLOCKED",
+                "status": "INTEGRITY_BLOCKED",
+                "fields": {"freshness_reasons": ["SPLIT_OUTPUT_CHECKSUM_MISMATCH:assignments"]},
+            },
+        )
+        r = client.post(
+            f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+            json={
+                "target_id": "reference_soc_percent",
+                "features": ["SWA"],
+                "limit": 1,
+                "split_id": SPLIT,
+                "fold_index": "fold1",
+            },
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "INTEGRITY_ERROR"
+        assert "SPLIT_OUTPUT_CHECKSUM_MISMATCH:assignments" in str(r.json())
+
+    def test_p8b_unknown_fold_fails_closed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._mock_current_split_assessment(client, monkeypatch)
+        r = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+                        json={"target_id": "reference_soc_percent", "features": ["SWA"],
+                              "limit": 1, "split_id": SPLIT, "fold_index": "not-a-fold"})
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+        assert "not-a-fold" in r.json()["error"]["message"]
+
+    def test_p8c_incomplete_fold_assignments_fail_closed(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._mock_current_split_assessment(client, monkeypatch)
+        import pandas as pd
+
+        preview = client.post(
+            f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+            json={"target_id": "reference_soc_percent", "features": ["SWA"], "limit": 1},
+        ).json()["data"]
+        missing_event_id = preview["rows"][0]["measurement_event_id"]
+        original_read_parquet = pd.read_parquet
+
+        def read_without_preview_event(path, *args, **kwargs):
+            frame = original_read_parquet(path, *args, **kwargs)
+            if Path(path).name == "split_assignments.parquet":
+                return frame[frame["measurement_event_id"].astype(str) != missing_event_id]
+            return frame
+
+        monkeypatch.setattr(pd, "read_parquet", read_without_preview_event)
+        r = client.post(
+            f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+            json={"target_id": "reference_soc_percent", "features": ["SWA"],
+                  "limit": 1, "split_id": SPLIT, "fold_index": "fold1"},
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "INTEGRITY_ERROR"
+        assert "eligible preview rows" in r.json()["error"]["message"]
 
     def test_p9_tof_provenance_canonical(self, client: TestClient) -> None:
         d = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",

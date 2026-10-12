@@ -7,7 +7,7 @@
 
 export const API_BASE = "/api/v1";
 
-export type ApiEnvelope<T> = { data: T; meta?: Record<string, unknown> };
+export type ApiEnvelope<T, M = Record<string, unknown>> = { data: T; meta?: M };
 
 export type ApiErrorCode =
   | "VALIDATION_ERROR"
@@ -153,6 +153,8 @@ export interface CohortDatasetRecord {
   cohort_dataset_id: string;
   status: string;
   battery_count: number;
+  identity_verification_status?: string;
+  scientific_generalization_eligible?: boolean;
   row_count: number;
   predictor_columns: string[];
   target_column: string;
@@ -177,11 +179,32 @@ export interface SourceDatasetRecord {
 export interface CohortLOBOEvaluation {
   evaluation_id: string;
   evaluation_scope: string;
-  battery_count: number;
+  battery_count: number | null;
+  declared_group_count: number;
+  identity_verification_status: string;
+  scientific_generalization_eligible: boolean;
+  group_identity_status: string;
+  split_unit: string;
   fold_count: number;
-  macro_by_strategy: Record<string, { macro_MAE: number | null; macro_RMSE: number | null; aggregation: string }>;
+  macro_by_strategy: Record<string, { macro_MAE: number | null; macro_RMSE: number | null; declared_group_count: number; aggregation: string }>;
   pooled_row_diagnostic_by_strategy: Record<string, { MAE: number | null }>;
-  battery_results: { strategy: string; battery_id: string; fold: string; overall: { MAE: number | null }; row_count: number }[];
+  declared_group_results: { strategy: string; declared_group_id: string; held_out_declared_group_id: string; train_declared_group_ids: string[]; fold: string; overall: { MAE: number | null }; row_count: number }[];
+  held_out_prediction_coverage: {
+    status: string;
+    independent_unit: string;
+    expected_declared_group_count: number;
+    observed_declared_group_count_per_strategy: Record<string, number>;
+    expected_prediction_rows: number;
+    observed_prediction_rows: number;
+    expected_unique_event_count_per_strategy: number;
+  };
+  uncertainty_assessment: {
+    independent_unit: string;
+    independent_group_count: number | null;
+    declared_group_count: number;
+    group_identity_status: string;
+    confidence_interval: { status: string; reason: string; resampling_unit: string };
+  };
   limitations: string[];
   provenance?: {
     cohort_id: string;
@@ -318,6 +341,11 @@ export interface LibraryExperiment {
   name: string;
   status: ExperimentLifecycle | string;
   is_demo: boolean;
+  start_time?: string | null;
+  end_time?: string | null;
+  protocol?: string;
+  condition_id?: string;
+  condition_description?: string;
   created_at: string;
   updated_at: string;
   notes: string;
@@ -407,8 +435,11 @@ export interface IntakeCapabilities {
 export interface DataQuality {
   battery_id: string;
   experiment_id: string;
-  electrical: { records: number; cycles: number | null; steps: number | null; duplicate_timestamps: number | null } | null;
-  ultrasound: { frames: number; frame_cadence_s: number | null; sampling_rate_hz: null; sampling_rate_status: "UNKNOWN"; note: string } | null;
+  status?: "AVAILABLE" | "INTEGRITY_BLOCKED";
+  invalid_outputs?: Record<string, string[]>;
+  recovery_action?: string;
+  electrical: { status: "AVAILABLE" | "INTEGRITY_BLOCKED"; records: number | null; cycles: number | null; steps: number | null; duplicate_timestamps: number | null; integrity_reasons?: string[] } | null;
+  ultrasound: { status: "AVAILABLE" | "INTEGRITY_BLOCKED"; frames: number | null; frame_cadence_s: number | null; sampling_rate_hz: null; sampling_rate_status: "UNKNOWN"; note: string; integrity_reasons?: string[] } | null;
 }
 
 export interface SynchronizationSummary {
@@ -484,6 +515,39 @@ export interface SynchronizationSummary {
   note: string;
 }
 
+export interface TimebaseValidationRecord {
+  validation_id: string;
+  status: string;
+  validated_sync: false;
+  identity_trust?: string;
+  evidence_integrity?: "VERIFIED" | "NOT_VERIFIED";
+  verified_evidence?: Record<string, { sha256: string; size_bytes: number }>;
+  latest_review_evidence_integrity?: "VERIFIED" | "NOT_VERIFIED" | null;
+  latest_review_verified_evidence?: Record<string, { sha256: string; size_bytes: number }>;
+  evidence_integrity_status?: "CURRENT" | "STALE_EVIDENCE" | "NOT_VERIFIED" | "INVALID_RECORD";
+  source_integrity_status?: string;
+  effective_status?: string;
+  events?: Record<string, unknown>[];
+  event?: Record<string, unknown>;
+}
+
+export interface TimebaseValidationListItem {
+  validation_id: string;
+  status: string;
+  submitted_at: string | null;
+  asset_ids: string[];
+  validated_sync: false;
+  evidence_integrity_status?: "CURRENT" | "STALE_EVIDENCE" | "NOT_VERIFIED" | "INVALID_RECORD";
+  source_integrity_status?: string;
+  effective_status?: string;
+}
+
+export interface TimebaseEvidencePreflightResponse {
+  status: "SOURCE_FILES_VERIFIED";
+  source_integrity: "VERIFIED";
+  verified_evidence: Record<string, { sha256: string; size_bytes: number }>;
+}
+
 export interface MeasurementEventRow {
   measurement_event_id: string;
   frame_index_raw: number | null;
@@ -547,10 +611,19 @@ export interface CorrelationResultEntry {
   scope: string;
   method: string;
   coefficient: number | null;
+  n_input: number;
+  n_input_unit?: string;
   n_valid: number;
+  n_valid_unit?: string;
+  independent_group_count?: number | null;
+  independent_unit?: string | null;
+  group_identity_status?: string;
+  distinct_state_count?: number | null;
   missing_feature_count: number;
   missing_state_count: number;
+  missing_count_unit?: string;
   excluded_ineligible_count: number;
+  excluded_ineligible_unit?: string;
   limitations: string[];
   status: string;
 }
@@ -559,6 +632,145 @@ export interface FeatureCorrelationsResponse {
   feature_code: string;
   n_events: number;
   soc: CorrelationResultEntry[];
+  soc_diagnostic_scatter?: {
+    policy: string;
+    feature_code: string;
+    target_id: string;
+    n_input: number;
+    n_valid: number;
+    missing_feature_count: number;
+    missing_state_count: number;
+    excluded_ineligible_count: number;
+    sampled: boolean;
+    max_points: number;
+    random_seed: number;
+    group_coverage_complete: boolean;
+    points: Array<{
+      battery_id: string;
+      cycle: number;
+      state: string;
+      feature_value: number;
+      target_value: number;
+    }>;
+    battery_means: Array<{
+      battery_id: string;
+      n_valid: number;
+      feature_mean: number;
+      target_mean: number;
+    }>;
+    limitation: string;
+  };
+  soc_battery_decomposition?: {
+    policy: string;
+    status: string;
+    interpretation: string;
+    n_input_events: number;
+    n_events: number;
+    n_batteries: number;
+    declared_battery_group_count?: number;
+    physical_battery_count?: number | null;
+    battery_identity_status?: string;
+    group_count_semantics?: string;
+    missing_feature_count: number;
+    missing_state_count: number;
+    excluded_ineligible_count: number;
+    within_battery: { coefficient: number | null; method: string; n_events: number; n_batteries: number };
+    between_battery: { coefficient: number | null; method: string; n_batteries: number };
+    limitations: string[];
+  };
+  soc_by_battery_condition?: Array<CorrelationResultEntry & {
+    battery_id: string;
+    state_scope: string;
+  }>;
+  soc_by_cycle?: CorrelationResultEntry[];
+  soc_cycle_decomposition?: {
+    policy: string;
+    status: string;
+    interpretation: string;
+    n_input_events: number;
+    n_events: number;
+    n_cycle_groups: number;
+    n_batteries: number;
+    missing_feature_count: number;
+    missing_state_count: number;
+    excluded_ineligible_count: number;
+    within_cycle: { coefficient: number | null; method: string; n_events: number; n_cycle_groups: number };
+    between_cycle: { coefficient: number | null; method: string; n_cycle_groups: number };
+    limitations: string[];
+  };
+  declared_condition_analysis: {
+    status: "AVAILABLE" | "NOT_CONFIGURED" | "NO_SEGMENTS";
+    declaration_status: "OPERATOR_DECLARED" | "NOT_CONFIGURED" | "NOT_APPLICABLE";
+    absolute_timebase_status: "NOT_ASSESSED";
+    synchronization_status: "NOT_ASSESSED";
+    segment_count: number;
+    events_assessed: number;
+    assignment_status_counts: Record<string, number>;
+    results: Array<{
+      feature_code: string;
+      policy: string;
+      feature_variant: string;
+      gate_id: string | null;
+      condition_axis_id: string;
+      condition_value: string;
+      unit: string | null;
+      declaration_status: "OPERATOR_DECLARED";
+      absolute_timebase_status: "NOT_ASSESSED";
+      synchronization_status: "NOT_ASSESSED";
+      method: "pearson" | "spearman";
+      coefficient: number | null;
+      n_input_events: number;
+      n_valid_pairs: number;
+      missing_feature_count: number;
+      missing_state_count: number;
+      excluded_ineligible_count: number;
+      battery_count: number;
+      group_count_semantics: "DECLARED_BATTERY_ID";
+      battery_identity_status: "NOT_ASSESSED";
+      physical_battery_count: number | null;
+      cycle_count: number;
+      segment_ids: string[];
+      time_reference_asset_ids: string[];
+      analysis_mode: "EXPLORATORY";
+      status: string;
+      limitations: string[];
+    }>;
+    limitations: string[];
+  };
+  alignment_assessment?: {
+    status: "VALIDATED" | "PROVISIONAL" | "UNKNOWN" | string;
+    validated_sync: boolean;
+    association_scope: "EXPLORATORY_ONLY" | string;
+    confirmatory_inference_allowed: false;
+    limitation: string;
+  };
+  inference_assessment: {
+    analysis_mode: "EXPLORATORY";
+    claim_scope: "ASSOCIATION_ONLY";
+    independent_unit: "BATTERY";
+    group_count_semantics?: string;
+    group_identity_status?: string;
+    physical_battery_count?: number | null;
+    correlation_results_included: boolean;
+    study_protocol_status: "NOT_REGISTERED" | string;
+    analysis_plan?: {
+      status: string;
+      study_id: string | null;
+      plan_sha256: string | null;
+      matching_study_ids: string[];
+      invalid_plan_file_count: number;
+      unresolved_fields: string[];
+      approval_identity_status: string;
+      approval_evidence_status: string;
+      confirmatory_inference_enabled: false;
+      scientific_validity: "NOT_ASSESSED";
+      data_readiness: "NOT_ASSESSED";
+    };
+    confidence_interval: { status: "NOT_ESTIMATED" | string; reason: string };
+    p_value: { status: "NOT_ESTIMATED" | string; reason: string };
+    multiple_comparison: { status: "NOT_ASSESSED" | string; reason: string };
+    confounder_adjustment: { status: "NOT_ASSESSED" | string; reason: string };
+  };
   temperature: CorrelationResultEntry;
   soh: CorrelationResultEntry;
   soh_cycle_summary: {
@@ -569,6 +781,28 @@ export interface FeatureCorrelationsResponse {
     feature_std: number | null;
     n_frames: number;
   }[];
+}
+
+export interface FeatureCorrelationMeta {
+  policy: string;
+  policy_versions: {
+    feature_state_correlation: string;
+    feature_state_join: string;
+    battery_decomposition: string;
+    cycle_within_between_correlation: string;
+    condition_stratification: string;
+    battery_scatter_diagnostic: string;
+  };
+  analysis_scope: {
+    diagnostic_point_limit: number;
+    analyzed_event_rows: number;
+    diagnostic_points_returned: number;
+    join_key: "measurement_event_id";
+    coefficient_eligibility: "analysis_eligible=true";
+    analysis_mode: "EXPLORATORY";
+  };
+  gate_calibration_id?: string | null;
+  note: string;
 }
 
 export interface GateTemplateEntry {
@@ -734,6 +968,60 @@ export interface TargetDefinition {
   limitation: string | null;
   limitation_zh?: string | null;
   unit: string;
+  provenance?: {
+    target_grain: "MEASUREMENT_EVENT" | "CYCLE" | "EXPERIMENT" | "BATTERY";
+    independent_unit: "BATTERY";
+    method_id: string | null;
+    method_version: string | null;
+    definition: string | null;
+    source_assets: Array<{ asset_id: string; source_reference: string | null; sha256: string }>;
+    observed_channels?: string[];
+    uncertainty: {
+      status: "UNKNOWN" | "QUANTIFIED";
+      reason: string;
+      standard_uncertainty?: number | null;
+      unit?: string | null;
+      method?: string | null;
+      evidence_refs?: string[];
+    };
+  };
+}
+
+export interface TargetSourceEvidenceRequest {
+  battery_ids: string[];
+  experiment_ids: string[];
+  target_id: "reference_soc_percent" | "temperature_c" | "soh_capacity_reference_percent";
+  target_grain: "MEASUREMENT_EVENT" | "CYCLE" | "EXPERIMENT" | "BATTERY";
+  minimum_independent_states?: number;
+  feature_locators: Array<{ feature_name: string; gate_id?: string }>;
+  label_provenance: {
+    semantic_type: TargetDefinition["semantic_type"];
+    method_id: string;
+    method_version: string;
+    definition: string;
+    unit: string;
+    independent_unit: "BATTERY";
+    source_references: Array<{ asset_id: string; source_reference: string; sha256: string }>;
+    uncertainty:
+      | { status: "UNKNOWN"; reason: string }
+      | { status: "QUANTIFIED"; standard_uncertainty: number; unit: string; method: string; evidence_refs: string[] };
+  };
+}
+
+export interface TargetSourceEvidenceValidationResponse {
+  status: "SOURCE_EVIDENCE_VERIFIED";
+  target_id: TargetSourceEvidenceRequest["target_id"];
+  verified_sources: Array<{
+    asset_id: string;
+    verified: true;
+    sha256: string;
+    parser_provenance: "VERIFIED" | "NOT_AVAILABLE" | "NOT_RECORDED" | "CHECKSUM_VERIFIED_PATH_NOT_RECORDED";
+  }>;
+  source_integrity: "VERIFIED";
+  label_source_semantics: "NOT_ASSESSED";
+  target_readiness: "NOT_ASSESSED";
+  feature_availability: "NOT_ASSESSED";
+  materialization_enabled: false;
 }
 
 export interface BoundaryReadiness {
@@ -952,6 +1240,7 @@ export interface FeatureRankingEntry {
   n_valid?: number;
   n_missing?: number;
   status?: string;
+  target_readiness?: string;
   direction_status?: string;
   direction_dependent?: boolean;
   freshness?: string;
@@ -963,6 +1252,25 @@ export interface FeatureRankingEntry {
   pearson?: number | null;
   spearman?: number | null;
   state_variable?: string;
+  estimate_audit?: Array<{
+    analysis_id: string;
+    scope: string;
+    method: string;
+    coefficient: number | null;
+    n_input: number;
+    n_input_unit: string;
+    n_valid: number;
+    n_valid_unit: string;
+    independent_group_count: number | null;
+    independent_unit: string | null;
+    group_identity_status?: string;
+    distinct_state_count?: number | null;
+    missing_feature_count: number;
+    missing_state_count: number;
+    excluded_ineligible_count: number;
+    limitations?: string[];
+    status: string;
+  }>;
 }
 
 export interface RankingScatterScope {
@@ -980,6 +1288,8 @@ export interface RankingDetail {
 export interface FeatureRankingResponse {
   mode: string;
   target_id: string;
+  target_readiness?: string;
+  target_limitation?: string;
   variant?: string;
   scope?: string[];
   split_id?: string | null;
@@ -999,6 +1309,36 @@ export interface FeatureRankingResponse {
   limitations?: string[];
   note?: string;
   detail?: RankingDetail | null;
+  inference_assessment?: {
+    analysis_mode: string;
+    claim_scope: string;
+    independent_unit: string;
+    study_protocol_status?: string;
+    analysis_plan?: {
+      status: string;
+      study_id: string | null;
+      plan_sha256: string | null;
+      matching_study_ids: string[];
+      invalid_plan_file_count: number;
+      unresolved_fields: string[];
+      approval_identity_status: string;
+      approval_evidence_status: string;
+      confirmatory_inference_enabled: false;
+      scientific_validity: "NOT_ASSESSED";
+      data_readiness: "NOT_ASSESSED";
+    };
+    confidence_interval: { status: string; reason: string };
+    p_value: { status: string; reason: string };
+    multiple_comparison: { status: string; reason: string };
+    confounder_adjustment: { status: string; reason: string };
+  };
+  alignment_assessment?: {
+    status: "VALIDATED" | "PROVISIONAL" | "UNKNOWN";
+    validated_sync: boolean;
+    association_scope: "EXPLORATORY_ONLY";
+    confirmatory_inference_allowed: false;
+    limitation: string;
+  };
   group_summary?: {
     cycle: number; soh_percent: number | null; feature_median: number | null;
     feature_mean: number | null; feature_std: number | null; n_frames: number;
@@ -1063,7 +1403,7 @@ export interface AssistantMessageResponse {
 
 // ---------- client ----------
 
-async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope<T>> {
+async function request<T, M = Record<string, unknown>>(path: string, init?: RequestInit): Promise<ApiEnvelope<T, M>> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
@@ -1092,7 +1432,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiEnvelope
       },
     });
   }
-  return body as ApiEnvelope<T>;
+  return body as ApiEnvelope<T, M>;
 }
 
 export const client = {
@@ -1245,6 +1585,7 @@ export const client = {
     experiment_id: string;
     stages?: string[];
     parameters?: Record<string, unknown>;
+    measurement_events?: { temperature_channel_id?: string | null };
     target?: string;
     features?: Record<string, unknown>;
     analysis_slice?: Record<string, unknown>;
@@ -1297,6 +1638,11 @@ export const client = {
     name: string;
     is_demo?: boolean;
     notes?: string;
+    start_time?: string;
+    end_time?: string;
+    protocol?: string;
+    condition_id?: string;
+    condition_description?: string;
   }) => request<LibraryExperiment>("/experiments", { method: "POST", body: JSON.stringify(body) }),
   listLibraryExperiments: (params?: { limit?: number; cursor?: string; status?: string; battery_id?: string; is_demo?: boolean }) => {
     const q = new URLSearchParams();
@@ -1307,7 +1653,15 @@ export const client = {
     if (params?.is_demo !== undefined) q.set("is_demo", String(params.is_demo));
     return request<{ experiments: LibraryExperiment[] }>(`/experiments?${q}`);
   },
-  patchExperiment: (batteryId: string, experimentId: string, body: { name?: string; notes?: string }) =>
+  patchExperiment: (batteryId: string, experimentId: string, body: {
+    name?: string;
+    notes?: string;
+    start_time?: string | null;
+    end_time?: string | null;
+    protocol?: string;
+    condition_id?: string;
+    condition_description?: string;
+  }) =>
     request<LibraryExperiment>(`/experiments/${batteryId}/${experimentId}`, {
       method: "PATCH", body: JSON.stringify(body),
     }),
@@ -1365,6 +1719,48 @@ export const client = {
     request<DataQuality>(`/experiments/${batteryId}/${experimentId}/data-quality`),
   getSynchronization: (batteryId: string, experimentId: string) =>
     request<SynchronizationSummary>(`/experiments/${batteryId}/${experimentId}/synchronization`),
+  submitTimebaseValidation: (batteryId: string, experimentId: string, body: {
+    contract_version: "timebase-validation/1.1";
+    battery_id: string;
+    experiment_id: string;
+    timezone: string;
+    anchors: { asset_id: string; absolute_start_time: string; source_reference: string; source_sha256: string }[];
+    evidence_refs: string[];
+    maximum_allowed_error_s: number;
+  }) => request<TimebaseValidationRecord>(
+    `/experiments/${batteryId}/${experimentId}/timebase-validations`,
+    { method: "POST", body: JSON.stringify(body) },
+  ),
+  listTimebaseValidations: (batteryId: string, experimentId: string) => request<{ validations: TimebaseValidationListItem[] }>(
+    `/experiments/${batteryId}/${experimentId}/timebase-validations`,
+  ),
+  getTimebaseValidation: (batteryId: string, experimentId: string, validationId: string) => request<TimebaseValidationRecord>(
+    `/experiments/${batteryId}/${experimentId}/timebase-validations/${encodeURIComponent(validationId)}`,
+  ),
+  preflightTimebaseEvidence: (batteryId: string, experimentId: string, evidenceRefs: string[]) =>
+    request<TimebaseEvidencePreflightResponse>(
+      `/experiments/${batteryId}/${experimentId}/timebase-evidence-preflight`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          contract_version: "timebase-evidence-preflight/1.0",
+          battery_id: batteryId,
+          experiment_id: experimentId,
+          evidence_refs: evidenceRefs,
+        }),
+      },
+    ),
+  reviewTimebaseValidation: (batteryId: string, experimentId: string, validationId: string, body: {
+    decision: "ACCEPT" | "REJECT" | "REVOKE";
+    operator_identity: string;
+    rationale: string;
+    evidence_refs?: string[];
+    error_by_asset_s?: Record<string, number>;
+    ambiguity_free_assets?: string[];
+  }) => request<TimebaseValidationRecord>(
+    `/experiments/${batteryId}/${experimentId}/timebase-validations/${encodeURIComponent(validationId)}/review`,
+    { method: "POST", body: JSON.stringify(body) },
+  ),
   getMeasurementEvents: (
     batteryId: string,
     experimentId: string,
@@ -1397,12 +1793,27 @@ export const client = {
       experiment_id: string;
       frame_count: number;
       features: PhysicalFeatureBlock[];
-    }>(`/experiments/${batteryId}/${experimentId}/physical-features?limit=${limit}` +
+    }, { canonical_tof_status?: string; source_integrity_warning?: string | null }>(`/experiments/${batteryId}/${experimentId}/physical-features?limit=${limit}` +
       (locator ? `&ultrasound_asset_id=${encodeURIComponent(locator.ultrasoundAssetId)}&frame_index_raw=${locator.frameIndexRaw}` : "")),
-  getFeatureCorrelations: (batteryId: string, experimentId: string, featureCode: string, limit = 4000) =>
-    request<FeatureCorrelationsResponse>(
-      `/experiments/${batteryId}/${experimentId}/feature-correlations?feature_code=${encodeURIComponent(featureCode)}&limit=${limit}`,
+  getFeatureCorrelations: (batteryId: string, experimentId: string, featureCode: string, diagnosticPointLimit = 300) =>
+    request<FeatureCorrelationsResponse, FeatureCorrelationMeta>(
+      `/experiments/${batteryId}/${experimentId}/feature-correlations?feature_code=${encodeURIComponent(featureCode)}&limit=${diagnosticPointLimit}`,
     ),
+  getAnalysisPlanStatus: (batteryId: string, experimentId: string) =>
+    request<{
+      status: string;
+      study_id: string | null;
+      plan_sha256: string | null;
+      study_status: string | null;
+      claim_scope: string | null;
+      unresolved_fields: string[];
+      matching_study_ids: string[];
+      invalid_plan_file_count: number;
+      requested_confirmatory_inference: false;
+      confirmatory_inference_enabled: false;
+      scientific_validity: "NOT_ASSESSED";
+      data_readiness: "NOT_ASSESSED";
+    }>(`/experiments/${batteryId}/${experimentId}/analysis-plan-status`),
   getGateCalibration: (batteryId: string, experimentId: string, nFrames = 32) =>
     request<GateCalibrationResponse>(
       `/experiments/${batteryId}/${experimentId}/gate-calibration?n_frames=${nFrames}`,
@@ -1459,6 +1870,10 @@ export const client = {
     ),
   listTargets: (batteryId: string, experimentId: string) =>
     request<{ targets: TargetDefinition[] }>(`/experiments/${batteryId}/${experimentId}/targets`),
+  validateTargetSourceEvidence: (body: TargetSourceEvidenceRequest) =>
+    request<TargetSourceEvidenceValidationResponse>("/target-datasets/validate-source-evidence", {
+      method: "POST", body: JSON.stringify(body),
+    }),
   getExtensionReadiness: (batteryId: string, experimentId: string) =>
     request<ExtensionReadinessResponse>(`/experiments/${batteryId}/${experimentId}/extension-readiness`),
   getAlignmentSummary: (batteryId: string, experimentId: string) =>
@@ -1488,7 +1903,7 @@ export const client = {
       { method: "POST", body: JSON.stringify({ message, current_page: currentPage }) },
     ),
   listMaterializedAnalyses: (batteryId: string, experimentId: string) =>
-    request<{ analyses: { analysis_id: string; analysis_mode: string; target: string; split_id: string | null; fold_index: number | null; dataset_id: string | null; candidate_features: string[]; selected_features: string[]; selection_basis: string | null; status: string }[] }>(
+    request<{ analyses: { analysis_id: string; analysis_mode: string; target: string; split_id: string | null; fold_index: number | null; dataset_id: string | null; candidate_features: string[]; methods: string[]; selected_features: string[]; selection_basis: string | null; selection_policy: Record<string, unknown> | null; selection_policy_version: string | null; selection_status: string; status: string; availability: string }[] }>(
       `/experiments/${batteryId}/${experimentId}/feature-analyses`,
     ),
   listSplits: (batteryId: string, experimentId: string) =>
@@ -1604,7 +2019,10 @@ export interface ResearchOverviewPayload {
   };
   model_comparison: {
     status: string;
-    artifact_path: string;
+    artifact_path: string | null;
+    freshness_reasons?: string[];
+    dataset_id?: string | null;
+    split_id?: string | null;
     strategies: {
       strategy: string;
       macro_mae: number | null;
@@ -1622,12 +2040,14 @@ export interface ResearchOverviewPayload {
 }
 
 export interface ResearchFeatureDefinitionState {
-  feature_set_id: string;
+  feature_set_id: string | null;
   dataset_definition_version: string | null;
   current_policy: string;
   uses_previous_feature_definition: boolean;
   refresh_required: boolean;
   note: string;
+  status?: string;
+  freshness_reasons?: string[];
 }
 
 // ---------- BRW-025R-WF workflow-context DTOs ----------
@@ -1678,7 +2098,12 @@ export interface WorkflowContextPayload {
   scientific_context: Record<string, unknown>;
   assistant_context: Record<string, unknown>;
   typed_actions: { action_id: string; label: string; route: string }[];
-  meta: { read_only: boolean; no_recomputation: boolean };
+  meta: {
+    read_only: boolean;
+    no_recomputation: boolean;
+    source_integrity_status?: string;
+    invalid_modalities?: string[];
+  };
 }
 
 /** client 覆盖的 API 路径清单 — drift 测试与 openapi-v1.json 对齐用。 */
@@ -1747,6 +2172,11 @@ export const CLIENT_PATHS: { method: string; path: string }[] = [
   { method: "POST", path: "/intake-sessions/{session_id}/cancel" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/data-quality" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/synchronization" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/timebase-validations" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/timebase-validations" },
+  { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/timebase-validations/{validation_id}" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/timebase-evidence-preflight" },
+  { method: "POST", path: "/experiments/{battery_id}/{experiment_id}/timebase-validations/{validation_id}/review" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/measurement-events" },
   { method: "GET", path: "/feature-definitions" },
   { method: "GET", path: "/experiments/{battery_id}/{experiment_id}/physical-features" },

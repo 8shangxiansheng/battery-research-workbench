@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -78,7 +79,7 @@ def test_real_soh_dataset_t54(tmp_path: Path) -> None:
     feats = pd.read_parquet(FEATURES)
     lbls = pd.read_parquet(LABELS)
     cyc = pd.read_parquet(CYC_LABELS)
-    report, _df = build_soh_dataset(
+    report, df = build_soh_dataset(
         features=feats,
         event_labels=lbls,
         cycle_labels=cyc,
@@ -93,7 +94,22 @@ def test_real_soh_dataset_t54(tmp_path: Path) -> None:
     assert report.dataset_status == "NOT_READY_FOR_MODEL_EVALUATION"
     assert report.distinct_soh_values == 2
     assert report.cycle_group_count == 2
+    assert report.independent_soh_state_count == 2
     assert "EVENT ROW COUNT IS NOT INDEPENDENT SOH SAMPLE COUNT" in report.limitations[0]
+    paths = write_dataset_payload(
+        report=report,
+        df=df,
+        config=CONFIG,
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        dataset_family="SOH_CAPACITY",
+        feature_set_path=FEATURES,
+        label_set_path=LABELS,
+        output_root=tmp_path,
+    )
+    manifest = json.loads(Path(paths["dataset_manifest"]).read_text(encoding="utf-8"))
+    assert manifest["independent_soh_state_count"] == 2
+    assert manifest["dataset_builder_version"] == "0.4.0"
 
 
 @pytest.mark.skipif(

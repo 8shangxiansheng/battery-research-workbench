@@ -814,6 +814,74 @@ class TestHumanGates:
 
 # ---------- audit / isolation / security (T61-T75) ----------
 class TestAuditIsolationSecurity:
+    def test_waveform_tools_block_tampered_parser_output_checksum(
+        self, env: tuple[ToolGateway, AgentScientificContext, Path]
+    ) -> None:
+        import pandas as pd
+
+        from battery_workbench.provenance.processed_manifest import content_sha256
+
+        gw, ctx0, _raw = env
+        ctx = _confirmed_create(gw, ctx0, "waveform-output-integrity")
+        experiment_root = gw.service.processed_root / "ultrasound" / ctx.battery_id / ctx.experiment_id
+        experiment_root.mkdir(parents=True)
+        frames_path = experiment_root / "frames.parquet"
+        frames = pd.DataFrame({"frame_index_raw": [0], "waveform_sample_count": [2]})
+        frames.to_parquet(frames_path, index=False)
+        waveform_store = experiment_root / "waveforms.zarr"
+        waveform_store.mkdir()
+        manifest = {
+            "battery_id": ctx.battery_id,
+            "experiment_id": ctx.experiment_id,
+            "source_assets": [],
+            "source_sha256": {},
+            "assets": [],
+            "output_files": {
+                "frames": "frames.parquet",
+                "waveforms": "waveforms.zarr",
+                "parser_manifest": "parser_manifest.json",
+            },
+            "output_checksums": {
+                "frames": content_sha256(frames_path),
+                "waveforms": content_sha256(waveform_store),
+            },
+        }
+        (experiment_root / "parser_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        frames["frame_index_raw"] = 7
+        frames.to_parquet(frames_path, index=False)
+
+        result = gw.execute("list_waveform_frames", ctx, {})
+
+        assert result.status == "BLOCKED"
+        assert result.error["code"] == "INTEGRITY_ERROR"
+        assert "OUTPUT_CHECKSUM_MISMATCH:frames" in result.error["details"]["integrity_reasons"]["ultrasound"]
+
+    def test_waveform_tools_block_invalid_ultrasound_source_manifest(
+        self, env: tuple[ToolGateway, AgentScientificContext, Path]
+    ) -> None:
+        import pandas as pd
+
+        gw, ctx0, _raw = env
+        ctx = _confirmed_create(gw, ctx0, "waveform-provenance")
+        experiment_root = gw.service.processed_root / "ultrasound" / ctx.battery_id / ctx.experiment_id
+        experiment_root.mkdir(parents=True)
+        (experiment_root / "parser_manifest.json").write_text("[]", encoding="utf-8")
+        pd.DataFrame(
+            {"frame_index_raw": [0], "waveform_sample_count": [2]}
+        ).to_parquet(experiment_root / "frames.parquet", index=False)
+
+        listed = gw.execute("list_waveform_frames", ctx, {})
+        inspected = gw.execute(
+            "inspect_waveform_frame", ctx, {"frame_index": 0, "max_points": 10}
+        )
+
+        for result in (listed, inspected):
+            assert result.status == "BLOCKED"
+            assert result.error["code"] == "INTEGRITY_ERROR"
+            assert "ultrasound" in result.error["details"]["invalid_modalities"]
+
     def test_t61_tool_call_logged(
         self, env: tuple[ToolGateway, AgentScientificContext, Path]
     ) -> None:

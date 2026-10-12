@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from battery_workbench.datasets.freshness import dataset_freshness
 from battery_workbench.orchestrator.engine import PipelineOrchestrator
+from battery_workbench.reporting.collector import collect_results, latest_evaluated_chain
 
 REPO = Path(__file__).resolve().parents[2]
 PROCESSED = REPO / "data" / "processed"
@@ -31,10 +33,26 @@ def _report(engine: PipelineOrchestrator, tmp_path: Path) -> dict:
     )
 
 
+def _current_model_chain_is_fresh() -> bool:
+    dataset_id, _ = latest_evaluated_chain(PROCESSED, "CELL_001", "EXP_001")
+    manifest_path = next(
+        (PROCESSED / "datasets/CELL_001/EXP_001").rglob(
+            f"{dataset_id}/dataset_manifest.json"
+        ),
+        None,
+    ) if dataset_id else None
+    if manifest_path is None:
+        return False
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return dataset_freshness(PROCESSED, manifest_path, manifest)["freshness_status"] == "FRESH"
+
+
 # --- T27-T31: metrics honesty ---
 
 
 def test_t27_per_fold_metrics_preserved(tmp_path: Path) -> None:
+    if not _current_model_chain_is_fresh():
+        pytest.skip("current real-data model chain is stale; no current metrics should be asserted")
     engine = _engine(tmp_path)
     report = _report(engine, tmp_path)
     model_results = [r for r in report["result_registry"] if r["result_type"] == "MODEL_METRIC"]
@@ -49,7 +67,24 @@ def test_t27_per_fold_metrics_preserved(tmp_path: Path) -> None:
                 "RANDOM_FOREST", "GRADIENT_BOOSTING"} <= strategies
 
 
+def test_stale_dataset_chain_is_not_reported_as_current_metrics() -> None:
+    if _current_model_chain_is_fresh():
+        pytest.skip("the real dataset chain is fresh; stale-chain assertion is not applicable")
+    results = collect_results(PROCESSED, "CELL_001", "EXP_001")
+    dataset_status = next(result for result in results if result.result_id == "R::dataset_status")
+    split_status = next(result for result in results if result.result_id == "R::split_readiness")
+    assert dataset_status.scientific_status == "STALE_SOURCE"
+    assert split_status.scientific_status == "STALE_SOURCE"
+    assert not [
+        result
+        for result in results
+        if result.result_type in {"MODEL_METRIC", "MODEL_COMPARISON"}
+    ]
+
+
 def test_t28_macro_metrics_preserved(tmp_path: Path) -> None:
+    if not _current_model_chain_is_fresh():
+        pytest.skip("current real-data model chain is stale; no current metrics should be asserted")
     engine = _engine(tmp_path)
     report = _report(engine, tmp_path)
     macros = [r for r in report["result_registry"] if r["result_type"] == "MODEL_COMPARISON"]
@@ -64,6 +99,8 @@ def test_t29_pooled_diagnostic_not_promoted(tmp_path: Path) -> None:
 
 
 def test_t30_dummy_comparison_correct(tmp_path: Path) -> None:
+    if not _current_model_chain_is_fresh():
+        pytest.skip("current real-data model chain is stale; no current metrics should be asserted")
     engine = _engine(tmp_path)
     report = _report(engine, tmp_path)
     dummy = [
@@ -75,6 +112,8 @@ def test_t30_dummy_comparison_correct(tmp_path: Path) -> None:
 
 
 def test_t31_negative_r2_reported_honestly(tmp_path: Path) -> None:
+    if not _current_model_chain_is_fresh():
+        pytest.skip("current real-data model chain is stale; no current metrics should be asserted")
     engine = _engine(tmp_path)
     report = _report(engine, tmp_path)
     r2_results = [
@@ -139,6 +178,8 @@ def test_t37_policy_schema_versions_captured(tmp_path: Path) -> None:
     report = _report(engine, tmp_path)
     rm = report["reproducibility_manifest"]
     assert rm.get("policy_versions") or rm.get("schema_versions")
+    assert rm["policy_versions"]["feature_state_correlation"] == "FEATURE_STATE_CORRELATION_POLICY_V5"
+    assert rm["policy_versions"]["cycle_within_between_correlation"] == "CYCLE_WITHIN_BETWEEN_CORRELATION_V1"
 
 
 def test_t38_environment_captured_no_secrets(tmp_path: Path) -> None:

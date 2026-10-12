@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from battery_workbench.modeling.engine import (
@@ -39,10 +40,56 @@ def evaluate_cohort_lobo(
         raise ValueError("baseline strategies must be unique")
     if target in features or not features:
         raise ValueError("cohort requires non-empty predictors distinct from target")
-    if not {"battery_id", "measurement_event_id", "source_dataset_id"}.issubset(frame.columns):
+    if len(set(features)) != len(features):
+        raise ValueError("cohort predictor feature names must be unique")
+    if frame.empty:
+        raise ValueError("cohort requires at least one row")
+    required_columns = {
+        "battery_id",
+        "experiment_id",
+        "measurement_event_id",
+        "source_dataset_id",
+        target,
+        *features,
+    }
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
         raise ValueError(
-            "cohort rows require battery_id, source_dataset_id, and measurement_event_id"
+            f"cohort rows are missing required columns: {missing_columns}"
         )
+    for identity_column in (
+        "battery_id",
+        "experiment_id",
+        "measurement_event_id",
+        "source_dataset_id",
+    ):
+        values = frame[identity_column]
+        if values.map(
+            lambda value: not isinstance(value, str)
+            or not value.strip()
+            or value != value.strip()
+        ).any():
+            raise ValueError(
+                f"cohort {identity_column} values must be non-empty trimmed strings"
+            )
+    if frame["measurement_event_id"].duplicated().any():
+        raise ValueError("cohort measurement_event_id values must be unique")
+
+    source_identity_counts = frame.groupby("source_dataset_id", sort=False)[
+        ["battery_id", "experiment_id"]
+    ].nunique(dropna=False)
+    if (source_identity_counts != 1).any().any():
+        raise ValueError(
+            "each source_dataset_id must map to exactly one Battery/Experiment identity"
+        )
+
+    for column in [*features, target]:
+        try:
+            values = np.asarray(frame[column], dtype=float)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"cohort column {column!r} must contain numeric values") from exc
+        if not np.isfinite(values).all():
+            raise ValueError(f"cohort column {column!r} must contain only finite values")
 
     spec = SplitSpec(
         strategy=SplitStrategy.LEAVE_ONE_GROUP_OUT,
@@ -133,9 +180,22 @@ def evaluate_cohort_lobo(
         entries = [item for item in battery_results if item["strategy"] == strategy]
         macros[strategy] = macro_average_by_battery(entries)
         rows = prediction_frame[prediction_frame["strategy"] == strategy]
+        expected_event_ids = set(frame["measurement_event_id"].astype(str))
+        observed_event_ids = set(rows["measurement_event_id"].astype(str))
+        if (
+            len(rows) != len(expected_event_ids)
+            or observed_event_ids != expected_event_ids
+            or rows["measurement_event_id"].astype(str).duplicated().any()
+            or set(rows["battery_id"].astype(str)) != set(frame["battery_id"].astype(str))
+        ):
+            raise RuntimeError(f"incomplete held-out prediction coverage for strategy {strategy}")
         pooled[strategy] = evaluate_predictions(
             rows["y_true"].to_numpy(), rows["y_pred"].to_numpy(), step_type=None
         )["overall"]
+
+    expected_prediction_count = len(frame) * len(selected_strategies)
+    if len(prediction_frame) != expected_prediction_count:
+        raise RuntimeError("held-out prediction row count does not match cohort coverage")
 
     return {
         "evaluation_id": "LOBO::"
@@ -168,6 +228,29 @@ def evaluate_cohort_lobo(
         "split_assignments": assignments.to_dict(orient="records"),
         "fold_count": int(assignments["fold"].nunique()),
         "battery_count": int(frame["battery_id"].nunique()),
+        "held_out_prediction_coverage": {
+            "status": "COMPLETE",
+            "independent_unit": "BATTERY",
+            "expected_battery_count": int(frame["battery_id"].nunique()),
+            "observed_battery_count_per_strategy": {
+                strategy: int(
+                    prediction_frame.loc[prediction_frame["strategy"] == strategy, "battery_id"].nunique()
+                )
+                for strategy in selected_strategies
+            },
+            "expected_prediction_rows": expected_prediction_count,
+            "observed_prediction_rows": len(prediction_frame),
+            "expected_unique_event_count_per_strategy": int(frame["measurement_event_id"].nunique()),
+        },
+        "uncertainty_assessment": {
+            "independent_unit": "BATTERY",
+            "independent_group_count": int(frame["battery_id"].nunique()),
+            "confidence_interval": {
+                "status": "NOT_ESTIMATED",
+                "reason": "NO_PREREGISTERED_GROUPED_RESAMPLING_PLAN",
+                "resampling_unit": "BATTERY",
+            },
+        },
         "limitations": [
             "LOBO is a limited evaluation when cohort battery count is small",
             "macro metrics weight each held-out battery equally",

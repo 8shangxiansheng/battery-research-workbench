@@ -8,11 +8,15 @@ a Retry-Resume path that never duplicates the parameter set.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
+import zarr
 
 from battery_workbench.api.app import create_app
 
@@ -24,7 +28,7 @@ B, E = "CELL_001", "EXP_001"
 has_real = (PROCESSED / "multimodal/CELL_001/EXP_001/measurement_events.parquet").exists()
 
 
-def _sandbox(tmp_path: Path) -> Path:
+def _sandbox(tmp_path: Path, raw_root: Path) -> Path:
     """Real measurement events + provenance (same pattern as resume tests)."""
     sandbox = tmp_path / "processed"
     events_rel = "multimodal/CELL_001/EXP_001"
@@ -44,16 +48,138 @@ def _sandbox(tmp_path: Path) -> Path:
     ):
         (sandbox / rel).mkdir(parents=True)
         for f in (PROCESSED / rel).iterdir():
-            if f.is_file():
-                shutil.copy(f, sandbox / rel / f.name)
+                if f.is_file():
+                    shutil.copy(f, sandbox / rel / f.name)
+    _write_sandbox_parser_manifests(sandbox, raw_root)
     return sandbox
+
+
+def _raw_sandbox(tmp_path: Path) -> Path:
+    raw_root = tmp_path / "raw"
+    manifests = raw_root / "manifests"
+    manifests.mkdir(parents=True, exist_ok=True)
+    assets = []
+    for asset_id, modality, filename in (
+        ("E001", "electrical", "synthetic.xlsx"),
+        ("U001", "ultrasound", "synthetic.txt"),
+    ):
+        relative_path = Path("batteries") / B / E / modality / filename
+        source = raw_root / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"synthetic {modality} source".encode())
+        assets.append(
+            {
+                "asset_id": asset_id,
+                "battery_id": B,
+                "experiment_id": E,
+                "modality": modality,
+                "relative_path": relative_path.as_posix(),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        )
+    pd.DataFrame(assets).to_csv(manifests / "data_assets.csv", index=False)
+    pd.DataFrame([{"battery_id": B}]).to_csv(manifests / "batteries.csv", index=False)
+    pd.DataFrame([{"experiment_id": E, "battery_id": B}]).to_csv(
+        manifests / "experiments.csv", index=False
+    )
+    return raw_root
+
+
+def _write_sandbox_parser_manifests(processed_root: Path, raw_root: Path) -> None:
+    """Use synthetic, source-addressable outputs independent of legacy artifacts."""
+    electrical_directory = processed_root / "electrical" / B / E
+    electrical_directory.mkdir(parents=True, exist_ok=True)
+    electrical_outputs = {}
+    for key in ("records", "cycles", "steps"):
+        path = electrical_directory / f"{key}.parquet"
+        if not path.exists():
+            pd.DataFrame({"id": [1]}).to_parquet(path, index=False)
+        electrical_outputs[key] = path
+    electrical_source = raw_root / "batteries" / B / E / "electrical/synthetic.xlsx"
+    (electrical_directory / "parser_manifest.json").write_text(
+        json.dumps(
+            {
+                "battery_id": B,
+                "experiment_id": E,
+                "output_files": {key: path.name for key, path in electrical_outputs.items()},
+                "output_checksums": {
+                    key: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for key, path in electrical_outputs.items()
+                },
+                "source_sha256": {
+                    "E001": hashlib.sha256(electrical_source.read_bytes()).hexdigest()
+                },
+                "source_asset_details": [
+                    {
+                        "asset_id": "E001",
+                        "relative_path": f"batteries/{B}/{E}/electrical/synthetic.xlsx",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    directory = processed_root / "ultrasound" / B / E
+    directory.mkdir(parents=True, exist_ok=True)
+    frames_path = directory / "frames.parquet"
+    pd.DataFrame(
+        {
+            "ultrasound_asset_id": ["U001"],
+            "frame_index_raw": [0],
+            "elapsed_time_s": [0.0],
+            "waveform_group": ["waveforms"],
+            "waveform_row_index": [0],
+        }
+    ).to_parquet(frames_path, index=False)
+    waveform_path = directory / "waveforms.zarr"
+    if not waveform_path.exists():
+        group = zarr.open_group(str(waveform_path), mode="w")
+        group.create_array("waveforms", data=np.asarray([[0.0, 1.0, 0.0]]))
+    outputs = {"frames": frames_path, "waveforms": waveform_path}
+
+    def tree_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        for item in sorted(path.rglob("*")):
+            if item.is_file():
+                digest.update(item.relative_to(path).as_posix().encode())
+                digest.update(item.read_bytes())
+        return digest.hexdigest()
+
+    checksums = {
+        key: tree_sha256(path) if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest()
+        for key, path in outputs.items()
+    }
+    source_hash = hashlib.sha256(
+        (raw_root / "batteries" / B / E / "ultrasound/synthetic.txt").read_bytes()
+    ).hexdigest()
+    (directory / "parser_manifest.json").write_text(
+        json.dumps(
+            {
+                "battery_id": B,
+                "experiment_id": E,
+                "output_files": {key: path.name for key, path in outputs.items()},
+                "output_checksums": checksums,
+                "source_sha256": {"U001": source_hash},
+                "assets": [
+                    {
+                        "asset_id": "U001",
+                        "source_file": f"batteries/{B}/{E}/ultrasound/synthetic.txt",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _client(tmp_path: Path):
     from fastapi.testclient import TestClient
 
-    sandbox = _sandbox(tmp_path)
-    app = create_app(raw_root=RAW, processed_root=sandbox, runs_root=tmp_path / "runs")
+    raw_root = _raw_sandbox(tmp_path)
+    sandbox = _sandbox(tmp_path, raw_root)
+    app = create_app(
+        raw_root=raw_root, processed_root=sandbox, runs_root=tmp_path / "runs"
+    )
     return TestClient(app), sandbox, tmp_path / "runs"
 
 

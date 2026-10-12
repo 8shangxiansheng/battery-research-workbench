@@ -35,6 +35,7 @@ from battery_workbench.io.electrical.validation import (
     validate_required_values,
     validation_context,
 )
+from battery_workbench.provenance.processed_manifest import content_sha256
 from battery_workbench.storage.parquet import write_parquet_verified
 
 INTEGER_FIELDS = {
@@ -623,6 +624,9 @@ def write_electrical_experiment(
         "output_files": {
             **{name: path.name for name, path in output_files.items()},
             "parser_manifest": manifest_path.name,
+        },
+        "output_checksums": {
+            name: content_sha256(path) for name, path in output_files.items()
         },
     }
     manifest_path.write_text(

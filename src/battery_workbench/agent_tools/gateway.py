@@ -666,8 +666,46 @@ class ToolGateway:
     ) -> ToolResult:
         b = inputs.get("battery_id") or ctx.battery_id
         e = inputs.get("experiment_id") or ctx.experiment_id
+        blocked = self._ultrasound_integrity_block(ctx, b, e)
+        if blocked is not None:
+            return blocked
         frames = self._waveform_list(b, e)
         return self._wrap(frames, ctx)
+
+    def _ultrasound_integrity_block(
+        self, ctx: AgentScientificContext, battery_id: str, experiment_id: str
+    ) -> ToolResult | None:
+        from battery_workbench.provenance.parser_manifest import (
+            invalid_parser_source_modalities,
+            parser_output_integrity_reasons,
+        )
+
+        invalid = invalid_parser_source_modalities(
+            self.service.processed_root,
+            self.service.raw_root,
+            battery_id,
+            experiment_id,
+        )
+        output_reasons = parser_output_integrity_reasons(
+            self.service.processed_root, battery_id, experiment_id
+        ).get("ultrasound", [])
+        if "ultrasound" not in invalid and not output_reasons:
+            return None
+        details: dict[str, Any] = {
+            "invalid_modalities": sorted(set(invalid) | {"ultrasound"}),
+            "recovery_action": "REPARSE_ULTRASOUND_ASSETS_AND_REVIEW_LINEAGE",
+        }
+        if output_reasons:
+            details["integrity_reasons"] = {"ultrasound": output_reasons}
+        return ToolResult(
+            status="BLOCKED",
+            error={
+                "code": "INTEGRITY_ERROR",
+                "message": "ultrasound parser provenance or output integrity is invalid; waveform access is blocked",
+                "details": details,
+            },
+            scientific_context=self._scientific_context(ctx),
+        )
 
     def _waveform_list(self, b: str, e: str) -> dict[str, Any]:
         frames_path = self.service.processed_root / "ultrasound" / b / e / "frames.parquet"
@@ -688,6 +726,9 @@ class ToolGateway:
     ) -> ToolResult:
         b = inputs.get("battery_id") or ctx.battery_id
         e = inputs.get("experiment_id") or ctx.experiment_id
+        blocked = self._ultrasound_integrity_block(ctx, b, e)
+        if blocked is not None:
+            return blocked
         import numpy as np
         import pandas as pd
         import zarr

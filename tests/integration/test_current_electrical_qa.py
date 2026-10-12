@@ -29,6 +29,10 @@ def test_current_cell_001_baseline_and_input_immutability(tmp_path: Path) -> Non
     )
 
     assert report.status == "PASS_WITH_WARNINGS"
+    assert [item.code for item in report.anomalies] == ["DUPLICATE_TIMESTAMP"]
+    duplicate = report.anomalies[0]
+    assert duplicate.count == 12
+    assert duplicate.metadata["group_count"] == 9
     assert report.summary["row_counts"]["records"] == 39996
     assert report.summary["row_counts"]["cycles"] == 2
     assert report.summary["row_counts"]["steps"] == 10

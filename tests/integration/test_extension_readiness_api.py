@@ -20,7 +20,16 @@ def test_extension_readiness_is_read_only_and_honest(tmp_path: Path) -> None:
     assert data["battery_id"] == "CELL_001"
     assert data["future_contracts"]["cohort_dataset"]["enabled"] is True
     assert data["future_contracts"]["tuning_study"]["enabled"] is False
+    target_contract = data["future_contracts"]["target_dataset"]
+    assert target_contract["enabled"] is False
+    assert "label_provenance" in target_contract["request_schema"]["properties"]
+    assert "Battery remains the independent outer grouping unit" in target_contract[
+        "activation_gate"
+    ]
     assert all("requirements" in boundary for boundary in data["boundaries"])
+    soh = next(item for item in data["boundaries"] if item["code"] == "SOH_MODELING")
+    assert soh["status"] == "BLOCKED_BY_DATA"
+    assert soh["can_resolve_with_current_data"] is False
 
 
 def test_only_cohort_dataset_endpoint_is_published_from_future_contracts(tmp_path: Path) -> None:
@@ -32,7 +41,7 @@ def test_only_cohort_dataset_endpoint_is_published_from_future_contracts(tmp_pat
     paths = app.openapi()["paths"]
     assert "/api/v1/tuning-studies" not in paths
     assert "/api/v1/cohort-datasets" in paths
-    assert "/api/v1/timebase-validations" not in paths
+    assert "/api/v1/experiments/{battery_id}/{experiment_id}/timebase-validations" in paths
 
 
 def test_extension_readiness_has_a_typed_openapi_response(tmp_path: Path) -> None:

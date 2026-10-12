@@ -52,14 +52,17 @@ def test_event_labels_rows_match_events_t46(tmp_path: Path) -> None:
     out = pd.read_parquet(tmp_path / "labels" / "CELL_001" / "EXP_001" / "event_labels.parquet")
     assert len(out) == len(events) == 3999
     assert out["measurement_event_id"].tolist() == events["measurement_event_id"].tolist()
+    assert out["electrical_asset_id"].tolist() == events["electrical_asset_id"].tolist()
 
 
 @pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")
 def test_cycle_labels_unique_keys_t47(tmp_path: Path) -> None:
+    cycles = pd.read_parquet(CYCLES)
     _build(tmp_path)
     out = pd.read_parquet(tmp_path / "labels" / "CELL_001" / "EXP_001" / "cycle_labels.parquet")
     assert out["cycle_index_raw"].is_unique
     assert set(out["cycle_index_raw"]) == {1.0, 2.0}
+    assert out["electrical_asset_id"].tolist() == cycles["electrical_asset_id"].tolist()
 
 
 @pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")
@@ -76,6 +79,29 @@ def test_definitions_and_manifest_persisted_t48_t49(tmp_path: Path) -> None:
     assert m["soc_formula_version"] == "0.2.0"
     assert "supersedes_label_set_id" in m
     assert m["soh_model_readiness"] == "NOT_READY_FOR_ROBUST_SUPERVISED_LEARNING"
+    assert m["label_engine_version"] == "0.3.0"
+    assert m["label_definition_version"] == "0.3.0"
+
+
+@pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")
+def test_label_artifact_verifier_rejects_legacy_identity_schema(tmp_path: Path) -> None:
+    _build(tmp_path)
+    from battery_workbench.labels.persistence import verify_label_artifact
+
+    manifest_path = tmp_path / "labels" / "CELL_001" / "EXP_001" / "label_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["label_engine_version"] = "0.2.0"
+    manifest["label_definition_version"] = "0.2.0"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    reasons = verify_label_artifact(
+        tmp_path,
+        manifest_path,
+        manifest,
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+    )
+    assert "LABEL_ENGINE_VERSION_UNSUPPORTED" in reasons
+    assert "LABEL_DEFINITION_VERSION_UNSUPPORTED" in reasons
 
 
 @pytest.mark.skipif(not EVENTS.exists(), reason="CELL_001 inputs not present")

@@ -17,6 +17,12 @@ from battery_workbench.domain.asset import DataAsset
 from battery_workbench.io.electrical.service import parse_electrical_asset
 from battery_workbench.io.ultrasound.service import parse_ultrasound_asset
 from battery_workbench.multimodal.service import build_events_for_experiment
+from battery_workbench.provenance.processed_manifest import content_sha256
+from battery_workbench.provenance.time_anchor import (
+    resolve_time_anchor_config,
+    time_anchor_input_fingerprint,
+)
+from battery_workbench.storage.zarr_store import write_waveform_array_verified
 from battery_workbench.synchronization.m2k_evidence import read_m2k_acquisition_start
 from battery_workbench.synchronization.persistence import write_time_anchor_state
 from battery_workbench.synchronization.schemas import (
@@ -39,8 +45,9 @@ _SOURCE_ROOT_ENV = "BRW_CW_RAW_ROOT"
 def test_cw_multifile_real_data_association() -> None:
     """Replay the explicit 15-pair CW map through production time/sync services.
 
-    Only small M2K evidence XML files and derived Parquets are written, all
-    under a temporary directory. Source XLSX/TXT/M2K files remain read-only.
+    Source XLSX/TXT files are copied into the isolated temporary raw root so
+    the API can verify registered source bytes; M2K evidence and derived
+    artifacts are also temporary. External source files remain read-only.
     """
     source_root = Path(os.environ[_SOURCE_ROOT_ENV]).resolve()
     battery_id = "CW_VALIDATION"
@@ -72,7 +79,10 @@ def test_cw_multifile_real_data_association() -> None:
         )
 
         records: list[pd.DataFrame] = []
+        cycles: list[pd.DataFrame] = []
+        steps: list[pd.DataFrame] = []
         frame_rows: list[dict] = []
+        ultrasound_results = []
         manifest_rows: list[list[str]] = []
         asset_pair: dict[str, str] = {}
         asset_source_path: dict[str, str] = {}
@@ -92,6 +102,10 @@ def test_cw_multifile_real_data_association() -> None:
                 assert not relative.is_absolute()
                 assert ".." not in relative.parts
                 assert (source_root / relative).is_file()
+            for relative in (electrical_relative, ultrasound_relative):
+                temporary_source = raw_root / relative
+                temporary_source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_root / relative, temporary_source)
             asset_source_path[electrical_id] = electrical_relative.as_posix()
             asset_source_path[ultrasound_id] = ultrasound_relative.as_posix()
 
@@ -122,6 +136,9 @@ def test_cw_multifile_real_data_association() -> None:
             electrical_source_hashes[electrical_id] = electrical_result.source_sha256
             ultrasound_source_hashes[ultrasound_id] = ultrasound_result.source_sha256
             records.append(electrical_result.records)
+            cycles.append(electrical_result.cycles)
+            steps.append(electrical_result.steps)
+            ultrasound_results.append(ultrasound_result)
 
             evidence_relative_in_raw = (
                 Path("batteries")
@@ -207,6 +224,8 @@ def test_cw_multifile_real_data_association() -> None:
             writer.writerows(manifest_rows)
 
         records_frame = pd.concat(records, ignore_index=True)
+        cycles_frame = pd.concat(cycles, ignore_index=True)
+        steps_frame = pd.concat(steps, ignore_index=True)
         frames_frame = pd.DataFrame(frame_rows)
         electrical_ranges = {
             str(asset_id): (group["timestamp"].min(), group["timestamp"].max())
@@ -222,35 +241,75 @@ def test_cw_multifile_real_data_association() -> None:
         records_path = (
             processed_root / "electrical" / battery_id / experiment_id / "records.parquet"
         )
+        cycles_path = records_path.with_name("cycles.parquet")
+        steps_path = records_path.with_name("steps.parquet")
         frames_path = processed_root / "ultrasound" / battery_id / experiment_id / "frames.parquet"
         records_path.parent.mkdir(parents=True)
         frames_path.parent.mkdir(parents=True)
         records_frame.to_parquet(records_path, index=False)
+        cycles_frame.to_parquet(cycles_path, index=False)
+        steps_frame.to_parquet(steps_path, index=False)
         frames_frame.to_parquet(frames_path, index=False)
+        waveforms_path = frames_path.with_name("waveforms.zarr")
+        for parsed in ultrasound_results:
+            write_waveform_array_verified(
+                parsed.waveforms,
+                waveforms_path,
+                group_name=parsed.asset.asset_id,
+                attrs={
+                    "asset_id": parsed.asset.asset_id,
+                    "source_file": parsed.asset.relative_path.as_posix(),
+                    "source_sha256": parsed.source_sha256,
+                },
+            )
         electrical_parser_dir = records_path.parent
+        electrical_outputs = {
+            "records": records_path,
+            "cycles": cycles_path,
+            "steps": steps_path,
+        }
         (electrical_parser_dir / "parser_manifest.json").write_text(
             json.dumps(
                 {
+                    "battery_id": battery_id,
+                    "experiment_id": experiment_id,
                     "source_sha256": electrical_source_hashes,
                     "source_asset_details": [
                         {"asset_id": asset_id, "relative_path": path}
                         for asset_id, path in asset_source_path.items()
                         if asset_id.startswith("E")
                     ],
+                    "output_files": {
+                        name: path.name for name, path in electrical_outputs.items()
+                    },
+                    "output_checksums": {
+                        name: content_sha256(path)
+                        for name, path in electrical_outputs.items()
+                    },
                 }
             ),
             encoding="utf-8",
         )
         ultrasound_parser_dir = frames_path.parent
+        ultrasound_outputs = {"frames": frames_path, "waveforms": waveforms_path}
         (ultrasound_parser_dir / "parser_manifest.json").write_text(
             json.dumps(
                 {
+                    "battery_id": battery_id,
+                    "experiment_id": experiment_id,
                     "source_sha256": ultrasound_source_hashes,
                     "assets": [
                         {"asset_id": asset_id, "source_file": path}
                         for asset_id, path in asset_source_path.items()
                         if asset_id.startswith("U")
                     ],
+                    "output_files": {
+                        name: path.name for name, path in ultrasound_outputs.items()
+                    },
+                    "output_checksums": {
+                        name: content_sha256(path)
+                        for name, path in ultrasound_outputs.items()
+                    },
                 }
             ),
             encoding="utf-8",
@@ -289,6 +348,31 @@ def test_cw_multifile_real_data_association() -> None:
             artifacts_root=temporary_root / "artifacts",
             html_report=anchor_report,
         )["time_anchors"]
+        anchor_manifest_path = anchor_path.with_name("time_anchor_manifest.json")
+        anchor_manifest_path.write_text(
+            json.dumps(
+                {
+                    "battery_id": battery_id,
+                    "experiment_id": experiment_id,
+                    "anchor_version": anchor_report.anchor_version,
+                    "timebase_validation_id": None,
+                    "input_fingerprint": time_anchor_input_fingerprint(
+                        raw_root=raw_root,
+                        processed_root=processed_root,
+                        battery_id=battery_id,
+                        experiment_id=experiment_id,
+                        config_path=resolve_time_anchor_config(raw_root),
+                        validation_id=None,
+                    ),
+                    "output_checksums": {
+                        "time_anchors": content_sha256(anchor_path),
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         timestamp_report = build_ultrasound_timestamps(
             frames_path=frames_path,
             time_anchor_state_path=anchor_path,
@@ -425,6 +509,27 @@ def test_cw_multifile_real_data_association() -> None:
         for row in event_unique.itertuples(index=False):
             assert row.source_file == asset_source_path[str(row.ultrasound_asset_id)]
             assert row.electrical_source_file == asset_source_path[str(row.electrical_asset_id)]
+            record = record_lookup[
+                (str(row.electrical_asset_id), str(row.electrical_record_locator))
+            ]
+            assert int(row.electrical_row_index) == int(record.record_index_raw)
+            assert pd.Timestamp(row.electrical_timestamp) == pd.Timestamp(record.timestamp)
+            for field in (
+                "voltage_v",
+                "current_a",
+                "capacity_ah",
+                "charge_capacity_ah",
+                "discharge_capacity_ah",
+                "soc_dod_percent",
+            ):
+                expected = getattr(record, field)
+                actual = getattr(row, field)
+                if pd.isna(expected):
+                    assert pd.isna(actual), (row.measurement_event_id, field)
+                else:
+                    assert actual == pytest.approx(
+                        float(expected), abs=1e-12
+                    ), (row.measurement_event_id, field)
 
         client = TestClient(
             create_app(
@@ -452,6 +557,19 @@ def test_cw_multifile_real_data_association() -> None:
         assert summary_data["total_frames"] == len(aligned)
         assert summary_data["target_labels_available"] is False
         assert summary_data["target_valid"]["soc_reference_percent"] == 0
+        targets_response = client.get(
+            f"/api/v1/experiments/{battery_id}/{experiment_id}/targets"
+        )
+        assert targets_response.status_code == 200, targets_response.text
+        targets = {
+            row["target_id"]: row for row in targets_response.json()["data"]["targets"]
+        }
+        assert targets["reference_soc_percent"]["readiness"] == "UNAVAILABLE"
+        assert targets["reference_soc_percent"]["coverage"] == {
+            "valid": 0,
+            "total": len(event_frame),
+        }
+        assert "label" in targets["reference_soc_percent"]["limitation"].lower()
         sample_response = client.get(
             f"/api/v1/experiments/{battery_id}/{experiment_id}/alignment-samples"
             "?filter=eligible&limit=1"

@@ -86,6 +86,7 @@ class DatasetReport(BaseModel):
     experiment_group_count: int = 0
     cycle_group_count: int = 0
     distinct_soh_values: int = 0
+    independent_soh_state_count: int | None = None
     target_range: list[float] = Field(default_factory=list)
 
     soc_label_temporality: str | None = None
@@ -99,7 +100,7 @@ class DatasetReport(BaseModel):
 
 class DatasetManifest(BaseModel):
     dataset_builder_name: str = "leakage_safe_dataset_builder"
-    dataset_builder_version: str = "0.1.0"
+    dataset_builder_version: str = "0.4.0"
     dataset_id: str
     dataset_family: str
     target_name: str
@@ -111,12 +112,20 @@ class DatasetManifest(BaseModel):
     feature_set_id: str = ""
     feature_set_path: str = ""
     feature_set_checksum: str = ""
+    feature_set_manifest_path: str = ""
+    feature_set_manifest_checksum: str = ""
     label_set_id: str = ""
     label_set_path: str = ""
     label_set_checksum: str = ""
+    label_set_manifest_path: str = ""
+    label_set_manifest_checksum: str = ""
     parameter_set_id: str = ""
     parameter_dependency: str = "INFORMATIONAL"
     gate_calibration_id: str | None = None
+    canonical_tof_path: str = ""
+    canonical_tof_checksum: str = ""
+    canonical_tof_manifest_path: str = ""
+    canonical_tof_manifest_checksum: str = ""
 
     predictor_policy: str = "ULTRASOUND_ONLY"
     predictor_columns: list[str] = Field(default_factory=list)

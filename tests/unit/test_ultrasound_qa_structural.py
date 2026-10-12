@@ -35,6 +35,24 @@ def test_perfect_synthetic_passes(
     assert report.temporal["median_interval_s"] == 10.0
 
 
+def test_parser_output_tampering_is_a_critical_qa_failure(
+    ultrasound_qa_input_factory: Callable[..., Path], tmp_path: Path
+) -> None:
+    input_dir = ultrasound_qa_input_factory()
+    frames_path = input_dir / "frames.parquet"
+    frames = pd.read_parquet(frames_path)
+    frames.loc[0, "elapsed_time_s"] += 0.5
+    frames.to_parquet(frames_path, index=False)
+
+    report = run_ultrasound_qa(
+        "CELL_TEST", "EXP_TEST", input_dir, tmp_path / "artifacts", UltrasoundQAConfig()
+    )
+
+    assert report.status == "FAIL"
+    anomaly = next(item for item in report.anomalies if item.code == "PARSER_OUTPUT_INTEGRITY_INVALID")
+    assert "OUTPUT_CHECKSUM_MISMATCH:frames" in anomaly.metrics["integrity_reasons"]
+
+
 def test_metadata_zarr_mismatch_fails(
     ultrasound_qa_input_factory: Callable[..., Path], tmp_path: Path
 ) -> None:

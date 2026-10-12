@@ -29,18 +29,18 @@ export function PrerequisitePanel({ stepKey, stepStatus, stepDetail, recommended
       data-testid="prerequisite-panel"
       role="status"
     >
-      <Lock size={32} className="mx-auto text-muted mb-4" />
+      <Lock size={32} className="mx-auto text-muted-foreground mb-4" />
       <h2 className="text-lg font-semibold mb-2">
         前置条件未满足 / Prerequisites not met
       </h2>
-      <p className="text-sm text-muted mb-4">
+      <p className="text-sm text-muted-foreground mb-4" data-testid="prerequisite-status">
         步骤 <strong>{stepKey}</strong> 当前状态: <strong>{stepStatus}</strong>
       </p>
       {blocking?.blocking_message && (
-        <p className="text-sm text-[#9b782e] mb-2">{blocking.blocking_message}</p>
+        <p className="text-sm text-amber-800 mb-2">{blocking.blocking_message}</p>
       )}
       {blocking?.scientific_reason && (
-        <p className="text-xs text-muted mb-4">{blocking.scientific_reason}</p>
+        <p className="text-xs text-muted-foreground mb-4">{blocking.scientific_reason}</p>
       )}
       {recovery && (
         <Button asChild className="mt-2">

@@ -84,6 +84,36 @@ def test_t05_null_group_id_rejected() -> None:
         feasibility_check(_spec(), frame)
 
 
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("measurement_event_id", None, "null measurement_event_id"),
+        ("measurement_event_id", "  ", "non-empty trimmed strings"),
+        ("measurement_event_id", "  ME::1", "non-empty trimmed strings"),
+        ("cycle_group_id", "  ", "group ids must be non-empty trimmed strings"),
+        ("cycle_group_id", 1, "group ids must be non-empty trimmed strings"),
+    ],
+)
+def test_split_rejects_malformed_event_or_group_identity(
+    column: str, value, message: str
+) -> None:
+    frame = _two_cycle_frame()
+    if not isinstance(value, str):
+        frame[column] = frame[column].astype(object)
+    frame.loc[0, column] = value
+
+    with pytest.raises(ValueError, match=message):
+        build_assignments(_spec(), frame)
+
+
+def test_split_rejects_duplicate_measurement_event_identity() -> None:
+    frame = _two_cycle_frame()
+    frame.loc[1, "measurement_event_id"] = frame.loc[0, "measurement_event_id"]
+
+    with pytest.raises(ValueError, match="measurement_event_id values must be unique"):
+        build_assignments(_spec(), frame)
+
+
 def test_t06_t08_same_cycle_never_crosses_roles() -> None:
     """T06 train/test, T07 train/val, T08 val/test — a cycle group is atomic."""
     frame = _four_group_frame()
@@ -284,6 +314,12 @@ def test_manifest_declares_limited_evaluation_type(tmp_path) -> None:
 
     spec = _spec()
     assignments = build_assignments(spec, _two_cycle_frame())
+    source_dir = tmp_path / "source_dataset"
+    source_dir.mkdir()
+    dataset_path = source_dir / "dataset.parquet"
+    dataset_path.write_bytes(b"dataset")
+    dataset_manifest_path = source_dir / "dataset_manifest.json"
+    dataset_manifest_path.write_text('{"dataset_id":"DS::test"}', encoding="utf-8")
     paths = write_split_payload(
         spec=spec,
         assignments=assignments,
@@ -293,6 +329,8 @@ def test_manifest_declares_limited_evaluation_type(tmp_path) -> None:
         dataset_family="SOC",
         output_root=tmp_path,
         group_counts={"CG::1": 10, "CG::2": 8},
+        dataset_path=dataset_path,
+        dataset_manifest_path=dataset_manifest_path,
         dataset_status="READY_WITH_LIMITATIONS",
     )
     manifest = json.loads((tmp_path / paths["split_manifest"]).read_text())

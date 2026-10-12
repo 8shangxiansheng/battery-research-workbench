@@ -155,10 +155,12 @@ def create_app(
         resources,
         runs,
         system,
+        timebase,
         waveform,
     )
 
     app.include_router(system.router, prefix="/api/v1")
+    app.include_router(timebase.router, prefix="/api/v1")
     app.include_router(intake.router, prefix="/api/v1")
     app.include_router(experiments.router, prefix="/api/v1")
     app.include_router(extensions.router, prefix="/api/v1")

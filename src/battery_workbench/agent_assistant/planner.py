@@ -202,8 +202,16 @@ class ResearchPlanner:
             "policy": "USER_CONFIRMATION",
         }
         tool_name = ctx.pending_user_action.get("tool_name") or "写操作"
+        action_scope = (
+            "该操作只汇总已经生成的分析结果，不会重新训练模型或更改数据。"
+            if tool_name == "generate_scientific_report"
+            else ""
+        )
         return PlannerResponse(
-            message=f"{tool_name} 需要你确认后才能执行（确认 ID：{cid}）。请在确认弹窗中核对输入后确认，我不会自动执行写操作。",
+            message=(
+                f"{tool_name} 需要你确认后才能执行（确认 ID：{cid}）。"
+                f"{action_scope}请在确认弹窗中核对输入后确认，我不会自动执行写操作。"
+            ),
             intent=classified.intent.value, phase=ctx.phase,
             status="CONFIRMATION_REQUIRED", confirmation_id=cid,
             pending_user_action=ctx.pending_user_action,
@@ -534,7 +542,10 @@ class ResearchPlanner:
         from battery_workbench.api.workflow_context import build_workflow_context
 
         wf = build_workflow_context(
-            self.gateway.service.processed_root, ctx.battery_id, ctx.experiment_id
+            self.gateway.service.processed_root,
+            ctx.battery_id,
+            ctx.experiment_id,
+            raw_root=self.gateway.service.raw_root,
         )
         rec = wf.get("recommended_next_action") or {}
         action_id = str(rec.get("action_id") or "OPEN_REPORT")
@@ -555,34 +566,60 @@ class ResearchPlanner:
         """RC1 §X — explicit model↔canonical-TOF freshness from artifact evidence."""
         import json as _json
 
+        from battery_workbench.api.service import WorkbenchService
         from battery_workbench.reporting.collector import latest_evaluated_chain
 
         root = self.gateway.service.processed_root
         ds_id, _ = latest_evaluated_chain(root, ctx.battery_id, ctx.experiment_id)
-        hit = (
-            next((root / "datasets").rglob(f"{ds_id}/dataset_manifest.json"), None)
-            if ds_id else None
-        )
-        man = _json.loads(hit.read_text(encoding="utf-8")) if hit else {}
+        dataset_root = (root / "datasets").resolve()
+        hits = list(dataset_root.rglob(f"{ds_id}/dataset_manifest.json")) if ds_id else []
+        if not ds_id or len(hits) != 1:
+            reason = "没有找到唯一的数据集清单" if not hits else "发现重复的数据集身份"
+            msg = f"无法确认模型是否使用 canonical TOF：{reason}，需要先修复数据集来源后重新检查。"
+            manifest_identity_ok = False
+            man = {}
+        else:
+            hit = hits[0]
+            try:
+                hit.resolve().relative_to(dataset_root)
+                man = _json.loads(hit.read_text(encoding="utf-8"))
+            except (OSError, ValueError, _json.JSONDecodeError):
+                man = {}
+            manifest_identity_ok = (
+                isinstance(man, dict)
+                and man.get("dataset_id") == ds_id
+                and man.get("battery_id") == ctx.battery_id
+                and man.get("experiment_id") == ctx.experiment_id
+            )
+            if manifest_identity_ok:
+                freshness = WorkbenchService.get_artifact(self.gateway.service, ds_id)
+                manifest_identity_ok = (
+                    (freshness.get("fields") or {}).get("freshness_status") == "FRESH"
+                )
+            if not manifest_identity_ok:
+                msg = (
+                    f"无法确认模型是否使用 canonical TOF：数据集 {ds_id} 的身份或 freshness 未通过校验，"
+                    "请刷新数据集并重新评估模型。"
+                )
         method = man.get("tof_method_id")
         preds = man.get("predictor_columns") or man.get("selected_features") or []
-        if method and "tof_us" in preds:
+        if manifest_identity_ok and method and "tof_us" in preds:
             msg = (
-                f"是——当前模型数据集 {ds_id} 的预测变量包含 canonical tof_us"
+                f"数据集 {ds_id} 的预测变量包含 canonical tof_us"
                 f"（{method} {man.get('tof_definition_version', '')}，"
                 f"gate {man.get('tof_gate_calibration_id')}，"
                 f"参数 {man.get('tof_parameter_set_id')}）。"
             )
-        elif method:
+        elif manifest_identity_ok and method:
             msg = f"数据集 {ds_id} 带 canonical TOF 溯源，但预测变量未包含 tof_us。"
-        else:
+        elif manifest_identity_ok:
             msg = (
-                f"否——当前模型数据集 {ds_id or '(无)'} 的 manifest 无 tof_method_id，"
+                f"数据集 {ds_id} 的 manifest 无 tof_method_id，"
                 "模型基于旧特征定义；需通过正式 Dataset→Split→Model 工作流刷新。"
             )
         return PlannerResponse(
             message=msg, intent=classified.intent.value, phase=ctx.phase,
-            evidence_refs=[f"dataset_manifest.json:{ds_id}"] if ds_id else [],
+            evidence_refs=[f"dataset_manifest.json:{ds_id}"] if manifest_identity_ok else [],
             next_actions=[NextAction(action_id="OPEN_MODELS", label_en="Open models",
                                      label_zh="查看模型评估", intent="OPEN_MODELS")],
         )

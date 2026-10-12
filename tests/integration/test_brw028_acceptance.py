@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -31,13 +32,65 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+@pytest.fixture(scope="module")
+def clean_room_report(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Generate a report in isolation while reading canonical inputs read-only."""
+    from battery_workbench.orchestrator.engine import PipelineOrchestrator
+
+    temp_root = tmp_path_factory.mktemp("brw028-report")
+    processed_root = temp_root / "processed"
+    shutil.copytree(
+        PROC,
+        processed_root,
+        copy_function=shutil.copy2,
+        ignore=shutil.ignore_patterns("artifacts"),
+    )
+    canonical_manifest_path = (
+        processed_root
+        / "features_physical/CELL_001/EXP_001/canonical_tof_manifest.json"
+    )
+    canonical_manifest = json.loads(canonical_manifest_path.read_text(encoding="utf-8"))
+    for field in ("input_paths", "output_paths"):
+        for key, raw_path in canonical_manifest.get(field, {}).items():
+            normalized = str(raw_path).replace("\\", "/")
+            marker = "/data/processed/"
+            if marker in normalized:
+                canonical_manifest[field][key] = str(
+                    processed_root / normalized.split(marker, 1)[1]
+                )
+            elif normalized.startswith("data/processed/"):
+                canonical_manifest[field][key] = str(
+                    processed_root / normalized.removeprefix("data/processed/")
+                )
+    canonical_manifest_path.write_text(
+        json.dumps(canonical_manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    engine = PipelineOrchestrator(
+        raw_root=RAW,
+        processed_root=processed_root,
+        runs_root=temp_root / "runs",
+    )
+    report = engine.generate_report(
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        target="soc_reference_percent",
+    )
+    report_dir = (
+        processed_root
+        / "artifacts/CELL_001/EXP_001/reports"
+        / report["report_id"]
+    )
+    return report_dir
+
+
 class TestRawIntegrity:
     def test_raw_files_immutable_checksums(self):
         xlsx = RAW / "batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
         txt = RAW / "batteries/CELL_001/EXP_001/ultrasound/export - 2024.01.06 - 21.03.01.txt"
-        # recorded at BRW-028 inspect; raw immutability contract
-        assert _sha(xlsx).startswith("8536d3959db6efc7") or len(_sha(xlsx)) == 64
-        assert _sha(txt).startswith("8e196837bf13637d") or len(_sha(txt)) == 64
+        # Exact baseline checksums enforce the raw immutability contract.
+        assert _sha(xlsx) == "8536d3959db6efc73cdbc30903b33f8c6a429385663597832e4d918459dbc608"
+        assert _sha(txt) == "8e196837bf13637d4c0d2244a403c018b3bbd81b5b1b81ac5c08df2007be5acb"
         # manifests record same assets
         manifest = (RAW / "manifests/data_assets.csv").read_text(encoding="utf-8")
         assert "小-1-1-264.xlsx" in manifest
@@ -177,7 +230,8 @@ class TestTargets:
 
         c = TestClient(app)
         targets = {t["target_id"]: t for t in c.get("/api/v1/experiments/CELL_001/EXP_001/targets").json()["data"]["targets"]}
-        assert targets["temperature_c"]["readiness"] == "UNAVAILABLE"
+        assert targets["temperature_c"]["readiness"] == "BLOCKED_BY_VALIDATION"
+        assert "sensor location/calibration evidence" in targets["temperature_c"]["limitation"]
         soh = targets["soh_capacity_reference_percent"]
         assert soh["readiness"] == "NOT_READY"
         assert soh["coverage"]["independent_states"] == 2
@@ -237,23 +291,26 @@ class TestModeling:
 
 
 class TestReport:
-    def test_report_json_md_html_exist(self):
-        clean = Path("/tmp/brw028-clean/artifacts/CELL_001/EXP_001/reports")
-        reports = sorted(clean.glob("REPORT::*")) if clean.is_dir() else []
-        if not reports:
-            pytest.skip("clean-room report not materialized yet")
-        files = {p.name for p in reports[0].iterdir() if p.is_file()}
+    def test_report_json_md_html_exist(self, clean_room_report: Path):
+        files = {p.name for p in clean_room_report.iterdir() if p.is_file()}
         assert {"scientific_report.json", "scientific_report.md", "scientific_report.html"} <= files
 
-    def test_report_limitations_machine_readable(self):
-        clean = Path("/tmp/brw028-clean/artifacts/CELL_001/EXP_001/reports")
-        reports = sorted(clean.glob("REPORT::*")) if clean.is_dir() else []
-        if not reports:
-            pytest.skip("clean-room report not materialized yet")
-        report = json.loads((reports[0] / "scientific_report.json").read_text(encoding="utf-8"))
+    def test_report_limitations_machine_readable(self, clean_room_report: Path):
+        report = json.loads(
+            (clean_room_report / "scientific_report.json").read_text(encoding="utf-8")
+        )
         lims = report.get("limitations_summary") or []
         for required in (
             "PROVISIONAL_TIMEBASE", "TWO_CYCLES_ONLY", "NO_CROSS_BATTERY_EVALUATION",
             "SOH_INDEPENDENT_STATES_TOO_FEW", "RETROSPECTIVE_SOC_REFERENCE",
         ):
             assert required in lims
+        # The report's TOF limitation must follow the copied artifact's current
+        # integrity/freshness, not a historical assumption about CELL_001.
+        from battery_workbench.reporting.collector import _canonical_tof_active
+
+        canonical_tof_active = _canonical_tof_active(
+            clean_room_report.parents[4], "CELL_001", "EXP_001"
+        )
+        assert ("TOF_UNAVAILABLE_OR_BLOCKED" not in lims) is canonical_tof_active
+        assert "ABSOLUTE_ARRIVAL_TOF_BLOCKED" in lims

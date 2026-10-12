@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,6 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from battery_workbench.api.app import create_app
+from battery_workbench.api.service import WorkbenchService
+from battery_workbench.provenance.processed_manifest import (
+    content_sha256,
+    feature_waveform_store_sha256,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 PROCESSED = REPO / "data" / "processed"
@@ -73,9 +79,10 @@ def test_t20_split(client: TestClient) -> None:
             "dataset_id": "DS::6a3142e5186fc684964ff09e",
         },
     )
-    assert resp.status_code == 200
-    assert resp.json()["data"]["status"] == "REUSED"
-    assert resp.json()["data"]["split_id"].startswith("SPLIT::")
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "SCIENTIFIC_READINESS_BLOCKED"
+    assert "dataset sources changed" in error["message"]
 
 
 def test_t22_report_not_found(client: TestClient) -> None:
@@ -173,6 +180,436 @@ def test_get_dataset_metadata_only(client: TestClient) -> None:
     assert "rows" not in data  # no full-table dump
 
 
+def test_unresolved_artifact_id_is_not_reported_available(client: TestClient) -> None:
+    response = client.get("/api/v1/artifacts/MODEL::not-resolved")
+
+    assert response.status_code == 200
+    artifact = response.json()["data"]
+    assert artifact["availability"] == "NOT_AVAILABLE_CURRENT_ENVIRONMENT"
+    assert artifact["status"] == "UNRESOLVED"
+    assert artifact["row_count"] is None
+    assert artifact["fields"]["reason"] == "artifact type is not resolved by the metadata API"
+
+
+def test_duplicate_artifact_ids_fail_closed_across_manifest_families(
+    tmp_path: Path,
+) -> None:
+    processed = tmp_path / "processed"
+    service = WorkbenchService(
+        raw_root=tmp_path / "raw",
+        processed_root=processed,
+        runs_root=tmp_path / "runs",
+    )
+    families = (
+        ("DS::duplicate", "DATASET", "DATASET_ID_AMBIGUOUS", "datasets", "dataset_manifest.json"),
+        ("SPLIT::duplicate", "SPLIT", "SPLIT_ID_AMBIGUOUS", "splits", "split_manifest.json"),
+        ("COHORT::duplicate", "COHORT_DATASET", "COHORT_ID_AMBIGUOUS", "cohorts", "cohort_manifest.json"),
+        ("MODEL::duplicate", "MODEL", "MODEL_ID_AMBIGUOUS", "models", "model_manifest.json"),
+    )
+    for artifact_id, artifact_type, reason, root_name, manifest_name in families:
+        root = processed / root_name
+        for owner in ("CELL_A/EXP_A", "CELL_B/EXP_B"):
+            path = root / owner
+            if root_name in {"datasets", "cohorts"}:
+                path /= artifact_id
+            elif root_name == "splits":
+                path = path / "DS::owner" / artifact_id
+            else:
+                path = path / "DS::owner" / "SPLIT::owner" / artifact_id
+            path.mkdir(parents=True)
+            (path / manifest_name).write_text("{}", encoding="utf-8")
+
+        assessment = service.get_artifact(artifact_id)
+        assert assessment["artifact_type"] == artifact_type
+        assert assessment["availability"] == "BLOCKED"
+        assert assessment["status"] == "INTEGRITY_BLOCKED"
+        assert assessment["fields"]["freshness_reasons"] == [reason]
+
+
+def test_model_artifact_metadata_is_blocked_when_source_provenance_is_invalid(
+    tmp_path: Path,
+) -> None:
+    processed = tmp_path / "processed"
+    model_id = "MODEL::fixture"
+    model_dir = (
+        processed
+        / "models"
+        / "CELL_TEST"
+        / "EXP_TEST"
+        / "DS::fixture"
+        / "SPLIT::fixture"
+        / model_id
+    )
+    model_dir.mkdir(parents=True)
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "model_id": model_id,
+                "dataset_id": "DS::fixture",
+                "split_id": "SPLIT::fixture",
+                "strategy": "DUMMY_MEAN",
+                "selected_features": ["amplitude_a_u"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser_dir = processed / "electrical" / "CELL_TEST" / "EXP_TEST"
+    parser_dir.mkdir(parents=True)
+    (parser_dir / "parser_manifest.json").write_text("[]", encoding="utf-8")
+    app = create_app(
+        raw_root=tmp_path / "raw",
+        processed_root=processed,
+        runs_root=tmp_path / "runs",
+    )
+
+    response = TestClient(app).get(f"/api/v1/artifacts/{model_id}")
+
+    assert response.status_code == 200, response.text
+    artifact = response.json()["data"]
+    assert artifact["artifact_type"] == "MODEL"
+    assert artifact["availability"] == "BLOCKED"
+    assert artifact["status"] == "INTEGRITY_BLOCKED"
+    assert artifact["fields"]["invalid_modalities"] == ["electrical"]
+    assert "selected_features" not in artifact["fields"]
+
+
+def test_model_artifact_with_missing_dataset_lineage_is_stale(tmp_path: Path) -> None:
+    processed = tmp_path / "processed"
+    model_id = "MODEL::orphaned"
+    model_dir = (
+        processed
+        / "models"
+        / "CELL_TEST"
+        / "EXP_TEST"
+        / "DS::missing"
+        / "SPLIT::missing"
+        / model_id
+    )
+    model_dir.mkdir(parents=True)
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "model_id": model_id,
+                "dataset_id": "DS::missing",
+                "split_id": "SPLIT::missing",
+                "strategy": "DUMMY_MEAN",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        raw_root=tmp_path / "raw",
+        processed_root=processed,
+        runs_root=tmp_path / "runs",
+    )
+
+    response = TestClient(app).get(f"/api/v1/artifacts/{model_id}")
+
+    assert response.status_code == 200, response.text
+    artifact = response.json()["data"]
+    assert artifact["availability"] == "STALE"
+    assert artifact["status"] == "STALE_LINEAGE"
+    assert artifact["fields"]["freshness_reasons"] == ["MODEL_DATASET_OR_SPLIT_MISSING"]
+
+
+def test_model_artifact_currentness_checks_outputs_and_dataset_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pandas as pd
+
+    processed = tmp_path / "processed"
+    battery_id, experiment_id = "CELL_TEST", "EXP_TEST"
+    dataset_id, split_id, model_id = "DS::current", "SPLIT::current", "MODEL::current"
+    dataset_dir = processed / "datasets" / battery_id / experiment_id / "SOC" / dataset_id
+    dataset_dir.mkdir(parents=True)
+    feature_path = (
+        processed / "features" / battery_id / experiment_id / "AS::test" / "FS::test" / "features.parquet"
+    )
+    label_path = processed / "labels" / battery_id / experiment_id / "LS::test" / "labels.parquet"
+    dataset_path = dataset_dir / "dataset.parquet"
+    feature_path.parent.mkdir(parents=True, exist_ok=True)
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"measurement_event_id": ["ME::1"], "amplitude_a_u": [0.5]}
+    ).to_parquet(feature_path, index=False)
+    pd.DataFrame(
+        {"measurement_event_id": ["ME::1"], "soc_reference_percent": [25.0]}
+    ).to_parquet(label_path, index=False)
+    pd.DataFrame(
+        {
+            "measurement_event_id": ["ME::1"],
+            "battery_id": [battery_id],
+            "experiment_id": [experiment_id],
+            "cycle_group_id": ["CYCLE::1"],
+            "soc_reference_percent": [25.0],
+            "amplitude_a_u": [0.5],
+        }
+    ).to_parquet(dataset_path, index=False)
+    checksum = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    raw_root = tmp_path / "raw"
+    registered_assets = {
+        "electrical": ("E_TEST", "batteries/CELL_TEST/EXP_TEST/electrical/source.xlsx", b"xlsx source"),
+        "ultrasound": ("U_TEST", "batteries/CELL_TEST/EXP_TEST/ultrasound/source.txt", b"txt source"),
+    }
+    asset_rows = [
+        "asset_id,battery_id,experiment_id,modality,relative_path",
+    ]
+    for modality, (asset_id, relative_path, content) in registered_assets.items():
+        source_path = raw_root / relative_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(content)
+        asset_rows.append(f"{asset_id},{battery_id},{experiment_id},{modality},{relative_path}")
+        parser_dir = processed / modality / battery_id / experiment_id
+        parser_dir.mkdir(parents=True, exist_ok=True)
+        detail_key = "source_asset_details" if modality == "electrical" else "assets"
+        path_key = "relative_path" if modality == "electrical" else "source_file"
+        output_names = (
+            {
+                "records": "records.parquet",
+                "cycles": "cycles.parquet",
+                "steps": "steps.parquet",
+            }
+            if modality == "electrical"
+            else {"frames": "frames.parquet", "waveforms": "waveforms.zarr"}
+        )
+        output_checksums = {}
+        for output_key, filename in output_names.items():
+            output_path = parser_dir / filename
+            if filename.endswith(".zarr"):
+                output_path.mkdir()
+                (output_path / "chunk.bin").write_bytes(b"waveform chunk")
+            else:
+                output_path.write_bytes(f"{output_key} rows".encode())
+            output_checksums[output_key] = content_sha256(output_path)
+        (parser_dir / "parser_manifest.json").write_text(
+            json.dumps(
+                {
+                    "battery_id": battery_id,
+                    "experiment_id": experiment_id,
+                    "source_sha256": {asset_id: checksum(source_path)},
+                    "output_files": output_names,
+                    "output_checksums": output_checksums,
+                    detail_key: [
+                        {
+                            "asset_id": asset_id,
+                            path_key: relative_path,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    analysis_slice_path = processed / "analysis_slices" / battery_id / experiment_id / "AS::test" / "analysis_slice.parquet"
+    analysis_slice_path.parent.mkdir(parents=True)
+    analysis_slice_path.write_bytes(b"analysis slice")
+    waveform_store_path = processed / "ultrasound" / battery_id / experiment_id / "waveforms.zarr"
+    feature_definitions_path = feature_path.parent / "feature_definitions.json"
+    feature_definitions_path.write_text('{"features":["amplitude_a_u"]}', encoding="utf-8")
+    feature_manifest_path = feature_path.parent / "feature_set_manifest.json"
+    feature_manifest_path.write_text(
+        json.dumps(
+            {
+                    "feature_set_id": "FS::test",
+                    "battery_id": battery_id,
+                    "experiment_id": experiment_id,
+                    "analysis_slice_id": "AS::test",
+                "analysis_slice_path": str(analysis_slice_path.relative_to(processed)),
+                "analysis_slice_checksum": checksum(analysis_slice_path),
+                "waveform_store_path": str(waveform_store_path.relative_to(processed)),
+                "waveform_store_checksum": feature_waveform_store_sha256(waveform_store_path),
+                "output_paths": {
+                    "features": str(feature_path.relative_to(processed)),
+                    "definitions": str(feature_definitions_path.relative_to(processed)),
+                },
+                "output_checksums": {
+                    "features": checksum(feature_path),
+                    "definitions": checksum(feature_definitions_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    label_manifest_path = processed / "labels" / battery_id / experiment_id / "label_manifest.json"
+    cycle_label_path = label_path.parent / "cycle_labels.parquet"
+    pd.DataFrame(
+        {"cycle": [1], "soh_capacity_reference_percent": [99.0]}
+    ).to_parquet(cycle_label_path, index=False)
+    label_manifest_path.write_text(
+        json.dumps(
+            {
+                "label_set_id": "LS::test",
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "output_paths": {
+                    "event_labels": str(label_path.relative_to(processed)),
+                    "cycle_labels": str(cycle_label_path.relative_to(processed)),
+                },
+                "output_checksums": {
+                    "event_labels": checksum(label_path),
+                    "cycle_labels": checksum(cycle_label_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw_manifest = raw_root / "manifests" / "data_assets.csv"
+    raw_manifest.parent.mkdir(parents=True, exist_ok=True)
+    raw_manifest.write_text("\n".join(asset_rows) + "\n", encoding="utf-8")
+    (dataset_dir / "dataset_manifest.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": dataset_id,
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "dataset_family": "SOC",
+                "target_name": "soc_reference_percent",
+                "target_column": "soc_reference_percent",
+                "predictor_columns": ["amplitude_a_u"],
+                "output_checksum": checksum(dataset_path),
+                "feature_set_id": "FS::test",
+                "feature_set_path": "features/CELL_TEST/EXP_TEST/AS::test/FS::test/features.parquet",
+                "feature_set_checksum": checksum(feature_path),
+                "feature_set_manifest_path": str(feature_manifest_path.relative_to(processed)),
+                "feature_set_manifest_checksum": checksum(feature_manifest_path),
+                "label_set_id": "LS::test",
+                "label_set_path": "labels/CELL_TEST/EXP_TEST/LS::test/labels.parquet",
+                "label_set_checksum": checksum(label_path),
+                "label_set_manifest_path": str(label_manifest_path.relative_to(processed)),
+                "label_set_manifest_checksum": checksum(label_manifest_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    split_dir = processed / "splits" / battery_id / experiment_id / dataset_id / split_id
+    split_dir.mkdir(parents=True)
+    split_assignments = split_dir / "split_assignments.parquet"
+    leakage_audit = split_dir / "leakage_audit.json"
+    evaluation_readiness = split_dir / "evaluation_readiness.json"
+    pd.DataFrame(
+        {
+            "measurement_event_id": ["ME::1"],
+            "cycle_group_id": ["CYCLE::1"],
+            "fold": ["fold1"],
+            "role": ["TRAIN"],
+            "strategy": ["TRAIN_ONLY"],
+            "dataset_id": [dataset_id],
+            "split_id": [split_id],
+        }
+    ).to_parquet(split_assignments, index=False)
+    original_split_bytes = split_assignments.read_bytes()
+    leakage_audit.write_text("{}", encoding="utf-8")
+    evaluation_readiness.write_text("{}", encoding="utf-8")
+    (split_dir / "split_manifest.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": dataset_id,
+                "split_id": split_id,
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "strategy": "TRAIN_ONLY",
+                "split_unit": "CYCLE",
+                "group_column": "cycle_group_id",
+                "group_counts": {"CYCLE::1": 1},
+                "group_count": 1,
+                "k": None,
+                "explicit_holdout_groups": [],
+                "require_roles": ["TRAIN", "VALIDATION"],
+                "role_semantics": {
+                    "held_out_role": "",
+                    "independent_validation_groups": None,
+                    "independent_test_groups": None,
+                    "three_way_structure_present": False,
+                    "held_out_target_usage": "NOT_APPLICABLE",
+                    "note": "",
+                },
+                "row_count": 1,
+                "fold_count": 1,
+                "source_checksums": {
+                    "dataset_parquet": checksum(dataset_path),
+                    "dataset_manifest": checksum(dataset_dir / "dataset_manifest.json"),
+                },
+                "output_checksums": {
+                    "split_assignments": checksum(split_assignments),
+                    "leakage_audit": checksum(leakage_audit),
+                    "evaluation_readiness": checksum(evaluation_readiness),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    model_dir = processed / "models" / battery_id / experiment_id / dataset_id / split_id / model_id
+    model_dir.mkdir(parents=True)
+    model_file = model_dir / "model.joblib"
+    prediction_file = model_dir / "held_out_predictions.parquet"
+    model_file.write_bytes(b"serialized estimator")
+    prediction_file.write_bytes(b"held-out rows")
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "model_id": model_id,
+                "dataset_id": dataset_id,
+                "split_id": split_id,
+                "strategy": "DUMMY_MEAN",
+                "fold_index": 1,
+                "policy_version": "fixture-v1",
+                "selected_features": ["amplitude_a_u"],
+                "output_checksums": {
+                    "model": checksum(model_file),
+                    "held_out_predictions": checksum(prediction_file),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        raw_root=raw_root,
+        processed_root=processed,
+        runs_root=tmp_path / "runs",
+    )
+    client = TestClient(app)
+    current = client.get(f"/api/v1/artifacts/{model_id}").json()["data"]
+
+    assert current["availability"] == "AVAILABLE"
+    assert current["status"] == "CURRENT"
+    assert current["fields"]["selected_feature_count"] == 1
+    changed_source = raw_root / registered_assets["electrical"][1]
+    changed_source.write_bytes(b"replaced xlsx source")
+    changed_raw = client.get(f"/api/v1/artifacts/{model_id}").json()["data"]
+    assert changed_raw["availability"] == "BLOCKED"
+    assert changed_raw["status"] == "INTEGRITY_BLOCKED"
+    assert changed_raw["fields"]["integrity_reasons"] == ["PARSER_RAW_SOURCE_MISMATCH"]
+    assert changed_raw["fields"]["invalid_modalities"] == ["electrical"]
+    changed_source.write_bytes(registered_assets["electrical"][2])
+    forged_assignments = pd.read_parquet(split_assignments)
+    forged_assignments.loc[0, "measurement_event_id"] = "ME::not-in-dataset"
+    forged_assignments.to_parquet(split_assignments, index=False)
+    split_manifest_path = split_dir / "split_manifest.json"
+    split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
+    split_manifest["output_checksums"]["split_assignments"] = checksum(split_assignments)
+    split_manifest_path.write_text(json.dumps(split_manifest), encoding="utf-8")
+    semantically_invalid = client.get(f"/api/v1/artifacts/{model_id}").json()["data"]
+    assert semantically_invalid["availability"] == "BLOCKED"
+    assert semantically_invalid["status"] == "INTEGRITY_BLOCKED"
+    assert "SPLIT_ASSIGNMENT_EVENT_SET_MISMATCH:fold1" in semantically_invalid[
+        "fields"
+    ]["freshness_reasons"]
+    split_assignments.write_bytes(original_split_bytes)
+    split_manifest["output_checksums"]["split_assignments"] = checksum(split_assignments)
+    split_manifest_path.write_text(json.dumps(split_manifest), encoding="utf-8")
+    split_assignments.write_bytes(b"tampered split rows")
+    tampered_split = client.get(f"/api/v1/artifacts/{model_id}").json()["data"]
+    assert tampered_split["availability"] == "BLOCKED"
+    assert tampered_split["status"] == "INTEGRITY_BLOCKED"
+    assert tampered_split["fields"]["integrity_reasons"] == ["SPLIT_OUTPUT_CHECKSUM_MISMATCH"]
+    assert tampered_split["fields"]["invalid_outputs"] == ["split_assignments"]
+    split_assignments.write_bytes(original_split_bytes)
+    model_file.write_bytes(b"tampered estimator")
+    tampered = client.get(f"/api/v1/artifacts/{model_id}").json()["data"]
+    assert tampered["availability"] == "BLOCKED"
+    assert tampered["status"] == "INTEGRITY_BLOCKED"
+    assert tampered["fields"]["invalid_outputs"] == ["model"]
+
+
 # ---------- BRW-013X V2 feature catalogue ----------
 def test_feature_definitions_catalogue_bilingual(client: TestClient) -> None:
     resp = client.get("/api/v1/feature-definitions")
@@ -199,7 +636,20 @@ def test_physical_features_endpoint(client: TestClient) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     codes = {f["feature_code"] for f in data["features"]}
-    assert codes == {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTENUATION", "BPS", "tof_us"}
+    assert {"BOTTOM_AMP", "SWA", "TOF_XCORR", "ATTENUATION", "BPS"} <= codes
+    from battery_workbench.features_physical.canonical_tof import (
+        canonical_tof_integrity_reasons,
+    )
+
+    tof_reasons = canonical_tof_integrity_reasons(PROCESSED, "CELL_001", "EXP_001")
+    meta = resp.json()["meta"]
+    if tof_reasons:
+        assert "tof_us" not in codes
+        assert meta["canonical_tof_status"] == "BLOCKED_BY_ARTIFACT_INTEGRITY"
+        assert meta["canonical_tof_integrity_warning"]["integrity_reasons"] == tof_reasons
+    else:
+        assert "tof_us" in codes
+        assert meta["canonical_tof_status"] == "AVAILABLE"
     swa = next(f for f in data["features"] if f["feature_code"] == "SWA")
     assert len(swa["values"]) == 40
     assert swa["display_name_zh"] == "表面波幅值"
@@ -208,16 +658,77 @@ def test_physical_features_endpoint(client: TestClient) -> None:
 
 
 def test_feature_correlations_endpoint(client: TestClient) -> None:
+    if not has_real:
+        pytest.skip("CELL_001 parser artifacts not available")
     resp = client.get(
         "/api/v1/experiments/CELL_001/EXP_001/feature-correlations?feature_code=SWA&limit=120"
     )
-    assert resp.status_code == 200
+    if resp.status_code == 409:
+        error = resp.json()["error"]
+        assert error["code"] == "INTEGRITY_ERROR"
+        assert error["details"]["recovery_action"] in {
+            "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+        }
+        assert error["details"]["integrity_reasons"]
+        return
+
+    assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert len(data["soc"]) == 8  # pearson+spearman × overall/charge/discharge/rest
-    scopes = {r["scope"] for r in data["soc"]}
-    assert {"overall", "charge", "discharge", "rest"} <= scopes
+    condition_analysis = data["declared_condition_analysis"]
+    assert condition_analysis["status"] == "NOT_CONFIGURED"
+    assert condition_analysis["absolute_timebase_status"] == "NOT_ASSESSED"
+    assert condition_analysis["results"] == []
+    assert len(data["soc"]) == 8
+    assert {result["scope"] for result in data["soc"]} == {
+        "overall", "charge", "discharge", "rest",
+    }
+
+    decomposition = data["soc_battery_decomposition"]
+    assert decomposition["status"] == "INSUFFICIENT_BATTERY_GROUPS"
+    assert decomposition["declared_battery_group_count"] == 1
+    assert decomposition["physical_battery_count"] is None
+    assert decomposition["battery_identity_status"] == "NOT_ASSESSED"
+    assert decomposition["between_battery"]["coefficient"] is None
+    assert len(data["soc_by_battery_condition"]) == 4
+
+    # The point limit affects visualization only; coefficients use every event.
+    assert data["n_events"] >= 120
+    assert len(data["soc_diagnostic_scatter"]["points"]) <= 120
+    assert len(data["soc_by_cycle"]) >= 2
+    overall = next(
+        result for result in data["soc"]
+        if result["scope"] == "overall" and result["method"] == "pearson"
+    )
+    assert overall["n_input"] == data["n_events"]
+    assert (
+        overall["n_valid"]
+        + overall["missing_feature_count"]
+        + overall["missing_state_count"]
+        + overall["excluded_ineligible_count"]
+        == overall["n_input"]
+    )
+
+    assert data["temperature"]["status"] == "BLOCKED_BY_VALIDATION"
+    assert data["temperature"]["coefficient"] is not None
+    assert any(
+        "sensor location and calibration evidence are not verified" in limitation
+        for limitation in data["temperature"]["limitations"]
+    )
     assert data["soh"]["status"] == "NOT_READY_INSUFFICIENT_SOH_STATES"
-    assert data["soh_cycle_summary"]
+    assert data["soh"]["distinct_state_count"] == 2
+    assert data["soh"]["n_valid_unit"] == "BATTERY_EXPERIMENT_CYCLE_GROUP"
+    assert data["alignment_assessment"]["status"] == "PROVISIONAL"
+    assert data["alignment_assessment"]["validated_sync"] is False
+
+    inference = data["inference_assessment"]
+    assert inference["analysis_mode"] == "EXPLORATORY"
+    assert inference["correlation_results_included"] is True
+    assert inference["confidence_interval"]["status"] == "NOT_ESTIMATED"
+    assert inference["p_value"]["status"] == "NOT_ESTIMATED"
+    assert inference["multiple_comparison"]["status"] == "NOT_ASSESSED"
+    assert inference["confounder_adjustment"]["status"] == "NOT_ASSESSED"
 
 
 def test_gate_calibration_roundtrip(client: TestClient, tmp_path: Path) -> None:
@@ -400,13 +911,20 @@ def test_targets_endpoint_reads_real_capability(client: TestClient) -> None:
     assert soc["semantic_type"] == "DERIVED_REFERENCE_LABEL"
     assert "True SOC" not in json.dumps(soc) and "Ground Truth" not in json.dumps(soc)
     assert soc["coverage"]["valid"] == 3995  # real counts from artifacts
-    assert targets["temperature_c"]["readiness"] == "UNAVAILABLE"
+    assert targets["temperature_c"]["readiness"] == "BLOCKED_BY_VALIDATION"
     soh = targets["soh_capacity_reference_percent"]
     assert soh["coverage"]["independent_states"] == 2
     assert soh["readiness"] == "NOT_READY"
 
 
-def test_alignment_summary_counts_and_semantics(client: TestClient) -> None:
+def test_alignment_summary_counts_and_semantics(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import features_v2
+
+    # Isolate the summary contract from TimeAnchor freshness; the API guard is
+    # covered by fresh-intake and timebase-chain integrity tests.
+    monkeypatch.setattr(features_v2, "assert_current_timebase_chain", lambda *_a, **_k: None)
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-summary")
     assert resp.status_code == 200
     d = resp.json()["data"]
@@ -420,7 +938,12 @@ def test_alignment_summary_counts_and_semantics(client: TestClient) -> None:
     assert q["timebase_status"] == "PROVISIONAL"
 
 
-def test_alignment_samples_provenance_and_null_identity(client: TestClient) -> None:
+def test_alignment_samples_provenance_and_null_identity(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import features_v2
+
+    monkeypatch.setattr(features_v2, "assert_current_timebase_chain", lambda *_a, **_k: None)
     unique = client.get(
         "/api/v1/experiments/CELL_001/EXP_001/alignment-samples?filter=eligible&limit=2"
     )
@@ -433,14 +956,10 @@ def test_alignment_samples_provenance_and_null_identity(client: TestClient) -> N
     )
     assert row["ultrasound_source_line_index"] == 1
     electrical_manifest = json.loads(
-        (PROCESSED / "electrical/CELL_001/EXP_001/parser_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (PROCESSED / "electrical/CELL_001/EXP_001/parser_manifest.json").read_text(encoding="utf-8")
     )
     ultrasound_manifest = json.loads(
-        (PROCESSED / "ultrasound/CELL_001/EXP_001/parser_manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (PROCESSED / "ultrasound/CELL_001/EXP_001/parser_manifest.json").read_text(encoding="utf-8")
     )
     assert row["electrical_source_sha256"] == electrical_manifest["source_sha256"]["E001"]
     assert row["ultrasound_source_sha256"] == ultrasound_manifest["source_sha256"]["U001"]
@@ -454,9 +973,13 @@ def test_alignment_samples_provenance_and_null_identity(client: TestClient) -> N
         assert s["candidate_record_count"] == len(s["electrical_candidates"])
         assert s["candidate_record_count"] >= 2
         assert all(candidate["electrical_asset_id"] for candidate in s["electrical_candidates"])
-        assert all(candidate["electrical_record_locator"] for candidate in s["electrical_candidates"])
+        assert all(
+            candidate["electrical_record_locator"] for candidate in s["electrical_candidates"]
+        )
         assert all(candidate["electrical_source_file"] for candidate in s["electrical_candidates"])
-        assert all(candidate["electrical_source_sha256"] for candidate in s["electrical_candidates"])
+        assert all(
+            candidate["electrical_source_sha256"] for candidate in s["electrical_candidates"]
+        )
 
 
 def test_alignment_samples_returns_raw_ultrasound_locator(
@@ -494,14 +1017,12 @@ def test_alignment_samples_returns_raw_ultrasound_locator(
     monkeypatch.setattr(
         features_v2,
         "_parser_source_assets",
-        lambda *_: {
+        lambda *_, **__: {
             "electrical": {"E_TEST": {"sha256": "b" * 64}},
             "ultrasound": {"U_TEST": {"sha256": "a" * 64}},
         },
     )
-    response = client.get(
-        "/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible"
-    )
+    response = client.get("/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible")
     row = response.json()["data"]["samples"][0]
     assert row["ultrasound_asset_id"] == "U_TEST"
     assert row["ultrasound_source_file"].endswith("/ultrasound/test.txt")
@@ -509,15 +1030,18 @@ def test_alignment_samples_returns_raw_ultrasound_locator(
     assert row["ultrasound_source_sha256"] == "a" * 64
     joined.loc[0, "electrical_source_file"] = "batteries/CELL_X/EXP_X/electrical/test.xlsx"
     # The source file comes from the selected composite electrical record.
-    response = client.get(
-        "/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible"
-    )
+    response = client.get("/api/v1/experiments/CELL_X/EXP_X/alignment-samples?filter=eligible")
     row = response.json()["data"]["samples"][0]
     assert row["electrical_source_file"].endswith("/electrical/test.xlsx")
     assert row["electrical_source_sha256"] == "b" * 64
 
 
-def test_alignment_exclusions_grouped_by_reason(client: TestClient) -> None:
+def test_alignment_exclusions_grouped_by_reason(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import features_v2
+
+    monkeypatch.setattr(features_v2, "assert_current_timebase_chain", lambda *_a, **_k: None)
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/alignment-exclusions")
     reasons = {e["reason"]: e["count"] for e in resp.json()["data"]["exclusions"]}
     assert reasons["AMBIGUOUS_SYNC"] == 4
@@ -567,6 +1091,26 @@ def test_feature_target_ranking_direction_dependent(client: TestClient) -> None:
     )
     assert soh.json()["data"]["group_summary"]
     assert soh.json()["data"]["ranking"] == []  # no frame-level SOH leaderboard
+
+
+@pytest.mark.parametrize(
+    ("features", "expected_message"),
+    [
+        ([f"FEATURE_{index}" for index in range(13)], "at most 12"),
+        ("SWA", "array of feature codes"),
+    ],
+)
+def test_feature_target_ranking_rejects_invalid_feature_collection(
+    client: TestClient, features: object, expected_message: str
+) -> None:
+    response = client.post(
+        "/api/v1/experiments/CELL_001/EXP_001/feature-target-ranking",
+        json={"target_id": "reference_soc_percent", "features": features},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert expected_message in response.json()["error"]["message"]
 
 
 def test_brw018r2_catalogue_features_accepted(client: TestClient) -> None:

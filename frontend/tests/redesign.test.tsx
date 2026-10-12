@@ -233,6 +233,110 @@ describe("Waveform workbench（§9/§11）", () => {
     });
   });
 
+  it("shows provenance warning when canonical TOF is hidden but frame-local features remain", async () => {
+    clientMock.listWaveformFrames.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1,
+      waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
+      frames: [{ ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 }],
+    }, meta: {} });
+    clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
+    clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
+    clientMock.getMeasurementEvents.mockResolvedValue({ data: { total: 0, events: [] }, meta: {} });
+    clientMock.getWaveformFrame.mockResolvedValue({ data: {
+      ultrasound_asset_id: "U001", frame_index: 0, frame_index_raw: 0,
+      waveform_group: "U001/waveform", waveform_row_index: 0, waveform_length: 1250,
+      x_axis: "SAMPLE_INDEX", time_axis_us: null, sampling_rate_status: "NOT_VERIFIED",
+      max_points: 1000, samples: [],
+    }, meta: {} });
+    clientMock.listPhysicalFeatures.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1, features: [
+        { feature_code: "SWA", method: "test", gate_template_id: "surface", display_name_en: "Surface amplitude", display_name_zh: "表面幅值", unit: "a.u.", values: [1.2], frame_locators: [{ ultrasound_asset_id: "U001", frame_index_raw: 0 }] },
+      ],
+    }, meta: {
+      canonical_tof_status: "BLOCKED_BY_ELECTRICAL_SOURCE_INTEGRITY",
+      source_integrity_warning: "电学 parser provenance 无效；仍显示超声帧内特征，已隐藏依赖事件关联的 canonical TOF。",
+    } });
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+    expect(await screen.findByTestId("feature-lineage-warning")).toHaveTextContent("已隐藏依赖事件关联的 canonical TOF");
+    expect(screen.getByTestId("feature-lineage-warning").querySelector("a")).toHaveAttribute(
+      "href", "/experiments/CELL_001/EXP_001/runs",
+    );
+    expect(screen.getByTestId("phys-SWA")).toHaveTextContent("1.2");
+  });
+
+  it("shows parser recovery instead of a retry loop when waveform outputs are unverified", async () => {
+    const { ApiError } = await import("../src/api/client");
+    clientMock.listWaveformFrames.mockRejectedValue(new ApiError(409, {
+      error: {
+        code: "INTEGRITY_ERROR", message: "parser output is unverified", request_id: "req-waveform",
+        details: {
+          invalid_modalities: ["ultrasound"],
+          integrity_reasons: { ultrasound: ["OUTPUT_CHECKSUMS_INVALID"] },
+          recovery_action: "REPARSE_ULTRASOUND_ASSETS_AND_REVIEW_LINEAGE",
+        },
+      },
+    }));
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+
+    const blocked = await screen.findByTestId("waveform-integrity-blocked");
+    expect(blocked).toHaveTextContent("parser output is unverified");
+    expect(blocked).toHaveTextContent("重复读取不能修复");
+    expect(blocked.querySelector("a")).toHaveAttribute("href", "/runs");
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
+  it("offers parser recovery when a single-frame read discovers integrity damage", async () => {
+    const { ApiError } = await import("../src/api/client");
+    clientMock.listWaveformFrames.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1,
+      waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
+      frames: [{ ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 }],
+    }, meta: {} });
+    clientMock.getWaveformFrame.mockRejectedValue(new ApiError(409, {
+      error: {
+        code: "INTEGRITY_ERROR", message: "waveform store changed after listing", request_id: "req-preview",
+        details: { recovery_action: "REPARSE_ULTRASOUND_ASSETS_AND_REVIEW_LINEAGE" },
+      },
+    }));
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+
+    const blocked = await screen.findByTestId("waveform-preview-integrity-blocked");
+    expect(blocked).toHaveTextContent("waveform store changed after listing");
+    expect(blocked.querySelector("a")).toHaveAttribute("href", "/runs");
+  });
+
+  it("distinguishes blocked electrical event context from an unmatched frame", async () => {
+    const { ApiError } = await import("../src/api/client");
+    clientMock.listWaveformFrames.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1,
+      waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,
+      frames: [{ ultrasound_asset_id: "U001", frame_index_raw: 0, frame_index: 0, event_order_index: 0, waveform_group: "U001/waveform", waveform_row_index: 0, sample_count: 1250 }],
+    }, meta: {} });
+    clientMock.listGates.mockResolvedValue({ data: { gates: [] }, meta: {} });
+    clientMock.getStatus.mockResolvedValue({ data: demoStatus, meta: {} });
+    clientMock.getMeasurementEvents.mockRejectedValue(new ApiError(409, {
+      error: { code: "INTEGRITY_ERROR", message: "source provenance blocked", request_id: "req" },
+    }));
+    clientMock.getWaveformFrame.mockResolvedValue({ data: {
+      ultrasound_asset_id: "U001", frame_index: 0, frame_index_raw: 0,
+      waveform_group: "U001/waveform", waveform_row_index: 0, waveform_length: 1250,
+      x_axis: "SAMPLE_INDEX", time_axis_us: null, sampling_rate_status: "NOT_VERIFIED",
+      max_points: 1000, samples: [],
+    }, meta: {} });
+    clientMock.listPhysicalFeatures.mockResolvedValue({ data: {
+      battery_id: "CELL_001", experiment_id: "EXP_001", frame_count: 1, features: [],
+    }, meta: {} });
+    const { WaveformWorkbench } = await import("../src/pages/redesign/WaveformWorkbench");
+    renderPage(<WaveformWorkbench />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("声电事件上下文已因 parser provenance 不完整而隐藏");
+    expect(screen.getByRole("alert").querySelector("a")).toHaveAttribute(
+      "href", "/experiments/CELL_001/EXP_001/runs",
+    );
+  });
+
   it("TOF blocked card offers Add sampling rate, never 0", async () => {
     clientMock.listWaveformFrames.mockResolvedValue({ data: { battery_id: "C", experiment_id: "E",
       frame_count: 1, waveform_length: 1250, x_axis: "SAMPLE_INDEX", time_axis_available: false,

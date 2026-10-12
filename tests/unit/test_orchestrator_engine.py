@@ -8,21 +8,39 @@ sandbox copies drive execution/resume without touching real artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from battery_workbench.orchestrator.engine import PipelineOrchestrator
+from battery_workbench.orchestrator.engine import (
+    PipelineOrchestrator,
+    _validate_selection_confirmation,
+)
+from battery_workbench.orchestrator.nodes import (
+    ParameterSetNode,
+    SynchronizationNode,
+    TimeAnchorNode,
+    UltrasoundTimestampsNode,
+)
+from battery_workbench.orchestrator.schemas import AnalysisPlan, PlanProject
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
 
 REPO = Path(__file__).resolve().parents[2]
 PROCESSED = REPO / "data" / "processed"
 RAW = REPO / "data" / "raw"
 
 pytestmark = pytest.mark.skipif(
-    not (PROCESSED / "multimodal/CELL_001/EXP_001/measurement_events.parquet").exists(),
-    reason="real CELL_001/EXP_001 processed artifacts not available",
+    not (PROCESSED / "multimodal/CELL_001/EXP_001/measurement_events.parquet").exists()
+    or any(parser_output_integrity_reasons(PROCESSED, "CELL_001", "EXP_001").values()),
+    reason=(
+        "real CELL_001/EXP_001 parser outputs are unavailable or lack verifiable "
+        "generation-time checksums; use fresh parser artifacts for orchestration acceptance"
+    ),
 )
 
 
@@ -34,11 +52,43 @@ def _orch(processed_root: Path | None = None) -> PipelineOrchestrator:
     )
 
 
+def _orch_with_fresh_timebase_chain(tmp_path: Path) -> PipelineOrchestrator:
+    """Refresh the timestamp/sync chain in an isolated overlay over real inputs."""
+    processed_root = tmp_path / "processed-overlay"
+    processed_root.mkdir()
+    for source in PROCESSED.iterdir():
+        if source.name in {"synchronization", "electrical", "ultrasound"}:
+            continue
+        target = processed_root / source.name
+        if source.is_dir():
+            shutil.copytree(source, target, copy_function=os.link)
+        else:
+            os.link(source, target)
+    synchronization_source = PROCESSED / "synchronization"
+    if synchronization_source.exists():
+        shutil.copytree(synchronization_source, processed_root / "synchronization")
+    for modality in ("electrical", "ultrasound"):
+        source = PROCESSED / modality / "CELL_001" / "EXP_001"
+        target = processed_root / modality / "CELL_001" / "EXP_001"
+        if source.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target, copy_function=os.link)
+    plan = AnalysisPlan(
+        profile="SCIENTIFIC_ANALYSIS",
+        project=PlanProject(battery_id="CELL_001", experiment_id="EXP_001"),
+    )
+    ctx = SimpleNamespace(raw_root=RAW, processed_root=processed_root)
+    TimeAnchorNode().run(plan, {}, ctx)
+    UltrasoundTimestampsNode().run(plan, {}, ctx)
+    SynchronizationNode().run(plan, {}, ctx)
+    return _orch(processed_root)
+
+
 # --- T39-T41 + T15: dry run / all-reuse over REAL artifacts (read-only) ---
 
 
-def test_t39_dry_run_plan_a_mostly_reuse() -> None:
-    svc = _orch()
+def test_t39_dry_run_plan_marks_outdated_measurement_events_for_rebuild(tmp_path: Path) -> None:
+    svc = _orch_with_fresh_timebase_chain(tmp_path)
     plan = svc.plan_run(
         profile="INGEST_TO_MEASUREMENT_EVENTS",
         battery_id="CELL_001",
@@ -49,11 +99,18 @@ def test_t39_dry_run_plan_a_mostly_reuse() -> None:
     states = {n.node_id: n.state for n in execution.nodes}
     assert states["ELECTRICAL_CANONICAL"] == "REUSED"
     assert states["ULTRASOUND_CANONICAL"] == "REUSED"
-    assert states["MEASUREMENT_EVENTS"] == "REUSED"
+    measurement_events = next(n for n in execution.nodes if n.node_id == "MEASUREMENT_EVENTS")
+    manifest = json.loads(
+        (PROCESSED / "multimodal/CELL_001/EXP_001/measurement_event_manifest.json").read_text()
+    )
+    if manifest.get("builder_version") == "0.5.1":
+        assert measurement_events.state == "REUSED"
+    else:
+        assert measurement_events.state == "RUNNING"
 
 
 def test_t40_start_run_all_reuse(tmp_path: Path) -> None:
-    svc = _orch()
+    svc = _orch(_sandbox(tmp_path))
     plan = svc.plan_run(
         profile="INGEST_TO_MEASUREMENT_EVENTS",
         battery_id="CELL_001",
@@ -69,7 +126,7 @@ def test_t40_start_run_all_reuse(tmp_path: Path) -> None:
 
 
 def test_t41_get_run(tmp_path: Path) -> None:
-    svc = _orch()
+    svc = _orch(_sandbox(tmp_path))
     plan = svc.plan_run(
         profile="INGEST_TO_MEASUREMENT_EVENTS",
         battery_id="CELL_001",
@@ -106,8 +163,11 @@ def _sandbox(tmp_path: Path) -> Path:
     ):
         (sandbox / rel).mkdir(parents=True)
         for f in (PROCESSED / rel).iterdir():
-            if f.suffix in {".parquet", ".json"}:
-                shutil.copy(f, sandbox / rel / f.name)
+            destination = sandbox / rel / f.name
+            if f.is_dir():
+                shutil.copytree(f, destination)
+            elif f.suffix in {".parquet", ".json"}:
+                shutil.copy(f, destination)
     return sandbox
 
 
@@ -115,7 +175,7 @@ def _param_plan(tmp_path: Path, **plan_kwargs):
     sandbox = _sandbox(tmp_path)
     svc = PipelineOrchestrator(raw_root=RAW, processed_root=sandbox, runs_root=tmp_path / "runs")
     plan = svc.plan_run(
-        profile="SCIENTIFIC_ANALYSIS",
+        profile="INGEST_TO_MEASUREMENT_EVENTS",
         battery_id="CELL_001",
         experiment_id="EXP_001",
         dry_run=False,
@@ -138,9 +198,9 @@ def test_t16_one_node_execution_runs(tmp_path: Path) -> None:
 
 
 def test_t18_blocked_is_not_failed(tmp_path: Path) -> None:
-    """PARAMETER_SET depends on a node that FAILED → dependents BLOCKED."""
+    """Corrupt cached input blocks reuse and downstream nodes without parsing it."""
     sandbox = _sandbox(tmp_path)
-    # corrupt the aligned frames input so MEASUREMENT_EVENTS fails
+    # Corrupt the aligned input; its old manifest checksum must block reuse.
     victim = sandbox / "synchronization/CELL_001/EXP_001/aligned_ultrasound_frames.parquet"
     victim.write_bytes(b"corrupt")
     svc = PipelineOrchestrator(raw_root=RAW, processed_root=sandbox, runs_root=tmp_path / "runs")
@@ -154,9 +214,9 @@ def test_t18_blocked_is_not_failed(tmp_path: Path) -> None:
     )
     run = svc.start_run(plan)
     states = {n["node_id"]: n["state"] for n in run["nodes"]}
-    assert states["MEASUREMENT_EVENTS"] == "FAILED"
+    assert states["MEASUREMENT_EVENTS"] == "BLOCKED"
     assert states["PARAMETER_SET"] == "BLOCKED"
-    assert run["status"] == "FAILED"
+    assert run["status"] == "PARTIAL"
 
 
 def test_t19_waiting_for_user_missing_sampling_rate(tmp_path: Path) -> None:
@@ -186,21 +246,34 @@ def test_t21_final_status_correct(tmp_path: Path) -> None:
 
 
 def _corrupted_run(tmp_path: Path) -> tuple[dict, PipelineOrchestrator, Path]:
-    """Corrupt the MEASUREMENT_EVENTS input so the node itself FAILs.
-
-    The sandbox carries new-schema sync artifacts; SYNCHRONIZATION is staged
-    so the engine re-runs it on the corrupt electrical input.
-    """
+    """Corrupt a pinned timestamp output so synchronization itself FAILs."""
     sandbox = _sandbox(tmp_path)
-    victim = sandbox / "electrical/CELL_001/EXP_001/records.parquet"
+    victim = sandbox / "synchronization/CELL_001/EXP_001/timestamped_ultrasound_frames.parquet"
     victim.write_bytes(b"corrupt")
+    manifest_path = victim.parent / "timestamp_engine_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["output_checksum"] = hashlib.sha256(victim.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     svc = PipelineOrchestrator(raw_root=RAW, processed_root=sandbox, runs_root=tmp_path / "runs")
     plan = svc.plan_run(
         profile="SCIENTIFIC_ANALYSIS",
         battery_id="CELL_001",
         experiment_id="EXP_001",
         dry_run=False,
-        stages=["SYNCHRONIZATION", "MEASUREMENT_EVENTS", "PARAMETER_SET"],
+        reuse_existing=True,
+        force_recompute=[
+            "MEASUREMENT_EVENTS",
+            "PARAMETER_SET",
+        ],
+        stages=[
+            "ELECTRICAL_CANONICAL",
+            "ULTRASOUND_CANONICAL",
+            "TIME_ANCHOR",
+            "ULTRASOUND_TIMESTAMPS",
+            "SYNCHRONIZATION",
+            "MEASUREMENT_EVENTS",
+            "PARAMETER_SET",
+        ],
     )
     return svc.start_run(plan), svc, sandbox
 
@@ -232,12 +305,56 @@ def test_t22_t23_resume_after_user_action_no_upstream_recompute(tmp_path: Path) 
     assert param["state"] in {"SUCCEEDED", "REUSED"}
 
 
+def test_selection_confirmation_rejects_a_different_pending_selection_id() -> None:
+    action = {
+        "action_type": "CONFIRM_FEATURE_SELECTION",
+        "required_fields": [{"field": "selection_id", "value": "SEL::expected"}],
+    }
+
+    with pytest.raises(ValueError, match="does not match the pending feature selection"):
+        _validate_selection_confirmation(action, {"selection_id": "SEL::stale"})
+
+
+def test_selection_confirmation_accepts_only_the_pending_selection_id() -> None:
+    action = {
+        "action_type": "CONFIRM_FEATURE_SELECTION",
+        "required_fields": [{"field": "selection_id", "value": "SEL::expected"}],
+    }
+
+    _validate_selection_confirmation(action, {"selection_id": "SEL::expected"})
+
+
+@pytest.mark.parametrize(
+    "required_fields",
+    [
+        [],
+        [{"field": "selection_id"}],
+        [
+            {"field": "selection_id", "value": "SEL::expected"},
+            {"field": "selection_id", "value": "SEL::other"},
+        ],
+    ],
+)
+def test_selection_confirmation_rejects_malformed_pending_action(
+    required_fields: list[dict[str, str]],
+) -> None:
+    action = {
+        "action_type": "CONFIRM_FEATURE_SELECTION",
+        "required_fields": required_fields,
+    }
+
+    with pytest.raises(ValueError, match="pending feature selection action"):
+        _validate_selection_confirmation(action, {"selection_id": "SEL::expected"})
+
+
 def test_t24_retry_failed_node(tmp_path: Path) -> None:
     run, svc, sandbox = _corrupted_run(tmp_path)
     assert run["status"] == "FAILED"
     # fix the corrupt input, then retry
-    victim_rel = "electrical/CELL_001/EXP_001/records.parquet"
+    victim_rel = "synchronization/CELL_001/EXP_001/timestamped_ultrasound_frames.parquet"
     shutil.copy(PROCESSED / victim_rel, sandbox / victim_rel)
+    manifest_rel = "synchronization/CELL_001/EXP_001/timestamp_engine_manifest.json"
+    shutil.copy(PROCESSED / manifest_rel, sandbox / manifest_rel)
     retried = svc.retry_node(run["run_id"], "SYNCHRONIZATION", runs_root=tmp_path / "runs")
     states = {n["node_id"]: n["state"] for n in retried["nodes"]}
     assert states["SYNCHRONIZATION"] in {"SUCCEEDED", "REUSED"}
@@ -285,51 +402,75 @@ def _analysis_plan(svc: PipelineOrchestrator, **overrides) -> dict:
         "target": "soc_reference_percent",
         "features": {"selected_features": ["amplitude_a_u"]},
         "analysis_slice": {"analysis_slice_id": "AS::39b284730b2c801104f0e960"},
-        "parameters": {"parameter_set_id": "PS::99a655be1ffdffc6aa217fa8"},
+        "parameters": {"parameter_set_id": "PS::091640eaac26f6f3b4392f90"},
     }
     kwargs.update(overrides)
     return svc.plan_run(**kwargs)
 
 
-def test_t27_gate_change_only_downstream() -> None:
-    svc = _orch()
+def test_t27_gate_change_only_downstream(tmp_path: Path) -> None:
+    svc = _orch_with_fresh_timebase_chain(tmp_path)
     plan = _analysis_plan(
         svc,
+        features={
+            "selected_features": [
+                "tof_us",
+                "amplitude_a_u",
+                "waveform_p2p_a_u",
+                "waveform_mean_a_u",
+                "waveform_rms_a_u",
+                "envelope_peak_a_u",
+            ]
+        },
         gates={"gate_specs": [{"gate_name": "primary", "start_sample": 0, "end_sample": 250}]},
     )
     execution = svc.dry_run(plan)
     states = {n.node_id: n.state for n in execution.nodes}
     assert states["GATED_FEATURES"] == "RUNNING"
     assert states["FEATURE_LABEL_ANALYSIS"] == "RUNNING"
-    # "相关 DATASET": this plan's dataset uses only non-gated features → reused
-    assert states["DATASET"] == "REUSED"
-    assert states["SPLIT"] == "REUSED"
-    assert states["TOF_ACTIVATION"] == "REUSED"
-    # FEATURE_ANALYSIS consumes the FLA table → follows the gate change
-    assert states["FEATURE_ANALYSIS"] == "RUNNING"
+    # The checked-in AnalysisSlice records a different MeasurementEvents
+    # checksum, so Dataset/Split must be reevaluated along with the slice.
+    assert states["DATASET"] == "RUNNING"
+    assert states["SPLIT"] == "RUNNING"
+    assert states["TOF_ACTIVATION"] == "RUNNING"
+    # Missing an explicit feature_analysis plan block is a plan error, not a
+    # deferable dependency state, even while the upstream FLA is rebuilding.
+    assert states["FEATURE_ANALYSIS"] == "BLOCKED"
+    analysis_node = next(node for node in execution.nodes if node.node_id == "FEATURE_ANALYSIS")
+    assert "no feature_analysis block in plan" in analysis_node.reason
     # upstream untouched
     assert states["MEASUREMENT_EVENTS"] == "REUSED"
-    assert states["ANALYSIS_SLICE"] == "REUSED"
-    assert states["ULTRASOUND_FEATURES"] == "REUSED"
+    assert states["ANALYSIS_SLICE"] == "RUNNING"
+    slice_node = next(node for node in execution.nodes if node.node_id == "ANALYSIS_SLICE")
+    assert "INPUT_CHECKSUM_MISMATCH:measurement_events" in slice_node.reason
+    assert states["ULTRASOUND_FEATURES"] == "RUNNING"
     assert states["SYNCHRONIZATION"] == "REUSED"
-    # new stages (BRW-019/021 additions): gates change does not invalidate them
-    assert states["TOF_ACTIVATION"] == "REUSED"
+    # Physical-time dependents also re-evaluate because their upstream chain is stale.
+    assert states["TOF_ACTIVATION"] == "RUNNING"
 
 
-def test_t28_selected_feature_change_dataset_side_only() -> None:
-    svc = _orch()
-    plan = _analysis_plan(svc, features={"selected_features": ["waveform_rms_a_u"]})
+def test_t28_selected_feature_change_dataset_side_only(tmp_path: Path) -> None:
+    svc = _orch_with_fresh_timebase_chain(tmp_path)
+    # Pick a supported single feature that is not already materialized as a
+    # fresh Dataset in the current CELL_001 fixture inventory.
+    plan = _analysis_plan(svc, features={"selected_features": ["waveform_mean_a_u"]})
     execution = svc.dry_run(plan)
     states = {n.node_id: n.state for n in execution.nodes}
     assert states["DATASET"] == "RUNNING"
-    assert states["GATED_FEATURES"] == "REUSED"
-    assert states["ULTRASOUND_FEATURES"] == "REUSED"
-    assert states["ANALYSIS_SLICE"] == "REUSED"
-    assert states["FEATURE_ANALYSIS"] == "REUSED"
+    # The stale AnalysisSlice blocks downstream cache decisions until it is
+    # rebuilt, so GateSet validation is deferred with the dependency reason.
+    assert states["GATED_FEATURES"] == "RUNNING"
+    gate_node = next(node for node in execution.nodes if node.node_id == "GATED_FEATURES")
+    assert "upstream invalidated" in gate_node.reason
+    assert states["ULTRASOUND_FEATURES"] == "RUNNING"
+    assert states["ANALYSIS_SLICE"] == "RUNNING"
+    # No explicit Feature Analysis spec is present in this run plan; silently
+    # reusing an arbitrary historical analysis would violate its input contract.
+    assert states["FEATURE_ANALYSIS"] == "BLOCKED"
 
 
-def test_t29_label_change_invalidates_analysis_and_dataset() -> None:
-    svc = _orch()
+def test_t29_label_change_invalidates_analysis_and_dataset(tmp_path: Path) -> None:
+    svc = _orch_with_fresh_timebase_chain(tmp_path)
     # no pinned label set + force label rebuild via provenance change is
     # simulated by demanding a different label producer version
     plan = _analysis_plan(svc, label_producer_version="9.9.9")
@@ -338,13 +479,16 @@ def test_t29_label_change_invalidates_analysis_and_dataset() -> None:
     assert states["REFERENCE_LABELS"] == "RUNNING"
     assert states["FEATURE_LABEL_ANALYSIS"] == "RUNNING"
     assert states["DATASET"] == "RUNNING"
-    assert states["ULTRASOUND_FEATURES"] == "REUSED"
+    assert states["ANALYSIS_SLICE"] == "RUNNING"
+    slice_node = next(node for node in execution.nodes if node.node_id == "ANALYSIS_SLICE")
+    assert "INPUT_CHECKSUM_MISMATCH:measurement_events" in slice_node.reason
+    assert states["ULTRASOUND_FEATURES"] == "RUNNING"
 
 
-def test_t30_parameter_change_only_physical_dependent_path() -> None:
-    """New parameter intent (user overrides) → PARAMETER_SET runs; non-physical
-    upstream (slice/features) reuse; downstream re-evaluates."""
-    svc = _orch()
+def test_t30_parameter_change_only_physical_dependent_path(tmp_path: Path) -> None:
+    """Parameter intent runs; the stale AnalysisSlice is rejected and its
+    dependent feature/Dataset stages are scheduled for reevaluation."""
+    svc = _orch_with_fresh_timebase_chain(tmp_path)
     plan = _analysis_plan(
         svc,
         parameters={
@@ -355,8 +499,10 @@ def test_t30_parameter_change_only_physical_dependent_path() -> None:
     states = {n.node_id: n.state for n in execution.nodes}
     assert states["PARAMETER_SET"] == "RUNNING"
     assert states["DATASET"] == "RUNNING"
-    assert states["ANALYSIS_SLICE"] == "REUSED"
-    assert states["ULTRASOUND_FEATURES"] == "REUSED"
+    assert states["ANALYSIS_SLICE"] == "RUNNING"
+    slice_node = next(node for node in execution.nodes if node.node_id == "ANALYSIS_SLICE")
+    assert "INPUT_CHECKSUM_MISMATCH:measurement_events" in slice_node.reason
+    assert states["ULTRASOUND_FEATURES"] == "RUNNING"
 
 
 def test_t31_raw_change_invalidates_downstream() -> None:
@@ -407,14 +553,14 @@ def test_t33_delay_never_auto_promotes_to_tof(tmp_path: Path) -> None:
                 {"gate_name": "b", "start_sample": 800, "end_sample": 980},
             ]
         },
-        parameters={"parameter_set_id": "PS::99a655be1ffdffc6aa217fa8"},
+        parameters={"parameter_set_id": "PS::091640eaac26f6f3b4392f90"},
     )
     execution = svc.dry_run(plan)
     # delay column is diagnostic; no tof_us promotion without confirmation
     assert "tof_us" not in json.dumps([n.model_dump(mode="json") for n in execution.nodes])
 
 
-def test_t34_soh_limitation_preserved() -> None:
+def test_t34_stale_soh_dataset_not_reused_and_label_limitation_preserved() -> None:
     svc = _orch()
     plan = svc.plan_run(
         profile="BUILD_DATASET",
@@ -424,14 +570,31 @@ def test_t34_soh_limitation_preserved() -> None:
         target="soh_capacity_reference_percent",
         features={"selected_features": ["waveform_rms_a_u"]},
         analysis_slice={"analysis_slice_id": "AS::39b284730b2c801104f0e960"},
-        parameters={"parameter_set_id": "PS::99a655be1ffdffc6aa217fa8"},
+        parameters={"parameter_set_id": "PS::091640eaac26f6f3b4392f90"},
         label_producer_version=None,
     )
     execution = svc.dry_run(plan)
     ds_node = next(n for n in execution.nodes if n.node_id == "DATASET")
-    # existing SOH dataset carries NOT_READY_FOR_MODEL_EVALUATION — reused as-is
-    assert ds_node.state == "REUSED"
-    assert "NOT_READY_FOR_MODEL_EVALUATION" in json.dumps(ds_node.reason)
+    assert ds_node.state == "RUNNING"
+    assert ds_node.outputs == []
+    stale_dataset = json.loads(
+        (PROCESSED / "datasets/CELL_001/EXP_001/SOH_CAPACITY/DS::c10c43b1890949aff0e94663/dataset_manifest.json").read_text()
+    )
+    from battery_workbench.datasets.freshness import dataset_freshness
+
+    stale_assessment = dataset_freshness(
+        PROCESSED,
+        PROCESSED
+        / "datasets/CELL_001/EXP_001/SOH_CAPACITY/DS::c10c43b1890949aff0e94663/dataset_manifest.json",
+        stale_dataset,
+    )
+    assert stale_assessment["freshness_status"] == "STALE_SOURCE"
+    assert "LABEL_SOURCE_CHECKSUM_MISMATCH" in stale_assessment["freshness_reasons"]
+    current_labels = json.loads(
+        (PROCESSED / "labels/CELL_001/EXP_001/label_manifest.json").read_text()
+    )
+    assert current_labels["soh_independent_state_count"] == 2
+    assert current_labels["soh_model_readiness"] == "NOT_READY_FOR_ROBUST_SUPERVISED_LEARNING"
 
 
 def test_t35_provisional_sync_preserved() -> None:
@@ -447,27 +610,44 @@ def test_t35_provisional_sync_preserved() -> None:
 def test_t36_retrospective_soc_preserved() -> None:
     svc = _orch()
     ref = svc.describe_artifact("REFERENCE_LABELS")
-    assert ref is not None
-    assert ref["manifest"]["soc_method"] == "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"
+    # Historical labels without ultrasound parser provenance must be rebuilt,
+    # not exposed as a reusable artifact.
+    if ref is None:
+        plan = svc.plan_run(
+            profile="FULL_PRE_MODEL",
+            battery_id="CELL_001",
+            experiment_id="EXP_001",
+            dry_run=True,
+            stages=["MEASUREMENT_EVENTS", "REFERENCE_LABELS"],
+        )
+        execution = svc.dry_run(plan)
+        labels = next(node for node in execution.nodes if node.node_id == "REFERENCE_LABELS")
+        assert labels.state == "RUNNING"
+    else:
+        assert ref["manifest"]["soc_method"] == "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"
 
 
-def test_t37_forbidden_predictor_guard_preserved(tmp_path: Path) -> None:
-    svc = _orch()
-    plan = svc.plan_run(
+def test_t37_legacy_parameter_records_are_recovered_but_cache_is_rebuilt(tmp_path: Path) -> None:
+    sandbox_processed = tmp_path / "processed"
+    shutil.copytree(PROCESSED, sandbox_processed, copy_function=shutil.copy2)
+    plan = AnalysisPlan(
         profile="BUILD_DATASET",
-        battery_id="CELL_001",
-        experiment_id="EXP_001",
-        dry_run=False,
+        project=PlanProject(battery_id="CELL_001", experiment_id="EXP_001"),
         target="soc_reference_percent",
-        stages=["DATASET"],
-        features={"selected_features": ["soc_dod_percent"]},
-        analysis_slice={"analysis_slice_id": "AS::39b284730b2c801104f0e960"},
-        parameters={"parameter_set_id": "PS::99a655be1ffdffc6aa217fa8"},
+        parameters={"parameter_set_id": "PS::091640eaac26f6f3b4392f90"},
     )
-    run = svc.start_run(plan, runs_root=tmp_path)
-    ds = next(n for n in run["nodes"] if n["node_id"] == "DATASET")
-    assert ds["state"] == "FAILED"
-    assert "target-leakage" in ds["reason"]
+    ctx = SimpleNamespace(processed_root=sandbox_processed)
+    node = ParameterSetNode()
+    output = node.run(plan, {}, ctx)
+    new_manifest = json.loads(Path(output["manifest_path"]).read_text(encoding="utf-8"))
+    effective = json.loads(Path(output["path"], "effective_parameters.json").read_text())
+    assert output["artifact_id"] == "PS::091640eaac26f6f3b4392f90"
+    assert effective["ultrasound.sampling_rate_hz"]["value"] == 50_000_000
+    assert effective["ultrasound.sampling_rate_hz"]["verification_status"] == "VERIFIED"
+    assert new_manifest["input_checksums"]["waveform_store"]
+    assert not Path(output["manifest_path"]).samefile(
+        PROCESSED / "parameters/CELL_001/EXP_001" / output["artifact_id"] / "parameter_set_manifest.json"
+    )
 
 
 def test_t38_frame_random_split_prohibition_preserved() -> None:

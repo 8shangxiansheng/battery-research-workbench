@@ -105,6 +105,26 @@ beforeEach(() => {
 
 /* ---------- Synchronization guards (S01–S07) ---------- */
 describe("Synchronization guards", () => {
+  it("provides a rebuild path when the live Alignment API fails closed on stale timebase provenance", async () => {
+    const { ApiError } = await import("../src/api/client");
+    clientMock.getAlignmentSummary.mockRejectedValue(new ApiError(409, {
+      error: {
+        code: "INTEGRITY_ERROR",
+        message: "current TimeAnchor/Timestamp provenance is required",
+        details: { recovery_action: "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT" },
+        request_id: "req-timebase-stale",
+      },
+    }));
+    const { AlignmentSummary } = await import("../src/components/workbench/AlignmentPanels");
+    renderPage(<AlignmentSummary batteryId="CELL_001" experimentId="EXP_001" targetId={null} />);
+
+    expect(await screen.findByTestId("alignment-integrity-recovery")).toHaveTextContent("重试读取不会重建工件");
+    expect(screen.getByTestId("alignment-recovery-link")).toHaveAttribute(
+      "href", "/experiments/CELL_001/EXP_001/runs",
+    );
+    expect(screen.getByTestId("alignment-recovery-link")).toHaveTextContent("重建时间基准与同步链");
+  });
+
   it("does not present MATCHED_UNIQUE when frame-level and sync counts disagree", async () => {
     clientMock.getAlignmentSummary.mockResolvedValue({ data: summaryFixture, meta: {} });
     clientMock.getSynchronization.mockResolvedValue({ data: {
@@ -301,7 +321,7 @@ describe("Synchronization guards", () => {
   });
 });
 
-/* ---------- Target guards (T01–T05) ---------- */
+/* ---------- Target guards (T01–T06) ---------- */
 describe("Target guards", () => {
   it("T01/T02 Reference SOC metadata — retrospective wording, no true-SOC", async () => {
     clientMock.listTargets.mockResolvedValue({ data: { targets: [socTarget] }, meta: {} });
@@ -320,6 +340,52 @@ describe("Target guards", () => {
     renderPage(<TargetSelector batteryId="C" experimentId="E" selected={null} onSelect={() => {}} />);
     await screen.findByTestId("target-unavailable-temperature_c");
     expect(screen.getByTestId("target-card-temperature_c").textContent).toContain("0 / 3,999");
+    expect(screen.getByTestId("select-target-temperature_c")).toBeDisabled();
+  });
+
+  it("T03 temperature with readings but missing validation is not mislabeled unavailable", async () => {
+    const temp: TargetDefinition = {
+      ...socTarget,
+      target_id: "temperature_c",
+      display_name_en: "Temperature",
+      display_name_zh: "温度",
+      semantic_type: "DIRECT_MEASUREMENT",
+      coverage: { valid: 3995, total: 3999 },
+      range: [23.2, 25.3],
+      readiness: "BLOCKED_BY_VALIDATION",
+      limitation: "sensor location/calibration evidence is not verified",
+      limitation_zh: "传感器位置/校准证据未验证",
+      unit: "celsius",
+    };
+    clientMock.listTargets.mockResolvedValue({ data: { targets: [temp] }, meta: {} });
+    const { TargetSelector } = await import("../src/components/workbench/TargetSelector");
+    renderPage(<TargetSelector batteryId="C" experimentId="E" selected={null} onSelect={() => {}} />);
+    await screen.findByTestId("target-validation-blocked-temperature_c");
+    expect(screen.queryByTestId("target-unavailable-temperature_c")).not.toBeInTheDocument();
+    expect(screen.getByTestId("target-card-temperature_c").textContent).toContain("3,995 / 3,999");
+    expect(screen.getByTestId("select-target-temperature_c")).toBeEnabled();
+  });
+
+  it("T03 Reference SOC without labels is unavailable and cannot be selected", async () => {
+    const target: TargetDefinition = {
+      ...socTarget,
+      coverage: { valid: 0, total: 58_734 },
+      range: null,
+      readiness: "UNAVAILABLE",
+      limitation: "no reference SOC labels are available for this experiment",
+      limitation_zh: "当前没有参考 SOC 标签；确认电学记录后，运行标签生成流程。",
+    };
+    clientMock.listTargets.mockResolvedValue({ data: { targets: [target] }, meta: {} });
+    const { TargetSelector } = await import("../src/components/workbench/TargetSelector");
+    const onSelect = vi.fn();
+    renderPage(<TargetSelector batteryId="C" experimentId="E" selected={null} onSelect={onSelect} />);
+    await screen.findByTestId("target-unavailable-reference_soc_percent");
+    const radio = screen.getByTestId("select-target-reference_soc_percent");
+    expect(radio).toBeDisabled();
+    expect(radio).toHaveAttribute("title", expect.stringContaining("标签"));
+    expect(screen.getByTestId("target-card-reference_soc_percent").textContent).toContain("58,734");
+    await userEvent.click(radio);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("T04 SOH independent-group count visible with Limited badge", async () => {
@@ -330,6 +396,35 @@ describe("Target guards", () => {
     const badge = await screen.findByTestId("target-limited-soh_capacity_reference_percent");
     expect(badge.textContent).toMatch(/Limited/i);
     expect(screen.getByTestId("target-card-soh_capacity_reference_percent").textContent).toContain("2 独立状态");
+  });
+
+  it("T06 label method, grain and unknown uncertainty are visible without exposing hashes", async () => {
+    const target: TargetDefinition = {
+      ...socTarget,
+      provenance: {
+        target_grain: "MEASUREMENT_EVENT",
+        independent_unit: "BATTERY",
+        method_id: "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED",
+        method_version: "0.2.0",
+        definition: "SOC = 100 * Q_charged_since_empty / Q_segment_total.",
+        source_assets: [{ asset_id: "E001", source_reference: "electrical/sample.xlsx", sha256: "a".repeat(64) }],
+        uncertainty: { status: "UNKNOWN", reason: "参考协议未报告经过验证的不确定度。" },
+      },
+    };
+    clientMock.listTargets.mockResolvedValue({ data: { targets: [target] }, meta: {} });
+    const { TargetSelector } = await import("../src/components/workbench/TargetSelector");
+    const onSelect = vi.fn();
+    renderPage(<TargetSelector batteryId="C" experimentId="E" selected={null} onSelect={onSelect} />);
+    const details = await screen.findByTestId("target-provenance-reference_soc_percent");
+    expect(details.textContent).toContain("PROTOCOL_ANCHORED_SEGMENT_NORMALIZED");
+    expect(details.textContent).toContain("Q_charged_since_empty");
+    expect(details.textContent).toContain("MEASUREMENT_EVENT");
+    expect(details.textContent).toContain("electrical/sample.xlsx");
+    expect(details.textContent).toContain("不确定度未知");
+    expect(details.textContent).toContain("参考协议未报告经过验证的不确定度");
+    expect(details.textContent).not.toContain("a".repeat(64));
+    await userEvent.click(screen.getByText("Label evidence / 标签来源与不确定度"));
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from battery_workbench.analysis.plan_registry import resolve_experiment_analysis_plan
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.future_contracts import CohortDatasetRequest, CohortLOBORequest
@@ -21,6 +22,18 @@ from battery_workbench.features.definitions_v2 import (
 )
 
 router = APIRouter(tags=["scientific-resources", "artifacts"])
+
+
+@router.get("/experiments/{battery_id}/{experiment_id}/analysis-plan-status")
+def analysis_plan_status(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
+    """Read the exact-pair study plan status without enabling inference."""
+    validate_id(battery_id, "battery_id")
+    validate_id(experiment_id, "experiment_id")
+    service = get_service(request)
+    data = resolve_experiment_analysis_plan(
+        service.raw_root, battery_id=battery_id, experiment_id=experiment_id
+    )
+    return {"data": data, "meta": {"read_only": True}}
 
 
 # ---------- parameters (BRW-015) ----------
@@ -56,7 +69,12 @@ def research_overview(request: Request, battery_id: str, experiment_id: str) -> 
     service = get_service(request)
     from battery_workbench.api.research_overview import get_research_overview_data
 
-    data = get_research_overview_data(service.processed_root, battery_id, experiment_id)
+    data = get_research_overview_data(
+        service.processed_root,
+        battery_id,
+        experiment_id,
+        raw_root=service.raw_root,
+    )
     return {"data": data, "meta": {}}
 
 
@@ -77,7 +95,12 @@ def workflow_context(request: Request, battery_id: str, experiment_id: str) -> d
     service = get_service(request)
     from battery_workbench.api.workflow_context import build_workflow_context
 
-    data = build_workflow_context(service.processed_root, battery_id, experiment_id)
+    data = build_workflow_context(
+        service.processed_root,
+        battery_id,
+        experiment_id,
+        raw_root=service.raw_root,
+    )
     return {"data": data, "meta": {}}
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from battery_workbench.io.electrical.service import (
     parse_electrical_experiment,
     write_electrical_experiment,
 )
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
 
 
 def test_multi_asset_experiment_preserves_rows_and_reports_overlap(
@@ -68,9 +70,11 @@ def test_write_parquet_and_parser_manifest_round_trip(
     )
     result = parse_electrical_experiment(experiment, [asset], tmp_path)
 
-    output = write_electrical_experiment(result, tmp_path / "processed")
+    output = write_electrical_experiment(
+        result, tmp_path / "processed" / "electrical"
+    )
 
-    output_dir = tmp_path / "processed" / "CELL_OUT" / "EXP_OUT"
+    output_dir = tmp_path / "processed" / "electrical" / "CELL_OUT" / "EXP_OUT"
     expected = {
         "records.parquet",
         "cycles.parquet",
@@ -100,4 +104,15 @@ def test_write_parquet_and_parser_manifest_round_trip(
         "aux_voltage",
         "parser_manifest",
     }
+    assert set(manifest["output_checksums"]) == {
+        "records", "cycles", "steps", "aux_temperature", "aux_voltage"
+    }
+    for key, filename in manifest["output_files"].items():
+        if key != "parser_manifest":
+            assert manifest["output_checksums"][key] == hashlib.sha256(
+                (output_dir / filename).read_bytes()
+            ).hexdigest()
+    assert parser_output_integrity_reasons(
+        tmp_path / "processed", "CELL_OUT", "EXP_OUT"
+    ) == {"electrical": []}
     assert output.manifest_path == output_dir / "parser_manifest.json"

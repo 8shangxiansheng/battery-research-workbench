@@ -18,7 +18,9 @@ const clientMock = {
   listSplits: vi.fn(),
   listSplitFolds: vi.fn(),
   getExperiment: vi.fn(),
+  getWorkflowContext: vi.fn(),
   createSplit: vi.fn(),
+  startRun: vi.fn(),
   postFeatureTargetRanking: vi.fn(),
   getAlignmentSummary: vi.fn(),
 };
@@ -40,7 +42,17 @@ function setup(datasetId: string | null = "DS::abc123") {
   clientMock.listMaterializedAnalyses.mockResolvedValue({ data: { analyses: [] }, meta: {} });
   clientMock.listSplits.mockResolvedValue({ data: { splits: [] }, meta: {} });
   clientMock.getExperiment.mockResolvedValue({ data: { latest_canonical_artifacts: datasetId ? { dataset_id: datasetId } : {} }, meta: {} });
-  clientMock.createSplit.mockResolvedValue({ data: { split_id: "SPLIT::new99", status: "REUSED" }, meta: {} });
+  clientMock.getWorkflowContext.mockResolvedValue({ data: {
+    steps: {
+      TARGET: { committed: { target_id: "reference_soc_percent" } },
+      FEATURES: { committed: { selected_features: ["waveform_rms_a_u"] } },
+      DATASET: { committed: { selected_features: ["waveform_rms_a_u"] } },
+    },
+  }, meta: {} });
+  clientMock.startRun.mockResolvedValue({ data: {
+    run_id: "RUN::split", status: "SUCCEEDED",
+    final_artifacts: [{ artifact_type: "SPLIT", artifact_id: "SPLIT::new99" }],
+  }, meta: {} });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter(
     [{ path: "/experiments/:batteryId/:experimentId/*", element: <AnalysisWorkbench /> }],
@@ -49,18 +61,37 @@ function setup(datasetId: string | null = "DS::abc123") {
   return render(<QueryClientProvider client={qc}><RouterProvider router={router} /></QueryClientProvider>);
 }
 
-describe("in-flow grouped split creation (Limit-1)", () => {
-  it("offers create-split when ML-safe has no split but a canonical dataset exists", async () => {
+describe("in-flow grouped split materialization (Limit-1)", () => {
+  it("runs the grouped split pipeline when ML-safe has no split but a canonical dataset exists", async () => {
     setup();
     const user = userEvent.setup();
     await user.click(await screen.findByTestId("mode-mlsafe"));
     const btn = await screen.findByTestId("create-split-btn", {}, { timeout: 4000 });
     await user.click(btn);
     await waitFor(() => {
-      expect(clientMock.createSplit).toHaveBeenCalledWith({
-        battery_id: "CELL_001", experiment_id: "EXP_001", dataset_id: "DS::abc123",
+      expect(clientMock.startRun).toHaveBeenCalledWith({
+        profile: "EVALUATION_SPLIT",
+        battery_id: "CELL_001", experiment_id: "EXP_001",
+        target: "soc_reference_percent",
+        features: { selected_features: ["waveform_rms_a_u"] },
+        split: { strategy: "LEAVE_ONE_GROUP_OUT", split_unit: "CYCLE", group_column: "cycle_group_id" },
       });
     });
+  });
+
+  it("does not claim split completion when the run is waiting for a user action", async () => {
+    setup();
+    clientMock.startRun.mockResolvedValueOnce({ data: {
+      run_id: "RUN::waiting", status: "WAITING_FOR_USER", final_artifacts: [],
+    }, meta: {} });
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("mode-mlsafe"));
+    await user.click(await screen.findByTestId("create-split-btn", {}, { timeout: 4000 }));
+    const failure = await screen.findByRole("alert");
+    expect(failure).toHaveTextContent("RUN::waiting");
+    expect(failure).toHaveTextContent("WAITING_FOR_USER");
+    expect(screen.getByRole("link", { name: "查看运行" })).toHaveAttribute("href", "/runs");
+    expect(screen.queryByText(/分组划分运行已完成/)).not.toBeInTheDocument();
   });
 
   it("falls back to the Advanced link when no canonical dataset exists", async () => {

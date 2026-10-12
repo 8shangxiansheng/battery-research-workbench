@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 COHORT_RESERVED_COLUMNS = frozenset(
     {
@@ -25,6 +25,13 @@ class CohortSourceDataset(BaseModel):
     source_dataset_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.:@-]+$")
     battery_id: str = Field(min_length=1)
     experiment_id: str = Field(min_length=1)
+
+    @field_validator("battery_id", "experiment_id")
+    @classmethod
+    def _require_trimmed_identity(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("Battery and Experiment IDs must be non-empty trimmed strings")
+        return value
 
 
 class CohortTargetMapping(BaseModel):
@@ -74,11 +81,16 @@ class CohortDatasetRequest(BaseModel):
         ):
             raise ValueError("V1 cohorts support only reference SOC percent as the target")
         battery_ids = [source.battery_id for source in self.source_datasets]
+        battery_experiment_ids = [
+            (source.battery_id, source.experiment_id) for source in self.source_datasets
+        ]
         dataset_ids = [source.source_dataset_id for source in self.source_datasets]
-        if len(set(battery_ids)) != len(battery_ids):
-            raise ValueError("each cohort source must represent a distinct battery")
         if len(set(dataset_ids)) != len(dataset_ids):
             raise ValueError("source_dataset_id values must be unique")
+        if len(set(battery_experiment_ids)) != len(battery_experiment_ids):
+            raise ValueError("each Battery/Experiment pair may appear only once in a cohort")
+        if len(set(battery_ids)) < 2:
+            raise ValueError("a cohort requires at least two distinct Battery identities")
 
         source_id_set = set(dataset_ids)
         if not all(value.strip() for value in self.evidence_refs):

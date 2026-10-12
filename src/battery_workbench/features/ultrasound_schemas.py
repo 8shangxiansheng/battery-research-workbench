@@ -46,7 +46,7 @@ class XcorrConfig(BaseModel):
 
 
 class UltrasoundFeatureConfig(BaseModel):
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     feature_definition_version: str = "0.1.0"
     xcorr: XcorrConfig = Field(default_factory=XcorrConfig)
     scientific_guards: ScientificGuardConfig = Field(default_factory=ScientificGuardConfig)
@@ -61,8 +61,10 @@ class UltrasoundFeatureConfig(BaseModel):
 
 class FeatureSetManifest(BaseModel):
     feature_engine_name: str = "ultrasound_feature_engine"
-    feature_engine_version: str = "0.1.0"
+    feature_engine_version: str = "0.2.0"
     feature_set_id: str
+    battery_id: str = ""
+    experiment_id: str = ""
     analysis_slice_id: str
     analysis_slice_path: str
     analysis_slice_checksum: str

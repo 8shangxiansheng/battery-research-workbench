@@ -80,6 +80,7 @@ def build_soc_dataset(
     label_set_path: Path | None = None,
     selected_features: list[str] | None = None,
     gate_calibration_id: str | None = None,
+    canonical_tof_checksum: str = "",
 ) -> tuple[DatasetReport, pd.DataFrame]:
     """Build the SOC dataset family.
 
@@ -151,6 +152,7 @@ def build_soc_dataset(
         label_checksum=label_checksum,
         selected_features=selected_features,
         gate_calibration_id=gate_calibration_id,
+        canonical_tof_checksum=canonical_tof_checksum,
     )
 
     eligible_soc = eligible_df[target].dropna()
@@ -228,6 +230,7 @@ def build_soh_dataset(
     label_set_path: Path | None = None,
     selected_features: list[str] | None = None,
     gate_calibration_id: str | None = None,
+    canonical_tof_checksum: str = "",
 ) -> tuple[DatasetReport, pd.DataFrame]:
     """Build the SOH_CAPACITY dataset family."""
     from battery_workbench.datasets.ids import build_dataset_id
@@ -302,10 +305,14 @@ def build_soh_dataset(
         label_checksum=label_checksum,
         selected_features=selected_features,
         gate_calibration_id=gate_calibration_id,
+        canonical_tof_checksum=canonical_tof_checksum,
     )
 
     cycle_count = int(eligible_df["cycle_group_id"].nunique()) if len(eligible_df) else 0
     distinct_soh = eligible_df[target].nunique() if len(eligible_df) else 0
+    independent_soh_states = (
+        int(eligible_df["independent_soh_group_id"].nunique()) if len(eligible_df) else 0
+    )
     ready = distinct_soh >= config.min_soh_independent_states
 
     report = DatasetReport(
@@ -341,10 +348,11 @@ def build_soh_dataset(
         else 0,
         cycle_group_count=cycle_count,
         distinct_soh_values=distinct_soh,
+        independent_soh_state_count=independent_soh_states,
         frame_random_split_prohibited=True,
         limitations=[
             "EVENT ROW COUNT IS NOT INDEPENDENT SOH SAMPLE COUNT",
-            f"only {distinct_soh} distinct SOH values from {cycle_count} cycle groups — NOT ready for supervised modeling",
+            f"only {independent_soh_states} independent SOH state groups and {distinct_soh} distinct SOH values from {cycle_count} cycle groups — NOT ready for supervised modeling",
             "requires more ageing cycles / multiple batteries / RPT before model evaluation",
         ],
         warnings=[],

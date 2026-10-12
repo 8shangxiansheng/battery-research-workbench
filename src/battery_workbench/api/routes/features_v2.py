@@ -19,17 +19,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, Request
+from pydantic import ValidationError
 from scipy.signal import hilbert
 
+from battery_workbench.analysis.plan_registry import resolve_experiment_analysis_plan
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
+from battery_workbench.api.event_label_join import merge_event_labels
+from battery_workbench.api.integrity import (
+    assert_canonical_tof_integrity,
+    assert_current_timebase_chain,
+    assert_processed_artifact_integrity,
+)
+from battery_workbench.api.schemas import FeatureCorrelationsEnvelope
 from battery_workbench.api.service import validate_id
+from battery_workbench.conditions.assignment import assign_condition_segments_to_events
+from battery_workbench.conditions.segments import load_condition_segments
 from battery_workbench.features.gate_calibration import (
     CALIBRATION_POLICY_ID,
     GateBoundPair,
@@ -55,8 +67,17 @@ from battery_workbench.features.selected_series import (
     selected_feature_series,
 )
 from battery_workbench.features.state_correlation import (
+    CORRELATION_POLICY_ID,
+    CORRELATION_POLICY_VERSIONS,
     FeatureStateRow,
+    battery_condition_stratified_soc,
+    battery_decomposed_soc_correlation,
+    battery_scatter_diagnostic,
+    condition_stratified_soc,
     correlate_feature_state,
+    cycle_decomposed_soc_correlation,
+    cycle_stratified_soc,
+    exploratory_inference_assessment,
     soc_correlation_suite,
     soh_cycle_summary,
 )
@@ -64,11 +85,106 @@ from battery_workbench.features_physical.canonical_tof import (
     canonical_tof_values_by_event,
     effective_fs,
 )
+from battery_workbench.io.experiment.manifest_loader import (
+    data_asset_matches,
+    load_data_assets,
+)
+from battery_workbench.multimodal.event_id import build_measurement_event_id
+from battery_workbench.multimodal.schemas import CanonicalMeasurementEvent
 
 router = APIRouter(tags=["feature-workbench"])
 
 
+def _assert_source_provenance(
+    request: Request,
+    battery_id: str,
+    experiment_id: str,
+    *,
+    modalities: tuple[str, ...] = ("electrical", "ultrasound"),
+) -> None:
+    service = get_service(request)
+    from battery_workbench.provenance.parser_manifest import (
+        invalid_parser_source_modalities,
+        parser_output_integrity_reasons,
+    )
+
+    output_reasons = parser_output_integrity_reasons(
+        service.processed_root, battery_id, experiment_id
+    )
+    invalid_modalities = [
+        modality
+        for modality in invalid_parser_source_modalities(
+            service.processed_root,
+            service.raw_root,
+            battery_id,
+            experiment_id,
+        )
+        if modality in modalities
+    ]
+    if invalid_modalities:
+        integrity_reasons = {
+            modality: output_reasons[modality]
+            for modality in invalid_modalities
+            if output_reasons.get(modality)
+        }
+        details: dict[str, Any] = {
+            "invalid_modalities": invalid_modalities,
+            "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+        }
+        if integrity_reasons:
+            details["integrity_reasons"] = integrity_reasons
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "parser source provenance is invalid; scientific feature outputs are blocked",
+            details,
+        )
+    # Validate nested source-to-asset mappings before output checks so malformed
+    # provenance remains the primary, actionable error when both are invalid.
+    _parser_source_assets(
+        service.processed_root, battery_id, experiment_id, modalities=modalities
+    )
+    invalid_outputs = {
+        modality: reasons
+        for modality, reasons in output_reasons.items()
+        if modality in modalities and reasons
+    }
+    if invalid_outputs:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "parser output integrity is invalid; scientific feature outputs are blocked",
+            {
+                "invalid_modalities": list(invalid_outputs),
+                "integrity_reasons": invalid_outputs,
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        )
+
+
+def _require_current_split(request: Request, split_id: str, *, purpose: str) -> None:
+    """Require verified Dataset/Split lineage before consuming split roles."""
+    assessment = get_service(request).get_artifact(split_id)
+    if assessment.get("availability") == "AVAILABLE":
+        return
+    error_code = (
+        ErrorCode.INTEGRITY_ERROR
+        if assessment.get("availability") == "BLOCKED"
+        else ErrorCode.SCIENTIFIC_READINESS_BLOCKED
+    )
+    raise APIError(
+        error_code,
+        f"split source is not current; {purpose} is unavailable",
+        {
+            "split_id": split_id,
+            "status": assessment.get("status"),
+            **(assessment.get("fields") or {}),
+        },
+    )
+
+
 def _load_frames(request: Request, battery_id: str, experiment_id: str) -> np.ndarray:
+    _assert_source_provenance(
+        request, battery_id, experiment_id, modalities=("ultrasound",)
+    )
     service = get_service(request)
     store = service.processed_root / "ultrasound" / battery_id / experiment_id / "waveforms.zarr"
     frames_meta = (
@@ -105,6 +221,7 @@ def _validate_experiment_gate_context(context: dict[str, Any], frames: np.ndarra
 
 
 def _load_events_labels(request: Request, battery_id: str, experiment_id: str):
+    _assert_source_provenance(request, battery_id, experiment_id)
     service = get_service(request)
     events_path = (
         service.processed_root
@@ -116,13 +233,81 @@ def _load_events_labels(request: Request, battery_id: str, experiment_id: str):
     labels_path = (
         service.processed_root / "labels" / battery_id / experiment_id / "event_labels.parquet"
     )
-    if not events_path.is_file() or not labels_path.is_file():
+    if not events_path.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
+    event_manifest_path = (
+        service.processed_root
+        / "multimodal"
+        / battery_id
+        / experiment_id
+        / "measurement_event_manifest.json"
+    )
+    if not event_manifest_path.is_file():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "measurement event provenance is required before feature analysis",
+            {
+                "integrity_reasons": ["MEASUREMENT_EVENT_MANIFEST_MISSING"],
+                "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            },
+        )
+    assert_processed_artifact_integrity(
+        service.processed_root,
+        event_manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"events", "candidates"},
+        required_inputs={"aligned", "sync_candidates", "electrical_records"},
+    )
+    label_manifest_path = labels_path.parent / "label_manifest.json"
+    if not labels_path.is_file() and label_manifest_path.exists():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "label manifest exists but event labels are missing",
+            {
+                "integrity_reasons": ["LABEL_OUTPUT_MISSING:event_labels"],
+                "recovery_action": "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+            },
+        )
+    if not labels_path.is_file():
+        raise APIError(
+            ErrorCode.SCIENTIFIC_READINESS_BLOCKED,
+            "当前实验没有可用的标签工件；确认电学记录后运行 FULL_PRE_MODEL 标签生成流程。",
+            {
+                "target_id": "reference_soc_percent",
+                "recovery_action": "RUN_LABEL_GENERATION",
+                "recommended_profile": "FULL_PRE_MODEL",
+            },
+        )
+    if not label_manifest_path.is_file():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "label provenance is required before feature analysis",
+            {
+                "integrity_reasons": ["LABEL_MANIFEST_MISSING"],
+                "recovery_action": "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+            },
+        )
+    assert_processed_artifact_integrity(
+        service.processed_root,
+        label_manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"event_labels"},
+        required_inputs={"measurement_events", "records", "cycles", "steps"},
+        required_manifest_fields={"label_set_id"},
+        recovery_action="REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+    )
     import pandas as pd
 
     events = pd.read_parquet(events_path)
     labels = pd.read_parquet(labels_path)
     return events, labels
+
+
+def _merge_event_labels(events: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """Compatibility wrapper for the shared identity-safe label join."""
+    return merge_event_labels(events, labels)
 
 
 _STATE_MAP = {"恒流充电": "charge", "恒压充电": "charge", "恒流放电": "discharge", "搁置": "rest"}
@@ -144,13 +329,35 @@ def _correlation_rows(
     stay in the payload flagged ineligible (excluded downstream).
     """
     events, labels = _load_events_labels(request, battery_id, experiment_id)
-    n = len(series) if max_frames is None else min(len(series), max_frames)
-    ev = events.iloc[:n]
-    merged = ev.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
+    joined_events = _merge_event_labels(events, labels)
+    frames_meta_path = (
+        get_service(request).processed_root
+        / "ultrasound"
+        / battery_id
+        / experiment_id
+        / "frames.parquet"
+    )
+    try:
+        frame_metadata = pd.read_parquet(
+            frames_meta_path, columns=["ultrasound_asset_id", "frame_index_raw"]
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "waveform frame identity metadata is unavailable or invalid",
+            {
+                "integrity_reasons": ["WAVEFORM_FRAME_IDENTITY_METADATA_INVALID"],
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        ) from exc
+    series_by_event = _align_feature_series_to_event_frames(events, frame_metadata, series)
+    n = len(series_by_event) if max_frames is None else min(len(series_by_event), max_frames)
+    merged = joined_events.iloc[:n]
     rows: list[FeatureStateRow] = []
     for i, r in enumerate(merged.itertuples()):
         soc = getattr(r, "soc_reference_percent", None)
         temp = getattr(r, "temperature_c", None)
+        temp_channel = getattr(r, "temperature_channel_id", None)
         soh = getattr(r, "soh_capacity_reference_percent", None)
         rows.append(
             FeatureStateRow(
@@ -170,15 +377,348 @@ def _correlation_rows(
                 feature_code=feature_code,
                 # NaN series values are missing, not data — keep the
                 # correlation input finite so n_valid/n_missing stay honest.
-                value=float(series[i]) if np.isfinite(series[i]) else None,
+                value=float(series_by_event[i]) if np.isfinite(series_by_event[i]) else None,
                 reference_soc_percent=float(soc) if soc is not None and not pd_isna(soc) else None,
                 temperature_c=float(temp) if temp is not None and not pd_isna(temp) else None,
-                temperature_channel_id=None,
+                temperature_channel_id=(
+                    str(temp_channel)
+                    if temp_channel is not None and not pd_isna(temp_channel)
+                    else None
+                ),
                 soh_percent=float(soh) if soh is not None and not pd_isna(soh) else None,
                 analysis_eligible=bool(r.analysis_eligible),
             )
         )
     return rows
+
+
+def _align_feature_series_to_event_frames(
+    events: pd.DataFrame,
+    frame_metadata: pd.DataFrame,
+    series: np.ndarray,
+) -> np.ndarray:
+    """Associate waveform values with MeasurementEvents by asset/frame identity.
+
+    Parquet row order is an implementation detail, not a cross-artifact key.
+    This explicit join protects multi-asset analysis from positional drift.
+    """
+    required_event = {"ultrasound_asset_id", "frame_index_raw"}
+    required_frame = {"ultrasound_asset_id", "frame_index_raw"}
+    if not required_event.issubset(events.columns) or not required_frame.issubset(
+        frame_metadata.columns
+    ):
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "waveform and MeasurementEvent identity columns are required",
+            {
+                "integrity_reasons": ["FRAME_EVENT_IDENTITY_COLUMNS_MISSING"],
+                "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            },
+        )
+    values = np.asarray(series, dtype=np.float64)
+    if len(frame_metadata) != len(values) or len(events) != len(values):
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "waveform, frame metadata, and MeasurementEvent row counts differ",
+            {
+                "integrity_reasons": ["FRAME_EVENT_ROW_COUNT_MISMATCH"],
+                "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            },
+        )
+
+    def identities(frame: pd.DataFrame, artifact_name: str) -> list[tuple[str, int]]:
+        keys: list[tuple[str, int]] = []
+        try:
+            for asset_id, frame_index in frame[
+                ["ultrasound_asset_id", "frame_index_raw"]
+            ].itertuples(index=False, name=None):
+                if pd.isna(asset_id) or pd.isna(frame_index):
+                    raise ValueError("identity contains null values")
+                keys.append((str(asset_id), int(frame_index)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{artifact_name} has invalid waveform frame identities",
+                {
+                    "integrity_reasons": [f"{artifact_name}_FRAME_IDENTITY_INVALID"],
+                    "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+                },
+            ) from exc
+        if len(set(keys)) != len(keys):
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{artifact_name} has duplicate waveform frame identities",
+                {
+                    "integrity_reasons": [f"{artifact_name}_FRAME_IDENTITY_DUPLICATE"],
+                    "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+                },
+            )
+        return keys
+
+    frame_keys = identities(frame_metadata, "WAVEFORM")
+    event_keys = identities(events, "MEASUREMENT_EVENT")
+    if set(frame_keys) != set(event_keys):
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "waveform frames and MeasurementEvents do not identify the same frame set",
+            {
+                "integrity_reasons": ["FRAME_EVENT_IDENTITY_SET_MISMATCH"],
+                "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            },
+        )
+    value_by_frame = dict(zip(frame_keys, values, strict=True))
+    return np.asarray([value_by_frame[key] for key in event_keys], dtype=np.float64)
+
+
+def _align_event_series_to_frame_metadata(
+    events: pd.DataFrame,
+    frame_metadata: pd.DataFrame,
+    series: np.ndarray,
+) -> np.ndarray:
+    """Align an event-keyed series back to canonical waveform metadata order."""
+    return _align_feature_series_to_event_frames(frame_metadata, events, series)
+
+
+def _correlation_alignment_assessment(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    sync_path = (
+        get_service(request).processed_root
+        / "synchronization"
+        / battery_id
+        / experiment_id
+        / "synchronization_manifest.json"
+    )
+    manifest = _read_json_local(sync_path) or {}
+    validated_sync = manifest.get("validated_sync") is True
+    status = (
+        "VALIDATED"
+        if validated_sync
+        else "PROVISIONAL" if manifest else "UNKNOWN"
+    )
+    limitation = (
+        "study protocol is not registered; association remains exploratory"
+        if validated_sync
+        else "acoustic/electrical absolute timebase is not validated; "
+        "associations with electrical labels are exploratory and cannot support confirmatory claims"
+    )
+    return {
+        "status": status,
+        "validated_sync": validated_sync,
+        "association_scope": "EXPLORATORY_ONLY",
+        "confirmatory_inference_allowed": False,
+        "limitation": limitation,
+    }
+
+
+def _experiment_analysis_plan_assessment(
+    request: Request, battery_id: str, experiment_id: str
+) -> dict[str, Any]:
+    service = get_service(request)
+    return resolve_experiment_analysis_plan(
+        service.raw_root, battery_id=battery_id, experiment_id=experiment_id
+    )
+
+
+def _declared_condition_analysis(
+    request: Request,
+    battery_id: str,
+    experiment_id: str,
+    feature_rows: list[FeatureStateRow],
+) -> dict[str, Any]:
+    """Read declared condition segments and return event-grain SOC slices."""
+    service = get_service(request)
+    # Condition intervals are user-maintained annotations, not immutable raw
+    # manifests. Keep declarations outside raw while referenced evidence stays raw.
+    manifest_path = (
+        service.raw_root.parent
+        / "annotations"
+        / battery_id
+        / experiment_id
+        / "condition_segments.csv"
+    )
+    common = {
+        "absolute_timebase_status": "NOT_ASSESSED",
+        "synchronization_status": "NOT_ASSESSED",
+    }
+    if not manifest_path.is_file():
+        return {
+            **common,
+            "status": "NOT_CONFIGURED",
+            "declaration_status": "NOT_CONFIGURED",
+            "segment_count": 0,
+            "events_assessed": 0,
+            "assignment_status_counts": {},
+            "results": [],
+            "limitations": [
+                "no condition_segments.csv manifest; no condition-stratified SOC results are available"
+            ],
+        }
+
+    events_path = (
+        service.processed_root
+        / "multimodal"
+        / battery_id
+        / experiment_id
+        / "measurement_events.parquet"
+    )
+    if not events_path.is_file():
+        raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
+    assert_processed_artifact_integrity(
+        service.processed_root,
+        events_path.parent / "measurement_event_manifest.json",
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"events", "candidates"},
+        required_inputs={"aligned", "sync_candidates", "electrical_records"},
+        required_manifest_fields={"builder_version"},
+        recovery_action="REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+    )
+
+    try:
+        assets_path = service.raw_root / "manifests" / "data_assets.csv"
+        assets = load_data_assets(assets_path)
+        segments = load_condition_segments(
+            manifest_path,
+            raw_root=service.raw_root,
+            data_assets=assets,
+        )
+        event_frame = pd.read_parquet(events_path)
+        identity_columns = {
+            "measurement_event_id",
+            "battery_id",
+            "experiment_id",
+            "ultrasound_asset_id",
+            "frame_index_raw",
+        }
+        missing_identity_columns = sorted(identity_columns - set(event_frame.columns))
+        if missing_identity_columns:
+            raise ValueError(
+                "canonical MeasurementEvent is missing identity columns: "
+                f"{missing_identity_columns}"
+            )
+        event_ids = event_frame["measurement_event_id"]
+        invalid_event_ids = event_ids.map(
+            lambda value: not isinstance(value, str)
+            or not value.strip()
+            or value != value.strip()
+        )
+        if invalid_event_ids.any() or event_ids.duplicated().any():
+            raise ValueError(
+                "canonical MeasurementEvent measurement_event_id values must be "
+                "non-empty, trimmed, and unique"
+            )
+        registered_ultrasound_assets = {
+            (battery_id, experiment_id, asset.asset_id)
+            for asset in assets
+            if asset.modality == "ultrasound"
+            and data_asset_matches(asset, battery_id, experiment_id)
+        }
+        for record in event_frame[
+            [
+                "measurement_event_id",
+                "battery_id",
+                "experiment_id",
+                "ultrasound_asset_id",
+                "frame_index_raw",
+            ]
+        ].to_dict(orient="records"):
+            event_battery = record["battery_id"]
+            event_experiment = record["experiment_id"]
+            asset_id = record["ultrasound_asset_id"]
+            raw_frame_index = record["frame_index_raw"]
+            if (
+                event_battery != battery_id
+                or event_experiment != experiment_id
+                or not isinstance(asset_id, str)
+                or not asset_id.strip()
+                or asset_id != asset_id.strip()
+                or (event_battery, event_experiment, asset_id)
+                not in registered_ultrasound_assets
+            ):
+                raise ValueError(
+                    "canonical MeasurementEvent identity does not match its registered "
+                    "Battery/Experiment/Ultrasound DataAsset"
+                )
+            if isinstance(raw_frame_index, bool):
+                raise TypeError(
+                    "canonical MeasurementEvent frame_index_raw must be an integer"
+                )
+            try:
+                frame_index = int(raw_frame_index)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "canonical MeasurementEvent frame_index_raw must be an integer"
+                ) from exc
+            if frame_index < 0 or frame_index != raw_frame_index:
+                raise ValueError("canonical MeasurementEvent frame_index_raw must be non-negative")
+            expected_event_id = build_measurement_event_id(
+                battery_id, experiment_id, asset_id, frame_index
+            )
+            if record["measurement_event_id"] != expected_event_id:
+                raise ValueError(
+                    "MeasurementEvent ID does not match its composite frame identity"
+                )
+        feature_event_ids = {row.measurement_event_id for row in feature_rows}
+        canonical_event_ids = set(event_ids)
+        unknown_feature_event_count = len(feature_event_ids - canonical_event_ids)
+        if unknown_feature_event_count:
+            raise ValueError(
+                "feature rows reference unknown MeasurementEvent identities "
+                f"(count={unknown_feature_event_count})"
+            )
+        event_frame = event_frame[
+            event_frame["measurement_event_id"].astype(str).isin(feature_event_ids)
+        ]
+        events: list[CanonicalMeasurementEvent] = []
+        for record in event_frame.to_dict(orient="records"):
+            timestamp = record.get("provisional_absolute_timestamp")
+            if pd_isna(timestamp):
+                timestamp = None
+            events.append(
+                CanonicalMeasurementEvent.model_validate(
+                    {
+                        "measurement_event_id": str(record["measurement_event_id"]),
+                        "battery_id": battery_id,
+                        "experiment_id": experiment_id,
+                        "ultrasound_asset_id": str(record["ultrasound_asset_id"]),
+                        "frame_index_raw": int(record["frame_index_raw"]),
+                        "event_order_index": int(record["event_order_index"]),
+                        "provisional_absolute_timestamp": timestamp,
+                        "match_status": str(record["match_status"]),
+                        "event_quality_status": str(record["event_quality_status"]),
+                        "analysis_eligible": bool(record["analysis_eligible"]),
+                    }
+                )
+            )
+    except APIError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, ValidationError) as exc:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "condition segment evidence or canonical MeasurementEvent is invalid",
+            {"reason": str(exc)},
+        ) from exc
+
+    assignments = assign_condition_segments_to_events(segments, events)
+    status_counts = dict(sorted(Counter(item.status for item in assignments).items()))
+    return {
+        **common,
+        "status": "AVAILABLE" if segments else "NO_SEGMENTS",
+        "declaration_status": "OPERATOR_DECLARED" if segments else "NOT_APPLICABLE",
+        "segment_count": len(segments),
+        "events_assessed": len(events),
+        "assignment_status_counts": status_counts,
+        "results": [
+            result.model_dump()
+            for result in condition_stratified_soc(feature_rows, assignments)
+        ],
+        "limitations": [
+            "condition values and intervals are OPERATOR_DECLARED, not independently verified",
+            "absolute timebase and cross-modal synchronization remain NOT_ASSESSED",
+            "descriptive associations only; no confidence interval or p-value is estimated",
+        ],
+    }
 
 
 def pd_isna(value: Any) -> bool:
@@ -206,6 +746,18 @@ def physical_features(
 
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(
+        request, battery_id, experiment_id, modalities=("ultrasound",)
+    )
+    electrical_source_blocked = False
+    try:
+        _assert_source_provenance(
+            request, battery_id, experiment_id, modalities=("electrical",)
+        )
+    except APIError:
+        # Frame-local ultrasound features remain inspectable, but event-linked
+        # canonical TOF is not attributable while electrical lineage is invalid.
+        electrical_source_blocked = True
     gate_context = _experiment_gate_context(request, battery_id, experiment_id)
     bounds = gate_context["gate_bounds"]
     frame_meta_path = (
@@ -215,6 +767,16 @@ def physical_features(
         / experiment_id
         / "frames.parquet"
     )
+    if not frame_meta_path.is_file():
+        raise APIError(
+            ErrorCode.ARTIFACT_NOT_AVAILABLE,
+            "ultrasound frame metadata is not available; parse the registered Ultrasound DataAsset first",
+            {
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "recovery_action": "RUN_ULTRASOUND_PARSE",
+            },
+        )
     frame_meta = pd.read_parquet(
         frame_meta_path,
         columns=["ultrasound_asset_id", "frame_index_raw", "waveform_group", "waveform_row_index"],
@@ -261,6 +823,7 @@ def physical_features(
 
     # canonical envelope-peak TOF block — read from the materialized artifact
     canonical_tof_block: dict[str, Any] | None = None
+    canonical_tof_integrity_warning: dict[str, Any] | None = None
     ct_path = (
         get_service(request).processed_root
         / "features_physical"
@@ -268,52 +831,82 @@ def physical_features(
         / experiment_id
         / "canonical_tof.parquet"
     )
-    if ct_path.is_file():
+    if ct_path.is_file() and not electrical_source_blocked:
         import pandas as ct_pd
-
-        ct = ct_pd.read_parquet(
-            ct_path, columns=["measurement_event_id", "tof_us", "tof_status"]
-        )
-        event_path = (
-            get_service(request).processed_root
-            / "multimodal"
-            / battery_id
-            / experiment_id
-            / "measurement_events.parquet"
-        )
-        event_values: dict[tuple[str, int], float] = {}
-        if event_path.is_file():
-            event_meta = ct_pd.read_parquet(
-                event_path,
-                columns=["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"],
-            ).dropna(subset=["ultrasound_asset_id", "frame_index_raw"])
-            valid_tof = ct[ct["tof_status"] == "VALID"].dropna(subset=["tof_us"])
-            try:
-                joined_tof = event_meta.merge(
-                    valid_tof,
-                    on="measurement_event_id",
-                    how="inner",
-                    validate="one_to_one",
-                )
-            except pd.errors.MergeError as exc:
-                raise APIError(
-                    ErrorCode.INTEGRITY_ERROR,
-                    "canonical TOF must contain at most one row per MeasurementEvent",
-                ) from exc
-            event_values = {
-                (str(row.ultrasound_asset_id), int(row.frame_index_raw)): float(row.tof_us)
-                for row in joined_tof.itertuples(index=False)
+        try:
+            assert_canonical_tof_integrity(
+                get_service(request).processed_root,
+                battery_id=battery_id,
+                experiment_id=experiment_id,
+            )
+        except APIError as exc:
+            canonical_tof_integrity_warning = {
+                "integrity_reasons": exc.details.get("integrity_reasons", []),
+                "recovery_action": exc.details.get("recovery_action"),
             }
-        canonical_tof_block = {
-            "feature_code": "tof_us",
-            "method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
-            "gate_template_id": "TOF_SURFACE_PEAK_GATE→TOF_BOTTOM_PEAK_GATE",
-            "display_name_en": "Canonical Envelope-Peak TOF",
-            "display_name_zh": "规范包络峰TOF（表面→底波）",
-            "unit": "µs",
-            "values": [event_values.get((item["ultrasound_asset_id"], item["frame_index_raw"])) for item in frame_locators],
-            "artifact_read_only": True,
-        }
+        else:
+            ct = ct_pd.read_parquet(
+                ct_path, columns=["measurement_event_id", "tof_us", "tof_status"]
+            )
+            event_path = (
+                get_service(request).processed_root
+                / "multimodal"
+                / battery_id
+                / experiment_id
+                / "measurement_events.parquet"
+            )
+            event_values: dict[tuple[str, int], float] = {}
+            if event_path.is_file():
+                event_meta = ct_pd.read_parquet(
+                    event_path,
+                    columns=["measurement_event_id", "ultrasound_asset_id", "frame_index_raw"],
+                ).dropna(subset=["ultrasound_asset_id", "frame_index_raw"])
+                valid_tof = ct[ct["tof_status"] == "VALID"].dropna(subset=["tof_us"])
+                try:
+                    joined_tof = event_meta.merge(
+                        valid_tof,
+                        on="measurement_event_id",
+                        how="inner",
+                        validate="one_to_one",
+                    )
+                except pd.errors.MergeError as exc:
+                    raise APIError(
+                        ErrorCode.INTEGRITY_ERROR,
+                        "canonical TOF must contain at most one row per MeasurementEvent",
+                    ) from exc
+                event_values = {
+                    (str(row.ultrasound_asset_id), int(row.frame_index_raw)): float(row.tof_us)
+                    for row in joined_tof.itertuples(index=False)
+                }
+            canonical_tof_block = {
+                "feature_code": "tof_us",
+                "method": "SURFACE_TO_BOTTOM_ENVELOPE_PEAK_TOF_V1",
+                "gate_template_id": "TOF_SURFACE_PEAK_GATE→TOF_BOTTOM_PEAK_GATE",
+                "display_name_en": "Canonical Envelope-Peak TOF",
+                "display_name_zh": "规范包络峰TOF（表面→底波）",
+                "unit": "µs",
+                "values": [event_values.get((item["ultrasound_asset_id"], item["frame_index_raw"])) for item in frame_locators],
+                "artifact_read_only": True,
+            }
+    elif not electrical_source_blocked and any(
+        path.exists()
+        for path in (
+            ct_path,
+            ct_path.with_name("canonical_tof_manifest.json"),
+            ct_path.with_name("canonical_tof_audit.json"),
+        )
+    ):
+        try:
+            assert_canonical_tof_integrity(
+                get_service(request).processed_root,
+                battery_id=battery_id,
+                experiment_id=experiment_id,
+            )
+        except APIError as exc:
+            canonical_tof_integrity_warning = {
+                "integrity_reasons": exc.details.get("integrity_reasons", []),
+                "recovery_action": exc.details.get("recovery_action"),
+            }
 
     def _series(values: Any) -> list[float | None]:
         return [
@@ -388,6 +981,19 @@ def physical_features(
             "source_formula_id": "USER_MATLAB_GATE_LOCAL_PHYSICAL_FEATURES_V1",
             "gate_calibration_id": gate_context["gate_calibration_id"],
             "note": "computed by deterministic backend modules; frontend never recomputes",
+            "canonical_tof_status": (
+                "BLOCKED_BY_ELECTRICAL_SOURCE_INTEGRITY"
+                if electrical_source_blocked
+                else "BLOCKED_BY_ARTIFACT_INTEGRITY"
+                if canonical_tof_integrity_warning
+                else "AVAILABLE" if canonical_tof_block is not None else "UNAVAILABLE"
+            ),
+            "source_integrity_warning": (
+                "电学 parser provenance 无效；仍显示超声帧内特征，已隐藏依赖事件关联的 canonical TOF。"
+                if electrical_source_blocked
+                else None
+            ),
+            "canonical_tof_integrity_warning": canonical_tof_integrity_warning,
         },
     }
 
@@ -395,13 +1001,24 @@ def physical_features(
 # ---------- feature–state correlations (backend module) ----------
 
 
-@router.get("/experiments/{battery_id}/{experiment_id}/feature-correlations")
+@router.get(
+    "/experiments/{battery_id}/{experiment_id}/feature-correlations",
+    response_model=FeatureCorrelationsEnvelope,
+)
 def feature_correlations(
     request: Request,
     battery_id: str,
     experiment_id: str,
     feature_code: str = Query(default="SWA"),
-    limit: int = Query(default=2000, ge=10, le=4000),
+    limit: int = Query(
+        default=2000,
+        ge=10,
+        le=4000,
+        description=(
+            "Maximum event points in the diagnostic scatter plot. All joined events "
+            "are used for correlation statistics regardless of this display limit."
+        ),
+    ),
 ) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
@@ -409,7 +1026,7 @@ def feature_correlations(
 
     gate_context = _experiment_gate_context(request, battery_id, experiment_id)
     bounds = gate_context["gate_bounds"]
-    frames = _load_frames(request, battery_id, experiment_id)[:limit]
+    frames = _load_frames(request, battery_id, experiment_id)
     _validate_experiment_gate_context(gate_context, frames)
     series_map: dict[str, np.ndarray] = {
         "SWA": surface_wave_amplitude(frames, bounds)["raw"],
@@ -426,7 +1043,7 @@ def feature_correlations(
         experiment_id,
         series_map[feature_code],
         feature_code,
-        max_frames=len(frames),
+        max_frames=None,
     )
 
     soc_suite = []
@@ -443,13 +1060,24 @@ def feature_correlations(
             )
             soc_suite.append(r.model_dump())
 
-    temp = correlate_feature_state(
+    temp_result = correlate_feature_state(
         rows,
         state_variable="temperature_c",
         method="pearson",
         analysis_id=f"api:{feature_code}:temp",
         feature_code=feature_code,
-    ).model_dump()
+    )
+    temp = temp_result.model_dump()
+    # A numerical coefficient is not evidence that the temperature channel is
+    # a validated scientific target. Keep the descriptive value available, but
+    # make the same calibration/location gate used by target readiness explicit.
+    if temp_result.status == "VALID":
+        temp["status"] = "BLOCKED_BY_VALIDATION"
+        temp["limitations"].append(
+            "temperature association is exploratory only: sensor location and "
+            "calibration evidence are not verified; this is not an eligible "
+            "temperature target"
+        )
     soh = correlate_feature_state(
         rows,
         state_variable="soh_percent",
@@ -457,20 +1085,57 @@ def feature_correlations(
         analysis_id=f"api:{feature_code}:soh",
         feature_code=feature_code,
     ).model_dump()
+    diagnostic = battery_scatter_diagnostic(
+        rows, feature_code=feature_code, max_points=limit
+    )
     return {
         "data": {
             "feature_code": feature_code,
             "n_events": len(rows),
             "soc": soc_suite,
+            "soc_battery_decomposition": battery_decomposed_soc_correlation(rows),
+            "soc_diagnostic_scatter": diagnostic,
+            "soc_by_battery_condition": battery_condition_stratified_soc(
+                rows, analysis_id=f"api:{feature_code}:battery", feature_code=feature_code
+            ),
+            "soc_by_cycle": [
+                result.model_dump()
+                for result in cycle_stratified_soc(
+                    rows, analysis_id=f"api:{feature_code}:cycle", feature_code=feature_code
+                )
+            ],
+            "soc_cycle_decomposition": cycle_decomposed_soc_correlation(rows),
+            "alignment_assessment": _correlation_alignment_assessment(
+                request, battery_id, experiment_id
+            ),
+            "declared_condition_analysis": _declared_condition_analysis(
+                request, battery_id, experiment_id, rows
+            ),
+            "inference_assessment": exploratory_inference_assessment(
+                correlation_results_included=True,
+                study_protocol_assessment=_experiment_analysis_plan_assessment(
+                    request, battery_id, experiment_id
+                ),
+            ),
             "temperature": temp,
             "soh": soh,
             "soh_cycle_summary": soh_cycle_summary(rows),
         },
         "meta": {
-            "policy": "FEATURE_STATE_CORRELATION_POLICY_V1",
+            "policy": CORRELATION_POLICY_ID,
+            "policy_versions": CORRELATION_POLICY_VERSIONS,
+            "analysis_scope": {
+                "diagnostic_point_limit": limit,
+                "analyzed_event_rows": len(rows),
+                "diagnostic_points_returned": len(diagnostic["points"]),
+                "join_key": "measurement_event_id",
+                "coefficient_eligibility": "analysis_eligible=true",
+                "analysis_mode": "EXPLORATORY",
+            },
             "gate_calibration_id": gate_context["gate_calibration_id"],
-            "note": "correlations computed by backend module on the event grain; "
-            "no naive p-values; frontend never recomputes",
+            "note": "SOC/temperature associations use eligible MeasurementEvents; "
+            "SOH associations use Battery/Experiment/Cycle summaries; no naive p-values; "
+            "frontend never recomputes",
         },
     }
 
@@ -912,6 +1577,7 @@ def freeze_tof_gate_calibration(
 def list_splits(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(request, battery_id, experiment_id)
     service = get_service(request)
     root = service.processed_root / "splits" / battery_id / experiment_id
     items: list[dict[str, Any]] = []
@@ -921,12 +1587,17 @@ def list_splits(request: Request, battery_id: str, experiment_id: str) -> dict[s
                 data = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            split_id = data.get("split_id", manifest.parent.name)
+            assessment = service.get_artifact(str(split_id))
             items.append(
                 {
-                    "split_id": data.get("split_id", manifest.parent.name),
+                    "split_id": split_id,
                     "dataset_id": data.get("dataset_id"),
                     "strategy": data.get("strategy"),
                     "readiness_status": data.get("readiness_status"),
+                    "availability": assessment.get("availability"),
+                    "freshness_status": assessment.get("fields", {}).get("freshness_status"),
+                    "status": assessment.get("status"),
                 }
             )
     return {"data": {"splits": items}, "meta": {}}
@@ -940,12 +1611,15 @@ def list_split_folds(
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     validate_id(split_id, "split_id")
-    root = get_service(request).processed_root / "splits" / battery_id / experiment_id
+    _assert_source_provenance(request, battery_id, experiment_id)
+    service = get_service(request)
+    root = service.processed_root / "splits" / battery_id / experiment_id
     sa_file = (
         next(root.rglob(f"{split_id}/split_assignments.parquet"), None) if root.is_dir() else None
     )
     if sa_file is None:
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, f"no split assignments for {split_id}")
+    _require_current_split(request, split_id, purpose="fold inventory")
     import pandas as fold_pd
 
     sa = fold_pd.read_parquet(sa_file, columns=["fold", "role"])
@@ -976,6 +1650,7 @@ def list_split_folds(
 def list_feature_analyses(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(request, battery_id, experiment_id)
     service = get_service(request)
     root = service.processed_root / "feature_analysis" / battery_id / experiment_id
     items: list[dict[str, Any]] = []
@@ -984,20 +1659,36 @@ def list_feature_analyses(request: Request, battery_id: str, experiment_id: str)
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                continue
-            selection = data.get("selection") or {}
+                data = {}
+            analysis_id = data.get("analysis_id", manifest.parent.name)
+            try:
+                assessed = service.get_feature_analysis(analysis_id)
+            except APIError:
+                assessed = {
+                    "status": "INTEGRITY_BLOCKED",
+                    "availability": "BLOCKED",
+                    "freshness_status": "INTEGRITY_BLOCKED",
+                    "freshness_reasons": ["ANALYSIS_MANIFEST_INVALID"],
+                }
             items.append(
                 {
-                    "analysis_id": data.get("analysis_id", manifest.parent.name),
-                    "analysis_mode": data.get("analysis_mode"),
-                    "target": data.get("target"),
-                    "split_id": data.get("split_id"),
-                    "fold_index": data.get("fold_index"),
-                    "dataset_id": data.get("dataset_id"),
-                    "candidate_features": data.get("candidate_features", []),
-                    "selected_features": selection.get("selected_features", []),
-                    "selection_basis": selection.get("selection_basis"),
-                    "status": "AVAILABLE",
+                    "analysis_id": analysis_id,
+                    "analysis_mode": assessed.get("analysis_mode"),
+                    "target": assessed.get("target"),
+                    "split_id": assessed.get("split_id"),
+                    "fold_index": assessed.get("fold_index"),
+                    "dataset_id": assessed.get("dataset_id"),
+                    "candidate_features": assessed.get("candidate_features", []),
+                    "methods": assessed.get("methods", []),
+                    "selected_features": assessed.get("selected_features", []),
+                    "selection_basis": assessed.get("selection_basis"),
+                    "selection_policy": assessed.get("selection_policy"),
+                    "selection_policy_version": assessed.get("selection_policy_version"),
+                    "selection_status": assessed.get("selection_status", "NOT_ASSESSED"),
+                    "status": assessed.get("status", "INTEGRITY_BLOCKED"),
+                    "availability": assessed.get("availability", "BLOCKED"),
+                    "freshness_status": assessed.get("freshness_status", "INTEGRITY_BLOCKED"),
+                    "freshness_reasons": assessed.get("freshness_reasons", []),
                 }
             )
     return {"data": {"analyses": items}, "meta": {}}
@@ -1012,76 +1703,179 @@ def list_feature_analyses(request: Request, battery_id: str, experiment_id: str)
 
 def _events_labels_joined(request: Request, battery_id: str, experiment_id: str):
     events, labels = _load_events_labels(request, battery_id, experiment_id)
-    joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
-    return joined
+    return _merge_event_labels(events, labels)
+
+
+def _optional_json_manifest(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            f"{label} manifest is unreadable",
+            {"manifest": path.name},
+        ) from exc
+    return payload if isinstance(payload, dict) else {}
 
 
 def _alignment_events_joined(request: Request, battery_id: str, experiment_id: str):
     """Load canonical events for alignment QA, with labels only when available."""
-    processed_root = get_service(request).processed_root
+    service = get_service(request)
+    processed_root = service.processed_root
+    assert_current_timebase_chain(
+        processed_root,
+        service.raw_root,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
     experiment_dir = processed_root / "multimodal" / battery_id / experiment_id
     events_path = experiment_dir / "measurement_events.parquet"
     if not events_path.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
+    event_manifest_path = experiment_dir / "measurement_event_manifest.json"
+    if not event_manifest_path.is_file():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "measurement event provenance is required before target analysis",
+            {
+                "integrity_reasons": ["MEASUREMENT_EVENT_MANIFEST_MISSING"],
+                "recovery_action": "REBUILD_DERIVED_ARTIFACTS_FROM_VERIFIED_INPUTS",
+            },
+        )
+    assert_processed_artifact_integrity(
+        processed_root,
+        event_manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"events", "candidates"},
+        required_inputs={"aligned", "sync_candidates", "electrical_records"},
+    )
 
     import pandas as pd
 
     events = pd.read_parquet(events_path)
     labels_path = processed_root / "labels" / battery_id / experiment_id / "event_labels.parquet"
     if not labels_path.is_file():
-        return events, False
-    labels = pd.read_parquet(labels_path)
-    return events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label")), True
-
-
-def _parser_source_assets(processed_root: Path, battery_id: str, experiment_id: str):
-    """Load parser-recorded source identity, keyed by DataAsset ID."""
-    assets: dict[str, dict[str, dict[str, str]]] = {"electrical": {}, "ultrasound": {}}
-    for modality in assets:
-        path = (
-            processed_root
-            / modality
-            / battery_id
-            / experiment_id
-            / "parser_manifest.json"
-        )
-        if not path.is_file():
-            continue
-        try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        if (labels_path.parent / "label_manifest.json").exists():
             raise APIError(
                 ErrorCode.INTEGRITY_ERROR,
-                f"{modality} parser source manifest is unreadable",
+                "label manifest exists but event labels are missing",
+                {
+                    "integrity_reasons": ["LABEL_OUTPUT_MISSING:event_labels"],
+                    "recovery_action": "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+                },
+            )
+        return events, False
+    label_manifest_path = labels_path.parent / "label_manifest.json"
+    if not label_manifest_path.is_file():
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "label provenance is required before target analysis",
+            {
+                "integrity_reasons": ["LABEL_MANIFEST_MISSING"],
+                "recovery_action": "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+            },
+        )
+    assert_processed_artifact_integrity(
+        processed_root,
+        label_manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"event_labels"},
+        required_inputs={"measurement_events", "records", "cycles", "steps"},
+        required_manifest_fields={"label_set_id"},
+        recovery_action="REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+    )
+    labels = pd.read_parquet(labels_path)
+    return _merge_event_labels(events, labels), True
+
+
+def _parser_source_assets(
+    processed_root: Path,
+    battery_id: str,
+    experiment_id: str,
+    *,
+    modalities: tuple[str, ...] = ("electrical", "ultrasound"),
+):
+    """Load parser-recorded source identity, keyed by DataAsset ID."""
+    assets: dict[str, dict[str, dict[str, str]]] = {"electrical": {}, "ultrasound": {}}
+    root = Path(processed_root).resolve()
+    for modality in modalities:
+        path = root / modality / battery_id / experiment_id / "parser_manifest.json"
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+            if not resolved.is_file():
+                raise TypeError("manifest path is not a file")
+            manifest = json.loads(resolved.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise TypeError("manifest root must be an object")
+        except (OSError, RuntimeError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{modality} parser source manifest is invalid",
                 {"manifest": path.name},
             ) from exc
         raw_hashes = manifest.get("source_sha256", {})
+        if not isinstance(raw_hashes, dict):
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{modality} parser source manifest has invalid source_sha256 mapping",
+                {"manifest": path.name},
+            )
         source_files: dict[str, str] = {}
         if modality == "electrical":
+            details = manifest.get("source_asset_details", [])
+            if not isinstance(details, list) or any(not isinstance(item, dict) for item in details):
+                raise APIError(
+                    ErrorCode.INTEGRITY_ERROR,
+                    "electrical parser source manifest has invalid source_asset_details",
+                    {"manifest": path.name},
+                )
             source_files = {
                 str(item["asset_id"]): str(item["relative_path"])
-                for item in manifest.get("source_asset_details", [])
+                for item in details
                 if item.get("asset_id") and item.get("relative_path")
             }
         else:
+            details = manifest.get("assets", [])
+            if not isinstance(details, list) or any(not isinstance(item, dict) for item in details):
+                raise APIError(
+                    ErrorCode.INTEGRITY_ERROR,
+                    "ultrasound parser source manifest has invalid assets list",
+                    {"manifest": path.name},
+                )
             source_files = {
                 str(item["asset_id"]): str(item["source_file"])
-                for item in manifest.get("assets", [])
+                for item in details
                 if item.get("asset_id") and item.get("source_file")
             }
-        if isinstance(raw_hashes, dict):
-            assets[modality] = {
-                str(asset_id): {
-                    "sha256": str(value),
-                    **(
-                        {"source_file": source_files[str(asset_id)]}
-                        if str(asset_id) in source_files
-                        else {}
-                    ),
-                }
-                for asset_id, value in raw_hashes.items()
-                if isinstance(value, str) and len(value) == 64
+        if any(
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in value)
+            for value in raw_hashes.values()
+        ):
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                f"{modality} parser source manifest contains an invalid SHA-256",
+                {"manifest": path.name},
+            )
+        assets[modality] = {
+            str(asset_id): {
+                "sha256": value,
+                **(
+                    {"source_file": source_files[str(asset_id)]}
+                    if str(asset_id) in source_files
+                    else {}
+                ),
             }
+            for asset_id, value in raw_hashes.items()
+        }
     return assets
 
 
@@ -1131,7 +1925,10 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
     """Target definitions with source/coverage/readiness from canonical artifacts."""
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
-    joined = _events_labels_joined(request, battery_id, experiment_id)
+    _assert_source_provenance(request, battery_id, experiment_id)
+    joined, labels_available = _alignment_events_joined(
+        request, battery_id, experiment_id
+    )
     n = len(joined)
 
     def _count(col: str) -> int:
@@ -1145,6 +1942,54 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
     current = joined.get("current_a")
     soh_states = int(soh.dropna().nunique()) if soh is not None else 0
     temp_range = float(temp.max() - temp.min()) if temp is not None and temp.notna().any() else 0.0
+    service = get_service(request)
+    experiment_dir = service.processed_root / "labels" / battery_id / experiment_id
+    label_manifest = _optional_json_manifest(
+        experiment_dir / "label_manifest.json", "label provenance"
+    )
+    label_definitions = _optional_json_manifest(
+        experiment_dir / "label_definitions.json", "label definition"
+    )
+    event_manifest = _optional_json_manifest(
+        service.processed_root
+        / "multimodal"
+        / battery_id
+        / experiment_id
+        / "measurement_event_manifest.json",
+        "measurement event provenance",
+    )
+    electrical_sources = _parser_source_assets(
+        service.processed_root, battery_id, experiment_id
+    )["electrical"]
+    source_assets = [
+        {
+            "asset_id": asset_id,
+            "source_reference": source.get("source_file"),
+            "sha256": source["sha256"],
+        }
+        for asset_id, source in sorted(electrical_sources.items())
+    ]
+    observed_temperature_channels = sorted(
+        str(value)
+        for value in joined.get("temperature_channel_id", pd.Series(dtype=object)).dropna().unique()
+    )
+
+    definition_rows = label_definitions.get("labels", [])
+
+    def _definition_for(names: set[str]) -> str | None:
+        if not isinstance(definition_rows, list):
+            return None
+        items = [
+            f"{item.get('name')}: {item.get('formula')}"
+            for item in definition_rows
+            if isinstance(item, dict)
+            and item.get("name") in names
+            and item.get("formula")
+        ]
+        return "; ".join(items) if items else None
+
+    def _uncertainty_unknown(reason: str) -> dict[str, str]:
+        return {"status": "UNKNOWN", "reason": reason}
 
     def _range(s: Any) -> list[float] | None:
         if s is None or not s.notna().any():
@@ -1171,11 +2016,40 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
                     "REST_PROPAGATED_FROM_PREVIOUS_VALID_REFERENCE", 0
                 ),
             },
+            "provenance": {
+                "target_grain": "MEASUREMENT_EVENT",
+                "independent_unit": "BATTERY",
+                "method_id": label_manifest.get("soc_method"),
+                "method_version": label_manifest.get("soc_formula_version"),
+                "definition": _definition_for(
+                    {
+                        "soc_reference_percent_charge",
+                        "soc_reference_percent_discharge",
+                        "soc_reference_percent_rest",
+                    }
+                ),
+                "source_assets": source_assets,
+                "uncertainty": _uncertainty_unknown(
+                    "The retrospective reference-label protocol does not provide a validated uncertainty estimate."
+                ),
+            },
             "coverage": {"valid": _count("soc_reference_percent"), "total": n},
             "range": _range(soc),
-            "readiness": "READY_FOR_LIMITED_EVALUATION",
-            "limitation": "Retrospective reference label, not a directly measured state of charge",
-            "limitation_zh": "回顾性参考标签 — 非真实 SOC",
+            "readiness": (
+                "UNAVAILABLE"
+                if not labels_available or _count("soc_reference_percent") == 0
+                else "READY_FOR_LIMITED_EVALUATION"
+            ),
+            "limitation": (
+                "no reference SOC labels are available for this experiment"
+                if not labels_available or _count("soc_reference_percent") == 0
+                else "Retrospective reference label, not a directly measured state of charge"
+            ),
+            "limitation_zh": (
+                "当前没有参考 SOC 标签；确认电学记录后，运行标签生成流程。"
+                if not labels_available or _count("soc_reference_percent") == 0
+                else "回顾性参考标签 — 非真实 SOC"
+            ),
             "unit": "percent",
         },
         {
@@ -1184,14 +2058,42 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "display_name_zh": "温度",
             "semantic_type": "DIRECT_MEASUREMENT",
             "source": "Electrical record temperature channel",
+            "provenance": {
+                "target_grain": "MEASUREMENT_EVENT",
+                "independent_unit": "BATTERY",
+                "method_id": "AUX_TEMP_RECORD_INDEX_JOIN",
+                "method_version": event_manifest.get("builder_version"),
+                "definition": (
+                    "Electrical auxTemp readings are associated by "
+                    "(electrical_asset_id, record_index_raw); no sensor location or "
+                    "calibration is inferred."
+                ),
+                "source_assets": source_assets,
+                "observed_channels": observed_temperature_channels,
+                "uncertainty": _uncertainty_unknown(
+                    "Sensor location and calibration evidence are not registered; measurement uncertainty is unknown."
+                ),
+            },
             "coverage": {"valid": _count("temperature_c"), "total": n},
             "range": _range(temp),
-            "readiness": "UNAVAILABLE"
-            if _count("temperature_c") == 0
-            else ("INSUFFICIENT_VARIATION" if temp_range < 2.0 else "READY"),
-            "limitation": "no temperature channel in this experiment"
-            if _count("temperature_c") == 0
-            else None,
+            "readiness": (
+                "UNAVAILABLE"
+                if _count("temperature_c") == 0
+                else (
+                    "INSUFFICIENT_VARIATION"
+                    if temp_range < 2.0
+                    else "BLOCKED_BY_VALIDATION"
+                )
+            ),
+            "limitation": (
+                "no temperature readings are linked to measurement events"
+                if _count("temperature_c") == 0
+                else (
+                    "sensor location/calibration evidence is not verified; readings are not an eligible temperature modeling target"
+                    if temp_range >= 2.0
+                    else "observed temperature variation is below 2 °C"
+                )
+            ),
             "unit": "celsius",
         },
         {
@@ -1200,6 +2102,17 @@ def list_targets(request: Request, battery_id: str, experiment_id: str) -> dict[
             "display_name_zh": "健康状态",
             "semantic_type": "DERIVED_HEALTH_STATE",
             "source": "Cycle-level capacity reference labels",
+            "provenance": {
+                "target_grain": "CYCLE",
+                "independent_unit": "BATTERY",
+                "method_id": label_manifest.get("soh_method"),
+                "method_version": label_manifest.get("soh_formula_version"),
+                "definition": _definition_for({"soh_capacity_reference_percent"}),
+                "source_assets": source_assets,
+                "uncertainty": _uncertainty_unknown(
+                    "Capacity-test uncertainty and the reference-capacity measurement uncertainty are not characterized."
+                ),
+            },
             "coverage": {
                 "valid": _count("soh_capacity_reference_percent"),
                 "total": n,
@@ -1244,6 +2157,7 @@ def alignment_summary(request: Request, battery_id: str, experiment_id: str) -> 
     """Alignment funnel: frames → matched/ambiguous/unmatched → target-valid → eligible."""
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(request, battery_id, experiment_id)
     joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
     total = len(joined)
     matched_unique = int((joined["match_status"] == "MATCHED_UNIQUE").sum())
@@ -1308,6 +2222,7 @@ _EXCLUSION_REASONS = {
 def alignment_exclusions(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(request, battery_id, experiment_id)
     joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
     groups: list[dict[str, Any]] = []
     for reason, pred in _EXCLUSION_REASONS.items():
@@ -1344,6 +2259,7 @@ def alignment_samples(
     """
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
+    _assert_source_provenance(request, battery_id, experiment_id)
     import pandas as row_pd
 
     joined, labels_available = _alignment_events_joined(request, battery_id, experiment_id)
@@ -1601,7 +2517,21 @@ def feature_label_preview(
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     target_id = str(body.get("target_id", "reference_soc_percent"))
-    features = [str(f) for f in body.get("features", [])][:12]
+    requested_features = body.get("features", [])
+    if not isinstance(requested_features, list) or any(
+        not isinstance(feature, str) for feature in requested_features
+    ):
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "features must be an array of feature codes",
+        )
+    if len(requested_features) > 12:
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "feature ranking accepts at most 12 feature codes; reduce the selection and retry",
+            {"requested_count": len(requested_features), "maximum_count": 12},
+        )
+    features = [str(f) for f in requested_features]
     limit = min(int(body.get("limit", 50)), 500)
     split_id = str(body.get("split_id", ""))  # ML-safe review: role awareness
     fold_index = body.get("fold_index")  # fold-specific roles (LEAVE_ONE_GROUP_OUT has ≥2)
@@ -1653,8 +2583,32 @@ def feature_label_preview(
     events, labels = _load_events_labels(request, battery_id, experiment_id)
     import pandas as join_pd
 
-    joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
-    n = min(len(joined), n_frames)
+    joined = _merge_event_labels(events, labels)
+    frame_metadata_path = (
+        get_service(request).processed_root
+        / "ultrasound"
+        / battery_id
+        / experiment_id
+        / "frames.parquet"
+    )
+    try:
+        frame_metadata = join_pd.read_parquet(
+            frame_metadata_path, columns=["ultrasound_asset_id", "frame_index_raw"]
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "waveform frame identity metadata is unavailable or invalid",
+            {
+                "integrity_reasons": ["WAVEFORM_FRAME_IDENTITY_METADATA_INVALID"],
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        ) from exc
+    series_by_code = {
+        code: _align_feature_series_to_event_frames(joined, frame_metadata, values)
+        for code, values in series_by_code.items()
+    }
+    n = len(joined)
     joined = joined.iloc[:n]
 
     # canonical envelope-peak TOF: served from the materialized artifact only
@@ -1672,6 +2626,11 @@ def feature_label_preview(
                 ErrorCode.NOT_FOUND,
                 "canonical TOF artifact not materialized — run CANONICAL_TOF_FEATURES first",
             )
+        assert_canonical_tof_integrity(
+            get_service(request).processed_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
         ct = join_pd.read_parquet(
             ct_path, columns=["measurement_event_id", "tof_us", "tof_status"]
         )
@@ -1705,17 +2664,54 @@ def feature_label_preview(
                 "split assignments not available for the requested split_id "
                 "(ML-safe review requires an existing Grouped Split first)",
             )
+        _require_current_split(request, split_id, purpose="held-out role-aware preview")
         sa = join_pd.read_parquet(sa_file, columns=["measurement_event_id", "role", "fold"])
         # LEAVE_ONE_GROUP_OUT has ≥2 folds with opposite roles per event — the
         # review is fold-specific: fold_index selects the fold (deterministic
         # default = smallest fold id); roles from other folds never leak.
         folds = sorted(sa["fold"].astype(str).unique())
+        if not folds:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "split assignments do not contain any folds",
+            )
         selected_fold = str(fold_index) if fold_index is not None else folds[0]
+        if selected_fold not in folds:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                f"requested fold_index {selected_fold!r} is not present in the split assignments",
+                {"available_folds": folds},
+            )
         sa_f = sa[sa["fold"].astype(str) == selected_fold]
+        if (
+            sa_f["measurement_event_id"].isna().any()
+            or sa_f["measurement_event_id"].duplicated().any()
+        ):
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "split assignments contain missing or duplicate MeasurementEvent identities",
+            )
+        invalid_roles = sorted(set(sa_f["role"].astype(str)) - {"TRAIN", "HELD_OUT"})
+        if invalid_roles:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "split assignments contain unsupported roles",
+                {"invalid_roles": invalid_roles},
+            )
         role_by_event = {
             str(row.measurement_event_id): {"role": str(row.role), "fold": selected_fold}
             for row in sa_f.itertuples()
         }
+        eligible_event_ids = set(
+            joined.loc[eligible_mask, "measurement_event_id"].astype(str)
+        )
+        unassigned_event_ids = eligible_event_ids - set(role_by_event)
+        if unassigned_event_ids:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "split assignments do not cover all eligible preview rows",
+                {"unassigned_event_count": len(unassigned_event_ids)},
+            )
         train_n = sum(1 for v in role_by_event.values() if v["role"] == "TRAIN")
         held_n = sum(1 for v in role_by_event.values() if v["role"] == "HELD_OUT")
 
@@ -1724,7 +2720,7 @@ def feature_label_preview(
         if not split_id:
             return target_value, False
         info = role_by_event.get(event_id)
-        if info is not None and info["role"] == "HELD_OUT":
+        if info is None or info["role"] != "TRAIN":
             return None, True
         return target_value, False
 
@@ -2144,11 +3140,30 @@ def feature_target_ranking(
     the correlation input STRUCTURALLY to that fold's TRAIN rows — held-out
     targets are never loaded into the analysis input. Ranking describes
     statistical association only: no best / causal / predictive guarantee.
+
+    ``features`` must contain at most 12 string codes. Larger requests are
+    rejected rather than silently truncated, so every accepted candidate is
+    included in the returned ranking (except explicitly blocked/deduplicated
+    aliases).
     """
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     target_id = str(body.get("target_id", "reference_soc_percent"))
-    features = [str(f) for f in body.get("features", [])][:12]
+    requested_features = body.get("features", [])
+    if not isinstance(requested_features, list) or any(
+        not isinstance(feature, str) for feature in requested_features
+    ):
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "features must be an array of feature codes",
+        )
+    if len(requested_features) > 12:
+        raise APIError(
+            ErrorCode.VALIDATION_ERROR,
+            "feature ranking accepts at most 12 feature codes; reduce the selection and retry",
+            {"requested_count": len(requested_features), "maximum_count": 12},
+        )
+    features = list(requested_features)
     mode = "TRAIN_ONLY_ML_SAFE" if body.get("mode") == "TRAIN_ONLY_ML_SAFE" else "EXPLORATORY"
     split_id = str(body.get("split_id") or "")
     fold_index = str(body.get("fold_index") or "")
@@ -2220,6 +3235,11 @@ def feature_target_ranking(
                 ErrorCode.ARTIFACT_NOT_AVAILABLE,
                 "RELATIONSHIP_ARTIFACT_MISSING: canonical TOF artifact not materialized",
             )
+        assert_canonical_tof_integrity(
+            get_service(request).processed_root,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+        )
         import pandas as ct_pd
 
         events_t, _ = _load_events_labels(request, battery_id, experiment_id)
@@ -2227,11 +3247,35 @@ def feature_target_ranking(
             ct_path,
             columns=["measurement_event_id", "tof_us", "tof_status", "gate_calibration_id"],
         )
-        series_map["tof_us"] = np.asarray(
+        frame_metadata_path = (
+            get_service(request).processed_root
+            / "ultrasound"
+            / battery_id
+            / experiment_id
+            / "frames.parquet"
+        )
+        try:
+            frame_metadata = ct_pd.read_parquet(
+                frame_metadata_path,
+                columns=["ultrasound_asset_id", "frame_index_raw"],
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "waveform frame identity metadata is unavailable or invalid",
+                {
+                    "integrity_reasons": ["WAVEFORM_FRAME_IDENTITY_METADATA_INVALID"],
+                    "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+                },
+            ) from exc
+        event_tof = np.asarray(
             canonical_tof_values_by_event(
                 events_t["measurement_event_id"].astype(str).tolist(), ct
             ),
             dtype="float64",
+        )
+        series_map["tof_us"] = _align_event_series_to_frame_metadata(
+            events_t, frame_metadata, event_tof
         )
         cm = _read_json_local(ct_path.parent / "canonical_tof_manifest.json") or {}
         from battery_workbench.features.gate_calibration import resolve_tof_gate_calibration
@@ -2302,11 +3346,50 @@ def feature_target_ranking(
                 ErrorCode.ARTIFACT_NOT_AVAILABLE,
                 f"INVALID_SPLIT: no split assignments for {split_id}",
             )
+        _require_current_split(request, split_id, purpose="TRAIN_ONLY_ML_SAFE ranking")
         import pandas as sa_pd
 
-        sa = sa_pd.read_parquet(sa_file, columns=["measurement_event_id", "role", "fold"])
-        if fold_index:
-            sa = sa[sa["fold"].astype(str) == fold_index]
+        try:
+            sa = sa_pd.read_parquet(
+                sa_file, columns=["measurement_event_id", "role", "fold"]
+            )
+        except (OSError, KeyError, ValueError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "INVALID_SPLIT: split assignments are unreadable or missing required columns",
+            ) from exc
+        if sa.empty or sa[["measurement_event_id", "role", "fold"]].isna().any().any():
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "INVALID_SPLIT: split assignments contain no rows or null required values",
+            )
+        invalid_roles = sorted(
+            set(sa["role"].astype(str)) - {"TRAIN", "HELD_OUT", "VALIDATION", "TEST"}
+        )
+        if invalid_roles:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "INVALID_SPLIT: split assignments contain unsupported roles",
+                {"invalid_roles": invalid_roles},
+            )
+        available_folds = sorted(sa["fold"].astype(str).unique())
+        if fold_index not in available_folds:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                f"INVALID_SPLIT: requested fold_index {fold_index!r} is not present",
+                {"available_folds": available_folds},
+            )
+        sa = sa[sa["fold"].astype(str) == fold_index]
+        if sa["measurement_event_id"].astype(str).duplicated().any():
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "INVALID_SPLIT: selected fold contains duplicate MeasurementEvent identities",
+            )
+        if not (sa["role"] == "TRAIN").any():
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "INVALID_SPLIT: selected fold contains no TRAIN rows",
+            )
         train_ids = set(sa[sa["role"] == "TRAIN"]["measurement_event_id"].astype(str))
 
     def _rows_for(code: str):
@@ -2355,14 +3438,37 @@ def feature_target_ranking(
     # direct-measurement targets: overall + honest scope note (no fake split stats)
     if target_id in ("voltage_v", "current_a"):
         joined = _events_labels_joined(request, battery_id, experiment_id)
-        n = min(len(joined), len(frames))
+        frame_metadata_path = (
+            get_service(request).processed_root
+            / "ultrasound"
+            / battery_id
+            / experiment_id
+            / "frames.parquet"
+        )
+        try:
+            frame_metadata = pd.read_parquet(
+                frame_metadata_path,
+                columns=["ultrasound_asset_id", "frame_index_raw"],
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "waveform frame identity metadata is unavailable or invalid",
+                {
+                    "integrity_reasons": ["WAVEFORM_FRAME_IDENTITY_METADATA_INVALID"],
+                    "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+                },
+            ) from exc
+        n = len(joined)
         results: list[dict[str, Any]] = []
         from battery_workbench.features.state_correlation import _pearson, _spearman
 
         for code in features:
-            series = series_map[code][:n]
-            vals = joined[target_id].iloc[:n]
-            ok = joined["analysis_eligible"].iloc[:n] & vals.notna() & np.isfinite(series)
+            series = _align_feature_series_to_event_frames(
+                joined, frame_metadata, series_map[code]
+            )
+            vals = joined[target_id]
+            ok = joined["analysis_eligible"] & vals.notna() & np.isfinite(series)
             x, y = series[ok.to_numpy()], vals[ok].to_numpy(dtype=float)
             p = s = None
             if x.size >= 3 and np.std(x) > 0 and np.std(y) > 0:
@@ -2429,6 +3535,24 @@ def feature_target_ranking(
 
     if target_id == "temperature_c":
         ranking_t: list[dict[str, Any]] = []
+        readiness_rows = _rows_for(features[0])
+        linked_temperature = [
+            float(row.temperature_c)
+            for row in readiness_rows
+            if row.analysis_eligible and row.temperature_c is not None
+        ]
+        if not linked_temperature:
+            target_readiness = "UNAVAILABLE"
+            target_limitation = "no temperature readings are linked to eligible measurement events"
+        elif max(linked_temperature) - min(linked_temperature) < 2.0:
+            target_readiness = "INSUFFICIENT_VARIATION"
+            target_limitation = "observed temperature variation is below 2 °C"
+        else:
+            target_readiness = "BLOCKED_BY_VALIDATION"
+            target_limitation = (
+                "temperature values may be inspected exploratorily, but sensor location and "
+                "calibration evidence are not verified; this target cannot be handed off for modeling"
+            )
         for code in features:
             frows = _rows_for(code)
             r = correlate_feature_state(
@@ -2458,6 +3582,7 @@ def feature_target_ranking(
                     "n_valid": r.n_valid,
                     "n_missing": r.missing_feature_count + r.missing_state_count,
                     "status": r.status,
+                    "target_readiness": target_readiness,
                     "direction_status": _rank_direction_status(
                         r.status, None, None, rs.coefficient
                     ),
@@ -2467,8 +3592,13 @@ def feature_target_ranking(
                         if (code == "tof_us" and tof_refresh_required)
                         else "CURRENT"
                     ),
-                    "commit_eligible": r.status == "VALID"
-                    and not (code == "tof_us" and tof_refresh_required),
+                    "commit_eligible": (
+                        r.status == "VALID"
+                        and target_readiness == "READY"
+                        and not (code == "tof_us" and tof_refresh_required)
+                    ),
+                    "exploratory_only": target_readiness != "READY",
+                    "note": target_limitation,
                 }
             )
         return _rank_response(
@@ -2480,7 +3610,10 @@ def feature_target_ranking(
             alias_dedup,
             blocked,
             tof_provenance,
-            None,
+            {
+                "target_readiness": target_readiness,
+                "target_limitation": target_limitation,
+            },
             request,
             battery_id,
             experiment_id,
@@ -2505,6 +3638,28 @@ def feature_target_ranking(
             "n_valid": po.n_valid,
             "n_missing": po.missing_feature_count + po.missing_state_count,
             "status": po.status,
+            "estimate_audit": [
+                {
+                    "analysis_id": result.analysis_id,
+                    "scope": result.scope,
+                    "method": result.method,
+                    "coefficient": result.coefficient,
+                    "n_input": result.n_input,
+                    "n_input_unit": result.n_input_unit,
+                    "n_valid": result.n_valid,
+                    "n_valid_unit": result.n_valid_unit,
+                    "independent_group_count": result.independent_group_count,
+                    "independent_unit": result.independent_unit,
+                    "group_identity_status": result.group_identity_status,
+                    "distinct_state_count": result.distinct_state_count,
+                    "missing_feature_count": result.missing_feature_count,
+                    "missing_state_count": result.missing_state_count,
+                    "excluded_ineligible_count": result.excluded_ineligible_count,
+                    "limitations": result.limitations,
+                    "status": result.status,
+                }
+                for result in suite
+            ],
         }
         entry["direction_status"] = _rank_direction_status(
             po.status,
@@ -2543,6 +3698,17 @@ def feature_target_ranking(
 
     # default display ordering: abs overall Spearman (explicitly NOT "best")
     ranking.sort(key=lambda e: -abs(e.get("spearman_overall") or 0.0))
+    extra_response: dict[str, Any] = {"detail": detail} if detail else {}
+    if target_id == "reference_soc_percent":
+        extra_response["inference_assessment"] = exploratory_inference_assessment(
+            correlation_results_included=True,
+            study_protocol_assessment=_experiment_analysis_plan_assessment(
+                request, battery_id, experiment_id
+            ),
+        )
+        extra_response["alignment_assessment"] = _correlation_alignment_assessment(
+            request, battery_id, experiment_id
+        )
     return _rank_response(
         mode,
         target_id,
@@ -2552,7 +3718,7 @@ def feature_target_ranking(
         alias_dedup,
         blocked,
         tof_provenance,
-        {"detail": detail} if detail else None,
+        extra_response,
         request,
         battery_id,
         experiment_id,
@@ -2577,7 +3743,7 @@ def _rank_response(
 ) -> dict[str, Any]:
     """Shared envelope: honest counts, limitations, association-only note."""
     events, labels = _load_events_labels(request, battery_id, experiment_id)
-    joined = events.merge(labels, on="measurement_event_id", how="left", suffixes=("", "_label"))
+    joined = _merge_event_labels(events, labels)
     n = len(joined)
     eligible = (
         int((joined["analysis_eligible"] & joined["soc_reference_percent"].notna()).sum())

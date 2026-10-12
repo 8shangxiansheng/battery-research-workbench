@@ -75,8 +75,8 @@ class TofConfig(BaseModel):
 
 
 class LabelConfig(BaseModel):
-    version: str = "0.2.0"
-    label_definition_version: str = "0.2.0"
+    version: str = "0.3.0"
+    label_definition_version: str = "0.3.0"
     soc: SocConfig = Field(default_factory=SocConfig)
     soh: SohConfig = Field(default_factory=SohConfig)
     leakage: LeakageConfig = Field(default_factory=LeakageConfig)
@@ -96,6 +96,7 @@ class EventLabel(BaseModel):
     measurement_event_id: str
     battery_id: str
     experiment_id: str
+    electrical_asset_id: str | None = None
     cycle_index_raw: float | None = None
     step_index_raw: float | None = None
     event_order_index: int | None = None
@@ -133,6 +134,7 @@ class EventLabel(BaseModel):
 class CycleLabel(BaseModel):
     battery_id: str
     experiment_id: str
+    electrical_asset_id: str | None = None
     cycle_index_raw: float
     cycle_complete: bool
 
@@ -171,7 +173,8 @@ class TofReadiness(BaseModel):
 
 class LabelManifest(BaseModel):
     label_engine_name: str = "reference_label_engine"
-    label_engine_version: str = "0.1.0"
+    label_engine_version: str = "0.3.0"
+    label_definition_version: str = "0.3.0"
     label_set_id: str
     battery_id: str
     experiment_id: str

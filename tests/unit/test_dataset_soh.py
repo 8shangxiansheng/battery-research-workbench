@@ -141,6 +141,7 @@ def test_target_diversity_count_t26() -> None:
     )
     assert report.distinct_soh_values == 2
     assert report.cycle_group_count == 2
+    assert report.independent_soh_state_count == 2
 
 
 def test_small_diversity_status_t27() -> None:

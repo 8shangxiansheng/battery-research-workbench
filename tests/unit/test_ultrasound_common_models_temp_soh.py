@@ -1,4 +1,4 @@
-"""Planex AC: 超声常见模型扩展 + SOH离线标签复用验证 + 温度条件放行.
+"""Planex AC: 超声常见模型扩展 + SOH标签复用验证 + 温度目标证据门.
 
 AC1 (M1-M5): ELASTIC_NET + HUBER_REGRESSION 进入固定基线套件
   (STRATEGIES/FIXED_CONFIGS/确定性 fit/未知拒绝/scaled pipeline).
@@ -231,7 +231,7 @@ def test_soh_readiness_is_data_driven() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC3: 温度条件放行 (数据驱动门)
+# AC3: 温度目标需要通道、变异度与位置/校准证据
 # ---------------------------------------------------------------------------
 
 def _temp_gate() -> object:
@@ -258,8 +258,39 @@ def test_temperature_gate_insufficient_variation_refused() -> None:
     assert "2" in reason
 
 
-def test_temperature_gate_sufficient_variation_allowed() -> None:
-    """T1c: 有通道且极差>=2C → 放行."""
+def test_temperature_gate_requires_verified_sensor_evidence() -> None:
+    """T1c: 有通道和变化范围仍需传感器位置/校准验证才能放行."""
     gate = _temp_gate()
-    allowed, _ = gate(valid_count=120, temp_range_c=3.5)
+    allowed, reason = gate(valid_count=120, temp_range_c=3.5)
+    assert allowed is False
+    assert "sensor location/calibration" in reason
+
+    allowed, _ = gate(
+        valid_count=120,
+        temp_range_c=3.5,
+        evidence_verified=True,
+    )
     assert allowed is True
+
+
+def test_service_temperature_status_does_not_read_events_without_integrity_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    """Damaged/unmanifested event artifacts must not feed target readiness."""
+    from battery_workbench.api.service import WorkbenchService
+
+    events_dir = tmp_path / "processed" / "multimodal" / "B" / "E"
+    events_dir.mkdir(parents=True)
+    events_path = events_dir / "measurement_events.parquet"
+    events_path.touch()
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("unverified measurement events must not be read")
+
+    monkeypatch.setattr(pd, "read_parquet", unexpected_read)
+    service = WorkbenchService(processed_root=tmp_path / "processed")
+
+    allowed, reason = service._temperature_target_status("B", "E")
+
+    assert allowed is False
+    assert reason

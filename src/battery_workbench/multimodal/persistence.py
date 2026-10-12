@@ -72,6 +72,7 @@ def write_measurement_event_payload(
     candidates_input: pd.DataFrame | None,
     records: pd.DataFrame,
     aux_row_count: int,
+    resolved_temperature_channel_id: str | None,
     battery_id: str,
     experiment_id: str,
     config: MeasurementEventConfig,
@@ -103,6 +104,8 @@ def write_measurement_event_payload(
 
     manifest = MeasurementEventManifest(
         builder_version=config.version,
+        temperature_channel_id=config.temperature_channel_id,
+        resolved_temperature_channel_id=resolved_temperature_channel_id,
         battery_id=battery_id,
         experiment_id=experiment_id,
         input_paths={

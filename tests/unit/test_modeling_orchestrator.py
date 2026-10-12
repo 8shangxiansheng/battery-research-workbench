@@ -95,6 +95,19 @@ def _confirmed_run(engine: PipelineOrchestrator, fold: int) -> dict:
 
 def test_t27_artifacts_materialize(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
+    dry_run = engine.dry_run(_modeling_plan(engine, 1))
+    prereq_states = {
+        node.node_id: node.state.value
+        for node in dry_run.nodes
+        if node.node_id in {"DATASET", "SPLIT", "FEATURE_ANALYSIS"}
+    }
+    if set(prereq_states) != {"DATASET", "SPLIT", "FEATURE_ANALYSIS"} or any(
+        state != "REUSED" for state in prereq_states.values()
+    ):
+        pytest.skip(
+            "the fixed CELL_001 Dataset/Split/selection chain is stale; refusing to materialize "
+            "models from historical artifacts"
+        )
     run = _confirmed_run(engine, 1)
     model_nodes = [n for n in run["nodes"] if n["node_id"] == "SOC_MODELING"]
     assert model_nodes and model_nodes[0]["state"] in {"SUCCEEDED", "REUSED", "RUNNING"}

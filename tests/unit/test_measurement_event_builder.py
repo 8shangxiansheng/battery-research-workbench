@@ -102,6 +102,93 @@ def _run(aligned_rows, output: Path):
     )
 
 
+def test_aux_temperature_joins_by_asset_and_record_index_not_sheet_row(tmp_path: Path) -> None:
+    records = _records().assign(source_row_index=[101, 102, 103])
+    records_path = tmp_path / "records.parquet"
+    records.to_parquet(records_path, index=False)
+    aux = pd.DataFrame(
+        {
+            "electrical_asset_id": ["E1"] * 3,
+            "source_row_index": [201, 202, 203],
+            "record_index_raw": [1, 2, 3],
+            "temperature_channel": ["T1"] * 3,
+            "temperature_c": [24.0, 24.7, 25.0],
+        }
+    )
+    aligned = pd.DataFrame([_aligned_row(0, "MATCHED_UNIQUE", locator="102")])
+    aligned_path = tmp_path / "aligned.parquet"
+    aligned.to_parquet(aligned_path, index=False)
+    candidates_path = tmp_path / "candidates.parquet"
+    pd.DataFrame(_candidate_for(aligned)).to_parquet(candidates_path, index=False)
+    aux_path = tmp_path / "aux_temperature.parquet"
+    aux.to_parquet(aux_path, index=False)
+
+    from battery_workbench.multimodal.builder import build_measurement_events
+
+    build_measurement_events(
+        aligned_frames_path=aligned_path,
+        sync_candidates_path=candidates_path,
+        electrical_records_path=records_path,
+        output_dir=tmp_path,
+        config=_config(),
+        aux_temperature_path=aux_path,
+    )
+
+    out = pd.read_parquet(
+        tmp_path / "multimodal" / "CELL_X" / "EXP_X" / "measurement_events.parquet"
+    )
+    assert out.loc[0, "electrical_record_locator"] == "102"
+    assert out.loc[0, "electrical_row_index"] == 2
+    assert out.loc[0, "temperature_c"] == pytest.approx(24.7)
+    assert out.loc[0, "temperature_channel_id"] == "T1"
+    manifest = json.loads(
+        (tmp_path / "multimodal" / "CELL_X" / "EXP_X" / "measurement_event_manifest.json").read_text()
+    )
+    assert manifest["temperature_channel_id"] is None
+    assert manifest["resolved_temperature_channel_id"] == "T1"
+
+
+def test_explicit_temperature_channel_is_used_and_recorded_in_manifest(tmp_path: Path) -> None:
+    records = _records().assign(source_row_index=[101, 102, 103])
+    records.to_parquet(tmp_path / "records.parquet", index=False)
+    aux = pd.DataFrame(
+        {
+            "electrical_asset_id": ["E1"] * 6,
+            "source_row_index": [201, 202, 203, 301, 302, 303],
+            "record_index_raw": [1, 2, 3, 1, 2, 3],
+            "temperature_channel": ["T1"] * 3 + ["T2"] * 3,
+            "temperature_c": [24.0, 24.7, 25.0, 30.0, 30.5, 31.0],
+        }
+    )
+    aux_path = tmp_path / "aux_temperature.parquet"
+    aux.to_parquet(aux_path, index=False)
+    aligned = pd.DataFrame([_aligned_row(0, "MATCHED_UNIQUE", locator="102")])
+    aligned_path = tmp_path / "aligned.parquet"
+    aligned.to_parquet(aligned_path, index=False)
+    candidates_path = tmp_path / "candidates.parquet"
+    pd.DataFrame(_candidate_for(aligned)).to_parquet(candidates_path, index=False)
+
+    from battery_workbench.multimodal.builder import build_measurement_events
+
+    build_measurement_events(
+        aligned_frames_path=aligned_path,
+        sync_candidates_path=candidates_path,
+        electrical_records_path=tmp_path / "records.parquet",
+        output_dir=tmp_path,
+        config=MeasurementEventConfig(temperature_channel_id="T2"),
+        aux_temperature_path=aux_path,
+    )
+
+    output_dir = tmp_path / "multimodal" / "CELL_X" / "EXP_X"
+    event = pd.read_parquet(output_dir / "measurement_events.parquet").iloc[0]
+    manifest = json.loads((output_dir / "measurement_event_manifest.json").read_text())
+    assert event["temperature_c"] == pytest.approx(30.5)
+    assert event["temperature_channel_id"] == "T2"
+    assert manifest["temperature_channel_id"] == "T2"
+    assert manifest["resolved_temperature_channel_id"] == "T2"
+    assert manifest["builder_version"] == "0.5.1"
+
+
 def _candidate_for(a: pd.DataFrame):
     rows = []
     for _, r in a.iterrows():
@@ -134,7 +221,8 @@ def test_unique_exact_enrichment_t03(tmp_path: Path) -> None:
         tmp_path / "multimodal" / "CELL_X" / "EXP_X" / "measurement_event_manifest.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["builder_version"] == "0.3.0"
+    assert manifest["builder_version"] == "0.5.1"
+    assert manifest["temperature_channel_id"] is None
 
 
 def test_oot_event_preserved_t07(tmp_path: Path) -> None:

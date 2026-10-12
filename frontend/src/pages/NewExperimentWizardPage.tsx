@@ -33,6 +33,11 @@ export function NewExperimentWizardPage() {
   const [experimentId, setExperimentId] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [protocol, setProtocol] = useState("");
+  const [conditionId, setConditionId] = useState("");
+  const [conditionDescription, setConditionDescription] = useState("");
+  const [experimentStart, setExperimentStart] = useState("");
+  const [experimentEnd, setExperimentEnd] = useState("");
   const [session, setSession] = useState<IntakeSessionDetail | null>(null);
   const [detections, setDetections] = useState<AdapterDetection[]>([]);
   const [validation, setValidation] = useState<ImportValidation | null>(null);
@@ -61,6 +66,11 @@ export function NewExperimentWizardPage() {
         experiment_id: experimentId || undefined,
         name,
         notes: description,
+        protocol: protocol || undefined,
+        condition_id: conditionId || undefined,
+        condition_description: conditionDescription || undefined,
+        start_time: experimentStart || undefined,
+        end_time: experimentEnd || undefined,
       });
       const s = await client.createIntakeSession(created.data.battery_id, created.data.experiment_id);
       return { experiment: created.data, session: s.data };
@@ -216,10 +226,39 @@ export function NewExperimentWizardPage() {
         </p>
         <p>
           <label htmlFor="wiz-desc">
-            描述（可选）：
+            备注（可选）：
             <input id="wiz-desc" data-testid="wiz-description" value={description} onChange={(e) => setDescription(e.target.value)} />
           </label>
         </p>
+        <p>
+          <label htmlFor="wiz-protocol">
+            电学/声学协议标识（可选）：
+            <input id="wiz-protocol" data-testid="wiz-protocol" value={protocol} onChange={(e) => setProtocol(e.target.value)} placeholder="例如 CCCV-v2；按记录填写" />
+          </label>
+        </p>
+        <p>
+          <label htmlFor="wiz-condition-id">
+            工况 ID（可选）：
+            <input id="wiz-condition-id" data-testid="wiz-condition-id" value={conditionId} onChange={(e) => setConditionId(e.target.value)} placeholder="例如 TEMP_25C_RATE_1C" />
+          </label>
+        </p>
+        <p>
+          <label htmlFor="wiz-condition-description">
+            工况描述（可选）：
+            <input id="wiz-condition-description" data-testid="wiz-condition-description" value={conditionDescription} onChange={(e) => setConditionDescription(e.target.value)} placeholder="如实记录环境温度、倍率或静置条件" />
+          </label>
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <label htmlFor="wiz-start-time">
+            Experiment 开始（可选）：
+            <input id="wiz-start-time" data-testid="wiz-start-time" type="datetime-local" value={experimentStart} onChange={(e) => setExperimentStart(e.target.value)} />
+          </label>
+          <label htmlFor="wiz-end-time">
+            Experiment 结束（可选）：
+            <input id="wiz-end-time" data-testid="wiz-end-time" type="datetime-local" value={experimentEnd} onChange={(e) => setExperimentEnd(e.target.value)} />
+          </label>
+        </div>
+        <small>以上为操作者登记的实验描述，不会验证设备协议或工况真值，也不会用作声电绝对时间锚点；未知可留空。</small>
         <p>
           <small>身份由你显式输入或系统按序生成；绝不从文件名推断（§4）。</small>
         </p>

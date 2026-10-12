@@ -54,6 +54,47 @@ def test_unresolvable_ids_yield_empty_fingerprint(tmp_path: Path) -> None:
     assert _confirmed_fold_fingerprint(root, PLAN, "DS::missing", "SPLIT::s1") == set()
 
 
+def test_model_fingerprint_ignores_other_target_and_selection_policy(tmp_path: Path) -> None:
+    root = tmp_path / "feature_analysis" / B / E / "DS::d1"
+    entries = [
+        ("AN::matching", "soc_reference_percent", {"min_abs_spearman": 0.15}),
+        ("AN::other-target", "soh_capacity_reference_percent", {"min_abs_spearman": 0.15}),
+        ("AN::other-policy", "soc_reference_percent", {"min_abs_spearman": 0.5}),
+    ]
+    for analysis_id, target, policy in entries:
+        directory = root / analysis_id
+        directory.mkdir(parents=True)
+        (directory / "analysis_manifest.json").write_text(json.dumps({
+            "analysis_id": analysis_id,
+            "analysis_mode": "TRAIN_ONLY_ML_SAFE",
+            "target": target,
+            "candidate_features": ["amplitude_a_u"],
+            "methods": ["descriptive", "spearman"],
+            "split_id": "SPLIT::s1",
+            "fold_index": 1,
+            "selection": {
+                "commit_status": "CONFIRMED",
+                "selection_id": f"SEL::{analysis_id}",
+                "selected_features": ["amplitude_a_u"],
+                "policy": policy,
+            },
+        }))
+    plan = SimpleNamespace(
+        project=SimpleNamespace(battery_id=B, experiment_id=E),
+        target="soc_reference_percent",
+        feature_analysis={
+            "target": "soc_reference_percent",
+            "candidate_features": ["amplitude_a_u"],
+            "methods": ["descriptive", "spearman"],
+            "selection": {"policy": {"min_abs_spearman": 0.15}},
+        },
+    )
+
+    assert _confirmed_fold_fingerprint(tmp_path, plan, "DS::d1", "SPLIT::s1") == {
+        "1:SEL::AN::matching"
+    }
+
+
 def _ref(artifact_id: str, root: Path) -> ArtifactRef:
     return ArtifactRef(
         artifact_type="FEATURE_ANALYSIS",

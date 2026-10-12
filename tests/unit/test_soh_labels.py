@@ -47,7 +47,7 @@ def test_v2_formula_version_t21(tmp_path: Path) -> None:
 
     cfg = LabelConfig()
     assert cfg.soc.formula_version == "0.2.0"
-    assert cfg.label_definition_version == "0.2.0"
+    assert cfg.label_definition_version == "0.3.0"
 
 
 def test_temporality_enum_v2() -> None:

@@ -101,7 +101,9 @@ export function DataWorkspacePage() {
           ) : quality.data?.data ? (
             <div data-testid="quality-content">
               {quality.data.data.electrical ? (
-                <ul>
+                quality.data.data.electrical.status === "INTEGRITY_BLOCKED" ? (
+                  <p role="status">Electrical 来源或解析产物完整性阻断；记录统计已隐藏。请重新解析并复核来源链。</p>
+                ) : <ul>
                   <li>Electrical records: {quality.data.data.electrical.records}</li>
                   <li>Cycles: {quality.data.data.electrical.cycles ?? "—"}</li>
                   <li>Steps: {quality.data.data.electrical.steps ?? "—"}</li>
@@ -111,7 +113,9 @@ export function DataWorkspacePage() {
                 <p>Electrical 数据尚未导入。</p>
               )}
               {quality.data.data.ultrasound ? (
-                <ul>
+                quality.data.data.ultrasound.status === "INTEGRITY_BLOCKED" ? (
+                  <p role="status">Ultrasound 来源或解析产物完整性阻断；帧统计已隐藏。请重新解析并复核来源链。</p>
+                ) : <ul>
                   <li>Ultrasound frames: {quality.data.data.ultrasound.frames}</li>
                   <li>Frame cadence: {quality.data.data.ultrasound.frame_cadence_s ?? "—"} s</li>
                   <li>

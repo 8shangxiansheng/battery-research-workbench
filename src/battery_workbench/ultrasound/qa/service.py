@@ -9,6 +9,7 @@ from typing import Any, cast
 import pandas as pd
 import zarr
 
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
 from battery_workbench.ultrasound.qa.anomalies import (
     aggregate_anomaly_regions,
     anomaly,
@@ -45,8 +46,28 @@ def run_ultrasound_qa(
     checksums_before = _input_checksums(frames_path, waveforms_path, manifest_path)
     frames = pd.read_parquet(frames_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        input_path.name == experiment_id
+        and input_path.parent.name == battery_id
+        and input_path.parent.parent.name == "ultrasound"
+    ):
+        output_integrity = parser_output_integrity_reasons(
+            input_path.parents[2], battery_id, experiment_id
+        ).get("ultrasound", [])
+    else:
+        output_integrity = ["PARSER_OUTPUT_DIRECTORY_NONCANONICAL"]
     root = zarr.open_group(waveforms_path, mode="r")
     issues: list[QAAnomaly] = []
+    if output_integrity:
+        issues.append(
+            anomaly(
+                "PARSER_OUTPUT_INTEGRITY_INVALID",
+                "critical",
+                "parser_outputs",
+                "Parser-derived Ultrasound outputs fail integrity verification",
+                metrics={"integrity_reasons": output_integrity},
+            )
+        )
     schema, provenance, arrays, found = inspect_structure(
         frames,
         root,

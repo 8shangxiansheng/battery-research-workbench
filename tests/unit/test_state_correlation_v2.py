@@ -17,9 +17,16 @@ from battery_workbench.features.gate_calibration import (
     variant_predictor_eligible,
 )
 from battery_workbench.features.state_correlation import (
+    CONDITION_STRATIFICATION_POLICY_ID,
+    CORRELATION_POLICY_VERSIONS,
     FeatureStateRow,
+    battery_condition_stratified_soc,
+    battery_decomposed_soc_correlation,
+    battery_scatter_diagnostic,
     build_event_grain_table,
+    condition_stratified_soc,
     correlate_feature_state,
+    cycle_decomposed_soc_correlation,
     cycle_stratified_soc,
     soc_correlation_suite,
     soh_cycle_summary,
@@ -36,6 +43,141 @@ def _row(i: int, **kw) -> FeatureStateRow:
     }
     base.update(kw)
     return FeatureStateRow(**base)
+
+
+def test_correlation_policy_versions_are_reportable() -> None:
+    assert CORRELATION_POLICY_VERSIONS == {
+        "feature_state_correlation": "FEATURE_STATE_CORRELATION_POLICY_V5",
+        "feature_state_join": "FEATURE_STATE_JOIN_POLICY_V1",
+        "battery_decomposition": "BATTERY_WITHIN_BETWEEN_CORRELATION_V1",
+        "cycle_within_between_correlation": "CYCLE_WITHIN_BETWEEN_CORRELATION_V1",
+        "condition_stratification": "OPERATOR_DECLARED_CONDITION_SOC_STRATIFICATION_V1",
+        "battery_scatter_diagnostic": "BATTERY_STRATIFIED_SCATTER_DIAGNOSTIC_V1",
+    }
+
+
+@pytest.mark.parametrize(
+    "analyze",
+    [
+        lambda rows: correlate_feature_state(
+            rows,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="duplicate-event",
+            feature_code="TDM",
+        ),
+        cycle_decomposed_soc_correlation,
+        battery_decomposed_soc_correlation,
+        lambda rows: battery_scatter_diagnostic(rows, feature_code="TDM"),
+        soh_cycle_summary,
+    ],
+)
+def test_duplicate_measurement_event_feature_rows_fail_closed(analyze) -> None:
+    first = _row(1)
+    duplicate = first.model_copy(update={"value": 999.0})
+
+    with pytest.raises(ValueError, match="one row per MeasurementEvent/FeatureLocator"):
+        analyze([first, duplicate])
+
+
+def test_same_event_identity_cannot_map_to_multiple_experiments() -> None:
+    rows = [
+        _row(1),
+        _row(2, measurement_event_id="ME0001", experiment_id="EXP_002", feature_code="TDPP"),
+    ]
+
+    with pytest.raises(ValueError, match="multiple Battery/Experiment groups"):
+        correlate_feature_state(
+            rows,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="event-owner-conflict",
+            feature_code="TDM",
+        )
+
+
+def _condition_assignment(event_index: int, **overrides):
+    from battery_workbench.conditions.assignment import ConditionAssignment
+
+    payload = {
+        "event_id": f"ME{event_index:04d}",
+        "battery_id": "CELL_001",
+        "experiment_id": "EXP_001",
+        "condition_axis_id": "temperature_setpoint",
+        "condition_value": "25",
+        "unit": "degC",
+        "segment_id": "SEG_A",
+        "time_reference_asset_id": "U001",
+        "event_asset_id": "U001",
+        "event_timestamp": "2026-01-01T00:00:00+00:00",
+        "status": "ASSIGNED_OPERATOR_DECLARED_SAME_ASSET_CLOCK",
+    }
+    payload.update(overrides)
+    return ConditionAssignment(**payload)
+
+
+def test_condition_stratified_soc_keeps_declaration_and_complete_pair_accounting() -> None:
+    rows = [
+        _row(0, value=1.0, reference_soc_percent=10.0),
+        _row(1, value=2.0, reference_soc_percent=20.0),
+        _row(2, value=3.0, reference_soc_percent=30.0),
+        _row(3, value=None, reference_soc_percent=40.0),
+        _row(4, value=5.0, reference_soc_percent=50.0, analysis_eligible=False),
+        _row(5, value=100.0, reference_soc_percent=90.0),
+    ]
+    assignments = [
+        *[_condition_assignment(i) for i in range(5)],
+        _condition_assignment(
+            5,
+            condition_value="30",
+            segment_id="SEG_B",
+        ),
+        _condition_assignment(
+            6,
+            status="UNCLASSIFIED_NO_SEGMENT",
+            condition_value=None,
+            segment_id=None,
+        ),
+    ]
+
+    results = condition_stratified_soc(rows, assignments)
+
+    declared_25 = [result for result in results if result.condition_value == "25"]
+    assert {result.method for result in declared_25} == {"pearson", "spearman"}
+    pearson = next(result for result in declared_25 if result.method == "pearson")
+    assert pearson.policy == CONDITION_STRATIFICATION_POLICY_ID
+    assert pearson.coefficient == pytest.approx(1.0)
+    assert pearson.n_input_events == 5
+    assert pearson.n_valid_pairs == 3
+    assert pearson.missing_feature_count == 1
+    assert pearson.excluded_ineligible_count == 1
+    assert pearson.declaration_status == "OPERATOR_DECLARED"
+    assert pearson.absolute_timebase_status == "NOT_ASSESSED"
+    assert pearson.synchronization_status == "NOT_ASSESSED"
+    assert pearson.group_count_semantics == "DECLARED_BATTERY_ID"
+    assert pearson.battery_identity_status == "NOT_ASSESSED"
+    assert pearson.physical_battery_count is None
+    assert pearson.segment_ids == ["SEG_A"]
+    assert any("no confidence interval or p-value" in item for item in pearson.limitations)
+    declared_30 = [result for result in results if result.condition_value == "30"]
+    assert len(declared_30) == 2
+    assert all(result.n_valid_pairs == 1 for result in declared_30)
+
+
+def test_condition_stratified_soc_rejects_duplicate_event_feature_locator_rows() -> None:
+    with pytest.raises(ValueError, match="one row per MeasurementEvent/FeatureLocator"):
+        condition_stratified_soc(
+            [_row(1), _row(1)],
+            [_condition_assignment(1)],
+        )
+
+
+def test_condition_stratified_soc_rejects_duplicate_event_axis_assignments() -> None:
+    with pytest.raises(ValueError, match="one condition assignment"):
+        condition_stratified_soc(
+            [_row(1)],
+            [_condition_assignment(1), _condition_assignment(1, segment_id="SEG_DUP")],
+        )
 
 
 class TestCalibrationSelection:
@@ -246,6 +388,8 @@ class TestCorrelation:
             analysis_id="a1", feature_code="TDM",
         )
         assert r.excluded_ineligible_count == 1
+        assert r.n_input == 41
+        assert r.n_valid == 40
         # the outlier did not leak into the coefficient
         assert abs(r.coefficient) < 1.0
 
@@ -278,6 +422,24 @@ class TestCorrelation:
         assert r.status == "VALID"
         assert r.coefficient > 0.95
 
+    def test_p4_spearman_uses_average_ranks_for_tied_values(self):
+        x_values = [1.0, 1.0, 2.0, 2.0, 3.0]
+        y_values = [1.0, 2.0, 2.0, 3.0, 3.0]
+        rows = [
+            _row(i, value=x, reference_soc_percent=y)
+            for i, (x, y) in enumerate(zip(x_values, y_values, strict=True))
+        ]
+
+        result = correlate_feature_state(
+            rows,
+            state_variable="reference_soc_percent",
+            method="spearman",
+            analysis_id="p4-tied-ranks",
+            feature_code="TDM",
+        )
+
+        assert result.coefficient == pytest.approx(29.0 / 36.0)
+
     def test_c15_charge_discharge_stratification(self):
         rows = self._suite()
         suite = soc_correlation_suite(rows, analysis_id="a1", feature_code="TDM")
@@ -288,9 +450,15 @@ class TestCorrelation:
 
     def test_c16_cycle_stratification(self):
         rows = self._suite(40)
+        rows.append(_row(999, cycle=1, analysis_eligible=False))
         per_cycle = cycle_stratified_soc(rows, analysis_id="a1", feature_code="TDM")
         assert len(per_cycle) == 4  # cycles 1..4
         assert all(r.scope.startswith("cycle:") for r in per_cycle)
+        cycle_one = next(result for result in per_cycle if result.scope == "cycle:1")
+        assert cycle_one.n_input == 11
+        assert cycle_one.n_valid == 10
+        assert cycle_one.excluded_ineligible_count == 1
+        assert sum(result.n_input for result in per_cycle) == 41
 
     def test_c17_temperature_insufficient_variation(self):
         rows = self._suite(temperature_c=25.0)
@@ -308,6 +476,11 @@ class TestCorrelation:
             analysis_id="a2", feature_code="TDM",
         )
         assert ok.status == "VALID"
+        assert any(
+            "only a minimum-variation screen" in limitation
+            and "not sensor-calibration evidence or target readiness" in limitation
+            for limitation in ok.limitations
+        )
 
     def test_c18_soh_pseudoreplication_guard(self):
         rows = self._suite(soh_percent=98.0)
@@ -331,6 +504,47 @@ class TestCorrelation:
         summ = soh_cycle_summary(rows)
         assert all(s["n_frames"] > 0 for s in summ)  # descriptive summary OK
 
+    def test_p4_soh_correlation_uses_cycle_groups_not_repeated_frames(self):
+        rows = []
+        cycle_values = (
+            (1, 100.0, [0.0]),
+            (2, 98.0, [-10.0, *([1.0] * 9)]),
+            (3, 96.0, [2.0] * 20),
+            (4, 94.0, [3.0] * 4 + [100.0]),
+        )
+        index = 0
+        for cycle, soh, feature_values in cycle_values:
+            for feature_value in feature_values:
+                rows.append(_row(
+                    index,
+                    cycle=cycle,
+                    soh_percent=soh,
+                    value=feature_value,
+                ))
+                index += 1
+        rows.append(_row(index, cycle=1, soh_percent=100.0, value=None))
+
+        result = correlate_feature_state(
+            rows,
+            state_variable="soh_percent",
+            method="pearson",
+            analysis_id="p4-soh-grouped",
+            feature_code="TDM",
+        )
+
+        assert result.status == "VALID"
+        assert result.n_input == 37
+        assert result.n_valid == 4
+        assert result.missing_feature_count == 1
+        assert result.n_input_unit == "MEASUREMENT_EVENT"
+        assert result.n_valid_unit == "BATTERY_EXPERIMENT_CYCLE_GROUP"
+        assert result.missing_count_unit == "MEASUREMENT_EVENT"
+        assert result.excluded_ineligible_unit == "MEASUREMENT_EVENT"
+        assert result.independent_group_count == 4
+        assert result.independent_unit == "BATTERY_EXPERIMENT_CYCLE"
+        assert result.distinct_state_count == 4
+        assert result.coefficient == pytest.approx(-1.0)
+
     def test_c20_no_naive_p_value(self):
         rows = self._suite()
         r = correlate_feature_state(
@@ -339,6 +553,244 @@ class TestCorrelation:
         )
         assert not hasattr(r, "p_value") or "p_value" not in r.model_fields
         assert any("p-value" in l for l in r.limitations)
+
+    def test_p4_nonfinite_measurements_are_missing_and_keep_pair_accounting(self):
+        feature_rows = [
+            _row(i, value=float(i), reference_soc_percent=float(i * 10))
+            for i in range(4)
+        ]
+        feature_rows[-1].value = float("inf")
+        feature_result = correlate_feature_state(
+            feature_rows,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="p4-feature-inf",
+            feature_code="TDM",
+        )
+        assert feature_result.status == "VALID"
+        assert feature_result.n_valid == 3
+        assert feature_result.n_valid_unit == "FEATURE_STATE_PAIR"
+        assert feature_result.missing_feature_count == 1
+        assert feature_result.missing_state_count == 0
+        assert feature_result.coefficient == pytest.approx(1.0)
+
+        state_rows = [
+            _row(i, value=float(i), reference_soc_percent=float(i * 10))
+            for i in range(4)
+        ]
+        state_rows[-1].reference_soc_percent = float("nan")
+        state_result = correlate_feature_state(
+            state_rows,
+            state_variable="reference_soc_percent",
+            method="pearson",
+            analysis_id="p4-state-nan",
+            feature_code="TDM",
+        )
+        assert state_result.status == "VALID"
+        assert state_result.n_valid == 3
+        assert state_result.missing_feature_count == 0
+        assert state_result.missing_state_count == 1
+        assert state_result.coefficient == pytest.approx(1.0)
+
+        row = _row(100, value=1.0, temperature_c=25.0, soh_percent=90.0)
+        row.temperature_c = float("-inf")
+        row.soh_percent = float("nan")
+        assert row.temperature_c is None
+        assert row.soh_percent is None
+
+    def test_p4_temperature_low_variation_reports_complete_pair_count(self):
+        rows = [
+            _row(i, value=float(i), temperature_c=25.0 + i * 0.1)
+            for i in range(4)
+        ]
+        rows[-1].value = None
+
+        result = correlate_feature_state(
+            rows,
+            state_variable="temperature_c",
+            method="pearson",
+            analysis_id="p4-temperature-pair-count",
+            feature_code="TDM",
+        )
+
+        assert result.status == "INSUFFICIENT_VARIATION"
+        assert result.n_input == 4
+        assert result.n_valid == 3
+        assert result.missing_feature_count == 1
+
+    def test_p4_between_and_within_battery_are_reported_separately(self):
+        # Each battery has a positive within-battery feature/SOC relation,
+        # while shifted battery means produce a negative between-battery one.
+        rows = []
+        for battery, soc_offset, feature_offset in (
+            ("CELL_A", 0.0, 100.0),
+            ("CELL_B", 20.0, 50.0),
+            ("CELL_C", 40.0, 0.0),
+        ):
+            for i in range(8):
+                soc = soc_offset + i
+                rows.append(_row(
+                    len(rows), battery_id=battery,
+                    reference_soc_percent=soc,
+                    value=feature_offset + i,
+                ))
+
+        result = battery_decomposed_soc_correlation(rows)
+
+        assert result["status"] == "VALID"
+        assert result["n_batteries"] == 3
+        assert result["n_events"] == 24
+        assert result["n_input_events"] == 24
+        assert result["missing_feature_count"] == 0
+        assert result["missing_state_count"] == 0
+        assert result["excluded_ineligible_count"] == 0
+        assert result["within_battery"]["coefficient"] == pytest.approx(1.0)
+        assert result["between_battery"]["coefficient"] < 0
+        assert result["interpretation"] == "BETWEEN_WITHIN_DIRECTION_DISAGREEMENT"
+
+    def test_p4_single_battery_does_not_treat_events_as_independent_groups(self):
+        rows = [
+            _row(i, reference_soc_percent=float(i), value=float(i * 2))
+            for i in range(40)
+        ]
+
+        result = battery_decomposed_soc_correlation(rows)
+
+        assert result["status"] == "INSUFFICIENT_BATTERY_GROUPS"
+        assert result["n_batteries"] == 1
+        assert result["n_events"] == 40
+        rows.extend([
+            _row(50, value=None, reference_soc_percent=50.0),
+            _row(51, value=51.0, reference_soc_percent=None),
+            _row(52, analysis_eligible=False, value=1000.0),
+        ])
+        result = battery_decomposed_soc_correlation(rows)
+        assert result["n_input_events"] == 43
+        assert result["n_events"] == 40
+        assert result["missing_feature_count"] == 1
+        assert result["missing_state_count"] == 1
+        assert result["excluded_ineligible_count"] == 1
+        assert result["between_battery"]["coefficient"] is None
+        assert result["within_battery"]["coefficient"] == pytest.approx(1.0)
+        assert any("event rows are not independent groups" in item
+                   for item in result["limitations"])
+
+    def test_p4_cycle_decomposition_surfaces_within_between_direction_reversal(self):
+        rows = []
+        index = 0
+        for cycle, soc_base, feature_base in (
+            (1, 85.0, 0.0),
+            (2, 45.0, 100.0),
+            (3, 5.0, 200.0),
+        ):
+            for offset in range(8):
+                rows.append(_row(
+                    index,
+                    cycle=cycle,
+                    reference_soc_percent=soc_base + offset,
+                    value=feature_base + offset,
+                ))
+                index += 1
+
+        result = cycle_decomposed_soc_correlation(rows)
+
+        assert result["status"] == "VALID"
+        assert result["n_cycle_groups"] == 3
+        assert result["within_cycle"]["coefficient"] == pytest.approx(1.0)
+        assert result["between_cycle"]["coefficient"] == pytest.approx(-1.0)
+        assert result["interpretation"] == "BETWEEN_WITHIN_DIRECTION_DISAGREEMENT"
+
+    def test_p4_two_batteries_do_not_create_tautological_between_correlation(self):
+        rows = [
+            _row(i, battery_id=battery, reference_soc_percent=float(i), value=float(i * 2))
+            for battery, start in (("CELL_A", 0), ("CELL_B", 8))
+            for i in range(start, start + 8)
+        ]
+
+        result = battery_decomposed_soc_correlation(rows)
+
+        assert result["status"] == "INSUFFICIENT_BATTERY_GROUPS"
+        assert result["n_batteries"] == 2
+        assert result["between_battery"]["n_batteries"] == 0
+        assert result["between_battery"]["coefficient"] is None
+
+    def test_p4_battery_condition_slices_keep_low_support_scopes_visible(self):
+        rows = [
+            _row(
+                i,
+                battery_id=battery,
+                state=scope,
+                reference_soc_percent=float(i),
+                value=float(i * 2),
+            )
+            for battery, base in (("CELL_A", 0), ("CELL_B", 20))
+            for scope, start in (("charge", base), ("discharge", base + 3), ("rest", base + 6))
+            for i in range(start, start + 3)
+        ]
+        rows.extend([
+            _row(90, battery_id="CELL_A", state="charge", value=None),
+            _row(91, battery_id="CELL_A", state="charge", analysis_eligible=False),
+        ])
+
+        result = battery_condition_stratified_soc(
+            rows, analysis_id="p4", feature_code="SWA"
+        )
+
+        assert len(result) == 8  # each battery has overall + 3 operating states
+        charge_a = next(
+            item for item in result
+            if item["battery_id"] == "CELL_A" and item["state_scope"] == "charge"
+        )
+        rest_b = next(
+            item for item in result
+            if item["battery_id"] == "CELL_B" and item["state_scope"] == "rest"
+        )
+        assert charge_a["n_valid"] == 3
+        assert charge_a["n_input"] == 5
+        assert charge_a["missing_feature_count"] == 1
+        assert charge_a["excluded_ineligible_count"] == 1
+        assert (
+            charge_a["n_valid"]
+            + charge_a["missing_feature_count"]
+            + charge_a["missing_state_count"]
+            + charge_a["excluded_ineligible_count"]
+            == charge_a["n_input"]
+        )
+        assert charge_a["status"] == "VALID"
+        assert rest_b["n_valid"] == 3
+        assert rest_b["status"] == "VALID"
+
+    def test_p4_battery_scatter_is_deterministic_bounded_and_means_use_all_pairs(self):
+        rows = [
+            _row(i, battery_id="CELL_A", value=float(i), reference_soc_percent=float(i + 10))
+            for i in range(10)
+        ] + [
+            _row(i + 10, battery_id="CELL_B", value=float(i + 100), reference_soc_percent=float(i + 20))
+            for i in range(10)
+        ]
+        rows.extend([
+            _row(30, battery_id="CELL_A", value=None, reference_soc_percent=50.0),
+            _row(31, battery_id="CELL_B", value=999.0, reference_soc_percent=50.0,
+                 analysis_eligible=False),
+        ])
+
+        first = battery_scatter_diagnostic(rows, feature_code="SWA", max_points=6)
+        second = battery_scatter_diagnostic(rows, feature_code="SWA", max_points=6)
+
+        assert first == second
+        assert first["n_input"] == 22
+        assert first["n_valid"] == 20
+        assert first["excluded_ineligible_count"] == 1
+        assert first["missing_feature_count"] == 1
+        assert len(first["points"]) <= 6
+        assert {point["battery_id"] for point in first["points"]} == {"CELL_A", "CELL_B"}
+        means = {item["battery_id"]: item for item in first["battery_means"]}
+        assert means["CELL_A"]["feature_mean"] == pytest.approx(4.5)
+        assert means["CELL_A"]["target_mean"] == pytest.approx(14.5)
+        assert means["CELL_A"]["n_valid"] == 10
+        assert means["CELL_B"]["feature_mean"] == pytest.approx(104.5)
+        assert means["CELL_B"]["target_mean"] == pytest.approx(24.5)
+        assert means["CELL_B"]["n_valid"] == 10
 
 
 class TestSmoothingEligibility:

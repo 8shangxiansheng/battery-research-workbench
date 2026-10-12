@@ -38,10 +38,16 @@ def write_split_payload(
     dataset_family: str,
     output_root: Path,
     group_counts: dict[str, int],
+    dataset_path: Path,
+    dataset_manifest_path: Path,
     dataset_status: str = "",
     independent_soh_states: int | None = None,
 ) -> dict[str, str]:
     output_root = Path(output_root)
+    dataset_path = Path(dataset_path)
+    dataset_manifest_path = Path(dataset_manifest_path)
+    if not dataset_path.is_file() or not dataset_manifest_path.is_file():
+        raise ValueError("current Dataset Parquet and manifest are required for Split provenance")
     split_dir = output_root / "splits" / battery_id / experiment_id / dataset_id / spec.split_id
     split_dir.mkdir(parents=True, exist_ok=True)
 
@@ -101,7 +107,14 @@ def write_split_payload(
         "strategy": spec.strategy.value,
         "split_unit": spec.split_unit,
         "group_column": spec.group_column,
+        "k": spec.k,
+        "explicit_holdout_groups": sorted(spec.explicit_holdout_groups),
+        "require_roles": list(spec.require_roles),
         "dataset_id": dataset_id,
+        "source_checksums": {
+            "dataset_parquet": _sha256_file(dataset_path),
+            "dataset_manifest": _sha256_file(dataset_manifest_path),
+        },
         "dataset_family": dataset_family,
         "dataset_status": dataset_status,
         "battery_id": battery_id,

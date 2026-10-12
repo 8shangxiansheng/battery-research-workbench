@@ -18,6 +18,7 @@ from battery_workbench.multimodal.electrical_index import (
     build_electrical_index,
     normalize_locator,
     resolve_selected,
+    resolve_temperature_channel_id,
 )
 from battery_workbench.multimodal.event_id import build_measurement_event_id
 from battery_workbench.multimodal.schemas import (
@@ -110,23 +111,26 @@ def build_candidate_relation(
 
 def _enrich(
     record: dict,
-    aux_index: dict[tuple[str, int], float],
-    locator: tuple[str, int] | str | int | None,
+    aux_index: dict[tuple[str, int], tuple[float, str | None]],
 ) -> dict:
-    """Exact electrical enrichment from a resolved record + auxiliary temp."""
+    """Enrich a resolved record and exact-join aux data by its shared raw index."""
     result: dict = {}
     for logical, source in _ENRICH_SOURCE.items():
         result[logical] = record.get(source)
-    # Auxiliary temperature exact join by composite (asset, locator). A
-    # missing/invalid aux identity yields null temperature, never a recompute.
+    # Sheet source_row_index values are sheet-local and must not be used to
+    # join records to auxTemp. The workbook's record_index_raw is shared across
+    # sheets; join it with the electrical asset identity, never by time/Cycle.
     try:
-        if isinstance(locator, tuple):
-            key = locator
-        else:
-            key = (str(record.get("electrical_asset_id")), normalize_locator(locator))
-        result["temperature_c"] = aux_index.get(key)
+        key = (
+            str(record.get("electrical_asset_id")),
+            normalize_locator(record.get("record_index_raw")),
+        )
+        temperature = aux_index.get(key)
+        result["temperature_c"] = temperature[0] if temperature is not None else None
+        result["temperature_channel_id"] = temperature[1] if temperature is not None else None
     except ValueError:
         result["temperature_c"] = None
+        result["temperature_channel_id"] = None
     return result
 
 
@@ -207,7 +211,7 @@ def _apply_electrical(
     event: CanonicalMeasurementEvent,
     aligned_row: pd.Series,
     electrical_index: dict[tuple[str, int], dict],
-    aux_index: dict[tuple[str, int], float],
+    aux_index: dict[tuple[str, int], tuple[float, str | None]],
 ) -> CanonicalMeasurementEvent:
     """Exact-join via composite (electrical_asset_id, locator); no rematch."""
     if event.match_status != "MATCHED_UNIQUE":
@@ -225,7 +229,7 @@ def _apply_electrical(
             "electrical_asset_id (composite selected identity contract)"
         )
     record = resolve_selected(str(locator), electrical_index, asset_id=str(asset_id))
-    enrichment = _enrich(record, aux_index, (str(asset_id), locator))
+    enrichment = _enrich(record, aux_index)
     # Apply selected-identity + enriched state; quality stays deterministically READY.
     for field, value in enrichment.items():
         setattr(event, field, value)
@@ -254,10 +258,16 @@ def build_measurement_events(
     records = pd.read_parquet(electrical_records_path)
 
     electrical_index = build_electrical_index(records)
-    aux_index: dict[tuple[str, int], float] = {}
+    aux_index: dict[tuple[str, int], tuple[float, str | None]] = {}
+    resolved_temperature_channel_id = None
     if aux_temperature_path is not None and Path(aux_temperature_path).exists():
         aux = pd.read_parquet(aux_temperature_path)
-        aux_index = build_aux_index(aux)
+        resolved_temperature_channel_id = resolve_temperature_channel_id(
+            aux, config.temperature_channel_id
+        )
+        aux_index = build_aux_index(
+            aux, temperature_channel_id=config.temperature_channel_id
+        )
 
     # Integrity: ambiguous frames carry no selected locator.
     validate_ambiguous_no_selection(aligned)
@@ -298,6 +308,7 @@ def build_measurement_events(
         candidates_input=candidates,
         records=records,
         aux_row_count=len(aux_index),
+        resolved_temperature_channel_id=resolved_temperature_channel_id,
         battery_id=str(events_df["battery_id"].iloc[0]) if not events_df.empty else "",
         experiment_id=str(events_df["experiment_id"].iloc[0]) if not events_df.empty else "",
         config=config,

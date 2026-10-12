@@ -72,6 +72,7 @@ def write_dataset_payload(
     feature_set_path: Path,
     label_set_path: Path,
     output_root: Path,
+    canonical_tof_manifest_path: Path | None = None,
 ) -> dict[str, str]:
     """Write dataset.parquet + manifest + schema + leakage_policy; returns paths."""
     from battery_workbench.datasets.leakage import (
@@ -104,6 +105,18 @@ def write_dataset_payload(
     leakage_path = out_dir / "leakage_policy.json"
     _write_json(leakage_path, leakage)
 
+    canonical_tof_manifest_path = (
+        Path(canonical_tof_manifest_path) if canonical_tof_manifest_path is not None else None
+    )
+    label_manifest_path = Path(label_set_path).parent / "label_manifest.json"
+    label_manifest_exists = label_manifest_path.is_file()
+    feature_manifest_path = Path(feature_set_path).parent / "feature_set_manifest.json"
+    feature_manifest_exists = feature_manifest_path.is_file()
+    canonical_tof_path = (
+        canonical_tof_manifest_path.parent / "canonical_tof.parquet"
+        if canonical_tof_manifest_path is not None
+        else None
+    )
     manifest = DatasetManifest(
         dataset_id=report.dataset_id,
         dataset_family=report.dataset_family,
@@ -115,12 +128,32 @@ def write_dataset_payload(
         feature_set_id=report.feature_set_id,
         feature_set_path=str(feature_set_path),
         feature_set_checksum=_sha256(feature_set_path),
+        feature_set_manifest_path=(
+            str(feature_manifest_path) if feature_manifest_exists else ""
+        ),
+        feature_set_manifest_checksum=(
+            _sha256(feature_manifest_path) if feature_manifest_exists else ""
+        ),
         label_set_id=report.label_set_id,
         label_set_path=str(label_set_path),
         label_set_checksum=_sha256(label_set_path),
+        label_set_manifest_path=str(label_manifest_path) if label_manifest_exists else "",
+        label_set_manifest_checksum=(
+            _sha256(label_manifest_path) if label_manifest_exists else ""
+        ),
         parameter_set_id=report.parameter_set_id,
         parameter_dependency=config.parameter_dependency,
         gate_calibration_id=report.gate_calibration_id,
+        canonical_tof_path=str(canonical_tof_path) if canonical_tof_path is not None else "",
+        canonical_tof_checksum=_sha256(canonical_tof_path) if canonical_tof_path is not None else "",
+        canonical_tof_manifest_path=(
+            str(canonical_tof_manifest_path) if canonical_tof_manifest_path is not None else ""
+        ),
+        canonical_tof_manifest_checksum=(
+            _sha256(canonical_tof_manifest_path)
+            if canonical_tof_manifest_path is not None
+            else ""
+        ),
         predictor_policy=config.predictor_policy,
         predictor_columns=report.predictor_columns,
         forbidden_predictor_columns=report.forbidden_predictor_columns,
@@ -142,6 +175,7 @@ def write_dataset_payload(
         distinct_target_values=report.distinct_soh_values
         if report.dataset_family == "SOH_CAPACITY"
         else 0,
+        independent_soh_state_count=report.independent_soh_state_count,
         target_method_version=report.soc_formula_version or "",
         soc_label_temporality=report.soc_label_temporality,
         frame_random_split_prohibited=True,

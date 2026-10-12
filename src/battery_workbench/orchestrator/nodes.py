@@ -7,6 +7,7 @@ scientific formula lives here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, ClassVar
@@ -35,6 +36,38 @@ def _action_id(node_id: str, action_type: str) -> str:
     return "UA::" + hashlib.sha256(f"{node_id}:{action_type}".encode()).hexdigest()[:20]
 
 
+def _assert_feature_selection_confirmation_matches(
+    requested_selection: dict[str, Any], computed_selection: dict[str, Any]
+) -> None:
+    """Bind a user confirmation to the exact deterministic proposal being committed."""
+    if not requested_selection.get("confirmed"):
+        return
+    requested_id = requested_selection.get("selection_id")
+    computed_id = computed_selection.get("selection_id")
+    if not requested_id or requested_id != computed_id:
+        raise ValueError("selection_id does not match the recomputed feature selection")
+
+
+def _assert_current_measurement_event_labels(
+    processed_root: Path, battery_id: str, experiment_id: str
+) -> None:
+    """Block scientific consumers from reading stale/tampered label rows."""
+    from battery_workbench.api.integrity import assert_processed_artifact_integrity
+
+    labels_manifest = (
+        Path(processed_root) / "labels" / battery_id / experiment_id / "label_manifest.json"
+    )
+    assert_processed_artifact_integrity(
+        Path(processed_root),
+        labels_manifest,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"event_labels", "cycle_labels"},
+        required_inputs={"measurement_events", "records", "cycles", "steps"},
+        required_manifest_fields={"label_set_id"},
+    )
+
+
 class Readiness:
     """Result of validate_readiness."""
 
@@ -44,11 +77,13 @@ class Readiness:
         reason: str = "",
         user_action: UserActionRequired | None = None,
         limitations: list[str] | None = None,
+        deferable: bool = True,
     ) -> None:
         self.ok = ok
         self.reason = reason
         self.user_action = user_action
         self.limitations = limitations or []
+        self.deferable = deferable
 
 
 class WorkflowNode:
@@ -118,7 +153,20 @@ class WorkflowNode:
         manifest = _load_json(Path(ref.manifest_path)) or {}
         eff = manifest.get("effective_parameters") or {}
         if not eff:
-            eff_path = Path(ref.path) / "effective_parameters.json"
+            manifest_path = Path(ref.manifest_path)
+            output_paths = manifest.get("output_paths") or {}
+            declared_path = output_paths.get("effective_parameters")
+            # ParameterSet ArtifactRefs may point at the experiment-level
+            # directory while their manifest is nested below the set ID.
+            # Resolve the declared basename beside that manifest rather than
+            # silently treating a missing parent-level file as UNKNOWN.
+            eff_path = manifest_path.parent / (
+                Path(str(declared_path)).name if declared_path else "effective_parameters.json"
+            )
+            if not eff_path.is_file():
+                # Retain compatibility with direct ArtifactRefs whose path is
+                # already the concrete ParameterSet directory.
+                eff_path = Path(ref.path) / "effective_parameters.json"
             if eff_path.exists():
                 eff = _load_json(eff_path) or {}
         return eff
@@ -138,6 +186,140 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _require_current_dataset_path(
+    dataset_ref: ArtifactRef,
+    ctx: Any,
+    *,
+    consumer: str,
+    battery_id: str,
+    experiment_id: str,
+) -> Path:
+    """Revalidate Dataset identity and source freshness immediately before reads."""
+    processed_root = Path(ctx.processed_root).resolve()
+    manifest_path = Path(dataset_ref.manifest_path)
+    try:
+        resolved_manifest = manifest_path.resolve(strict=True)
+        resolved_manifest.relative_to(processed_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            f"{consumer} blocked: Dataset manifest is missing or outside processed root"
+        ) from exc
+    manifest = _load_json(resolved_manifest)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("dataset_id") != dataset_ref.artifact_id
+        or manifest.get("battery_id") != battery_id
+        or manifest.get("experiment_id") != experiment_id
+        or dataset_ref.battery_id != battery_id
+        or dataset_ref.experiment_id != experiment_id
+    ):
+        raise ValueError(
+            f"{consumer} blocked: Dataset identity does not match the requested experiment"
+        )
+    from battery_workbench.datasets.freshness import dataset_freshness
+
+    freshness = dataset_freshness(
+        processed_root,
+        resolved_manifest,
+        manifest,
+        raw_root=Path(ctx.raw_root),
+    )
+    if freshness["freshness_status"] != "FRESH":
+        reasons = ", ".join(freshness["freshness_reasons"])
+        raise ValueError(
+            f"{consumer} blocked: Dataset is stale or unverifiable ({reasons}); rebuild the Dataset"
+        )
+    return resolved_manifest.parent / "dataset.parquet"
+
+
+def _require_current_split_assignments_path(
+    split_ref: ArtifactRef,
+    ctx: Any,
+    *,
+    battery_id: str,
+    experiment_id: str,
+    dataset_id: str,
+    dataset_path: Path,
+    dataset_manifest_path: Path,
+) -> Path:
+    """Revalidate grouped-split identity and output bytes immediately before use."""
+    processed_root = Path(ctx.processed_root).resolve()
+    manifest_path = Path(split_ref.manifest_path)
+    try:
+        resolved_manifest = manifest_path.resolve(strict=True)
+        relative = resolved_manifest.relative_to(processed_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Split is missing or outside processed root") from exc
+    if (
+        len(relative.parts) != 6
+        or relative.parts[:4] != ("splits", battery_id, experiment_id, dataset_id)
+        or relative.parts[-2:] != (split_ref.artifact_id, "split_manifest.json")
+        or split_ref.battery_id != battery_id
+        or split_ref.experiment_id != experiment_id
+    ):
+        raise ValueError("Split identity does not match the current Dataset and experiment")
+    manifest = _load_json(resolved_manifest)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("split_id") != split_ref.artifact_id
+        or manifest.get("dataset_id") != dataset_id
+        or manifest.get("battery_id") != battery_id
+        or manifest.get("experiment_id") != experiment_id
+    ):
+        raise ValueError(
+            "Split manifest identity does not match the current Dataset and experiment"
+        )
+    from battery_workbench.splits.integrity import split_dataset_source_reasons
+
+    source_reasons = split_dataset_source_reasons(
+        processed_root,
+        manifest,
+        dataset_path=dataset_path,
+        dataset_manifest_path=dataset_manifest_path,
+    )
+    if source_reasons:
+        raise ValueError(
+            "Split is stale or unverifiable for the current Dataset: " + ", ".join(source_reasons)
+        )
+    from battery_workbench.provenance.processed_manifest import (
+        verify_output_checksums_in_directory,
+    )
+
+    integrity_reasons = verify_output_checksums_in_directory(
+        processed_root,
+        resolved_manifest.parent,
+        manifest.get("output_checksums"),
+        {
+            "split_assignments": "split_assignments.parquet",
+            "leakage_audit": "leakage_audit.json",
+            "evaluation_readiness": "evaluation_readiness.json",
+        },
+    )
+    if integrity_reasons:
+        raise ValueError("Split outputs are stale or unverifiable: " + ", ".join(integrity_reasons))
+    from battery_workbench.splits.integrity import split_assignment_reasons
+
+    assignment_reasons = split_assignment_reasons(
+        processed_root,
+        manifest,
+        assignments_path=resolved_manifest.parent / "split_assignments.parquet",
+        dataset_path=dataset_path,
+    )
+    if assignment_reasons:
+        raise ValueError(
+            "Split assignments do not match the current Dataset: " + ", ".join(assignment_reasons)
+        )
+    return resolved_manifest.parent / "split_assignments.parquet"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # --------------------------------------------------------------------------
@@ -269,36 +451,124 @@ class TimeAnchorNode(WorkflowNode):
     node_type = "TIME_ANCHOR"
 
     def requirements(self, plan, inputs):
+        validation_id = (plan.parameters or {}).get("timebase_validation_id")
         return ArtifactRequirements(
             artifact_type="TIME_ANCHORS",
-            manifest_name="time_anchors.json",
+            manifest_name="time_anchor_manifest.json",
             identity=ArtifactIdentity(
                 battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
             ),
             output_rel_dir=f"synchronization/{plan.project.battery_id}/{plan.project.experiment_id}",
             version_key="anchor_version",
             expected_version=self.node_version,
+            extra_match={"timebase_validation_id": validation_id},
         )
 
     def output_rel_dir(self, plan):
         return f"synchronization/{plan.project.battery_id}/{plan.project.experiment_id}"
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        if (plan.parameters or {}).get("timebase_validation_id"):
+            return (
+                None,
+                "accepted timebase evidence must be rechecked against raw files before reuse",
+            )
+        raw_root = getattr(self, "raw_root", None)
+        if raw_root is None:
+            return None, "raw source root is unavailable; time-anchor cache cannot be verified"
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.provenance.processed_manifest import (
+            verify_output_checksums_in_directory,
+        )
+        from battery_workbench.provenance.time_anchor import (
+            resolve_time_anchor_config,
+            time_anchor_input_fingerprint,
+        )
+
+        battery_id = plan.project.battery_id
+        experiment_id = plan.project.experiment_id
+        fingerprint = time_anchor_input_fingerprint(
+            raw_root=Path(raw_root),
+            processed_root=Path(processed_root),
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            config_path=resolve_time_anchor_config(Path(raw_root)),
+            validation_id=None,
+        )
+        if manifest.get("input_fingerprint") != fingerprint:
+            return None, "time-anchor source inputs changed; recomputation is required"
+        integrity_reasons = verify_output_checksums_in_directory(
+            Path(processed_root),
+            Path(ref.path),
+            manifest.get("output_checksums"),
+            {"time_anchors": "time_anchors.json"},
+        )
+        if integrity_reasons:
+            return None, "; ".join(integrity_reasons)
+        return ref, "time-anchor source and output checksums verified"
+
     def run(self, plan, inputs, ctx):
         from battery_workbench.synchronization.persistence import write_time_anchor_state
         from battery_workbench.synchronization.schemas import TimeAnchorConfig
         from battery_workbench.synchronization.service import assess_experiment_time_anchors
+        from battery_workbench.synchronization.timebase_registry import accepted_timebase_overrides
+
+        validation_id = (plan.parameters or {}).get("timebase_validation_id")
+        exp_dir = (
+            Path(ctx.processed_root)
+            / "synchronization"
+            / plan.project.battery_id
+            / plan.project.experiment_id
+        )
+        anchor_state_path = exp_dir / "time_anchors.json"
+        previous_validation_id = None
+        if anchor_state_path.is_file():
+            try:
+                previous_validation_id = json.loads(
+                    anchor_state_path.read_text(encoding="utf-8")
+                ).get("timebase_validation_id")
+            except (OSError, json.JSONDecodeError):
+                previous_validation_id = None
+        if previous_validation_id and previous_validation_id != validation_id:
+            from battery_workbench.synchronization.timebase_registry import (
+                timebase_validation_status,
+            )
+
+            prior_status = timebase_validation_status(
+                processed_root=Path(ctx.processed_root),
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                validation_id=previous_validation_id,
+            )
+            if prior_status != "REVOKED_PENDING_RECOMPUTE":
+                raise ValueError(
+                    "an applied timebase proposal must be revoked before replacing its provisional anchor"
+                )
 
         config_path = Path(ctx.raw_root).parent.parent / "configs" / "time_anchor.yaml"
         if not config_path.is_file():
             # repo-shipped default config (sandbox raw roots have no configs dir)
             config_path = Path(__file__).resolve().parents[3] / "configs" / "time_anchor.yaml"
         config = TimeAnchorConfig.from_yaml(config_path)
+        validation_overrides = accepted_timebase_overrides(
+            processed_root=Path(ctx.processed_root),
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            validation_id=validation_id,
+            raw_root=Path(ctx.raw_root),
+        )
+        if validation_id and not validation_overrides:
+            raise ValueError("selected timebase validation is not currently accepted")
         report = assess_experiment_time_anchors(
             plan.project.experiment_id,
             processed_root=Path(ctx.processed_root),
             manifest_root=Path(ctx.raw_root) / "manifests",
             config=config,
             battery_id=plan.project.battery_id,
+            overrides=validation_overrides,
         )
         from battery_workbench.io.experiment.manifest_loader import load_experiments
         from battery_workbench.synchronization.schemas import AssetAnchorAssessment, TimeAnchorState
@@ -326,6 +596,7 @@ class TimeAnchorNode(WorkflowNode):
             assets=[AssetAnchorAssessment.model_validate(a) for a in report.assets],
             warnings=report.warnings,
             limitations=report.limitations,
+            timebase_validation_id=validation_id,
             validated_sync=False,
         )
         written = write_time_anchor_state(
@@ -333,16 +604,63 @@ class TimeAnchorNode(WorkflowNode):
             processed_root=Path(ctx.processed_root),
             artifacts_root=Path(ctx.processed_root) / "artifacts",
         )
+        if validation_id:
+            from battery_workbench.synchronization.timebase_registry import (
+                mark_timebase_validation_applied,
+            )
+
+            mark_timebase_validation_applied(
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                validation_id=validation_id,
+                processed_root=Path(ctx.processed_root),
+            )
+        if previous_validation_id and previous_validation_id != validation_id:
+            from battery_workbench.synchronization.timebase_registry import (
+                mark_timebase_validation_reverted,
+            )
+
+            mark_timebase_validation_reverted(
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                validation_id=previous_validation_id,
+                processed_root=Path(ctx.processed_root),
+            )
         out_dir = (
             Path(ctx.processed_root)
             / "synchronization"
             / plan.project.battery_id
             / plan.project.experiment_id
         )
+        from battery_workbench.provenance.time_anchor import (
+            time_anchor_input_fingerprint,
+        )
+
+        anchor_state_path = Path(written["time_anchors"])
+        time_anchor_manifest_path = out_dir / "time_anchor_manifest.json"
+        time_anchor_manifest = {
+            "battery_id": plan.project.battery_id,
+            "experiment_id": plan.project.experiment_id,
+            "anchor_version": report.anchor_version,
+            "timebase_validation_id": validation_id,
+            "input_fingerprint": time_anchor_input_fingerprint(
+                raw_root=Path(ctx.raw_root),
+                processed_root=Path(ctx.processed_root),
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                config_path=config_path,
+                validation_id=validation_id,
+            ),
+            "output_checksums": {"time_anchors": _sha256_file(anchor_state_path)},
+        }
+        time_anchor_manifest_path.write_text(
+            json.dumps(time_anchor_manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         return {
             "artifact_id": "",
             "path": str(out_dir),
-            "manifest_path": str(written["time_anchors"]),
+            "manifest_path": str(time_anchor_manifest_path),
             "producer_version": self.node_version,
             "limitations": ["PROVISIONAL time anchors (BRW-008 semantics)"],
             "metrics": {"assets": len(report.assets)},
@@ -366,6 +684,33 @@ class UltrasoundTimestampsNode(WorkflowNode):
 
     def output_rel_dir(self, plan):
         return f"synchronization/{plan.project.battery_id}/{plan.project.experiment_id}"
+
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.provenance.processed_manifest import (
+            verify_manifest_inputs,
+            verify_output_checksums_in_directory,
+        )
+
+        input_reasons = verify_manifest_inputs(
+            Path(processed_root),
+            manifest,
+            required_inputs={"frames", "time_anchor_state"},
+        )
+        if input_reasons:
+            return None, "timestamp inputs are not verifiable: " + "; ".join(input_reasons)
+        output_reasons = verify_output_checksums_in_directory(
+            Path(processed_root),
+            Path(ref.path),
+            {"timestamped_frames": manifest.get("output_checksum")},
+            {"timestamped_frames": "timestamped_ultrasound_frames.parquet"},
+        )
+        if output_reasons:
+            return None, "timestamp outputs are not verifiable: " + ", ".join(output_reasons)
+        return ref, reason
 
     def run(self, plan, inputs, ctx):
         from battery_workbench.synchronization.timestamp_engine import (
@@ -419,6 +764,8 @@ class SynchronizationNode(WorkflowNode):
             # compatibility — a pre-0.2.0 sync artifact (no composite selected
             # identity) is NOT reusable even with unchanged raw inputs.
             extra_match={"schema_version": SYNCHRONIZATION_SCHEMA_VERSION},
+            required_output_checksums={"aligned", "candidates"},
+            required_input_checksums={"ultrasound_timestamped", "electrical_records"},
         )
 
     def output_rel_dir(self, plan):
@@ -457,7 +804,7 @@ class SynchronizationNode(WorkflowNode):
 
 class MeasurementEventsNode(WorkflowNode):
     node_type = "MEASUREMENT_EVENTS"
-    node_version = "0.2.0"
+    node_version = "0.5.1"
 
     def requirements(self, plan, inputs):
         return ArtifactRequirements(
@@ -469,18 +816,27 @@ class MeasurementEventsNode(WorkflowNode):
             output_rel_dir=f"multimodal/{plan.project.battery_id}/{plan.project.experiment_id}",
             version_key="builder_version",
             expected_version=self.node_version,
+            extra_match={
+                "temperature_channel_id": plan.measurement_events.get("temperature_channel_id")
+            },
+            required_output_checksums={"events", "candidates"},
+            required_input_checksums={"aligned", "sync_candidates", "electrical_records"},
         )
 
     def output_rel_dir(self, plan):
         return f"multimodal/{plan.project.battery_id}/{plan.project.experiment_id}"
 
     def run(self, plan, inputs, ctx):
+        from battery_workbench.multimodal.schemas import MeasurementEventConfig
         from battery_workbench.multimodal.service import build_events_for_experiment
 
         report = build_events_for_experiment(
             plan.project.battery_id,
             plan.project.experiment_id,
             processed_root=Path(ctx.processed_root),
+            config=MeasurementEventConfig(
+                temperature_channel_id=plan.measurement_events.get("temperature_channel_id")
+            ),
         )
         out_dir = (
             Path(ctx.processed_root)
@@ -521,6 +877,51 @@ class AnalysisSliceNode(WorkflowNode):
     def pinned_artifact_id(self, plan):
         return plan.analysis_slice.get("analysis_slice_id")
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        root = Path(processed_root)
+        requirements = self.requirements(plan, inputs)
+        pinned_slice_id = self.pinned_artifact_id(plan)
+        if pinned_slice_id:
+            candidate_ids = [pinned_slice_id]
+        else:
+            output_dir = root / self.output_rel_dir(plan)
+            candidate_ids = (
+                sorted(
+                    {
+                        manifest_path.parent.name
+                        for manifest_path in output_dir.rglob(requirements.manifest_name)
+                    }
+                )
+                if output_dir.is_dir()
+                else []
+            )
+
+        stale_reason = "no reusable artifact found"
+        for candidate_id in candidate_ids:
+            ref = find_existing_artifact(
+                root,
+                requirements=requirements,
+                artifact_id=candidate_id,
+            )
+            if ref is None:
+                continue
+            manifest = _load_json(Path(ref.manifest_path)) or {}
+            from battery_workbench.analysis.persistence import verify_analysis_slice_artifact
+
+            integrity_reasons = verify_analysis_slice_artifact(
+                root,
+                Path(ref.manifest_path),
+                manifest,
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+            )
+            if integrity_reasons:
+                stale_reason = "analysis slice is not current: " + ", ".join(integrity_reasons)
+                continue
+            return ref, ref.reuse_reason
+
+        return None, stale_reason
+
     def run(self, plan, inputs, ctx):
         from battery_workbench.analysis.schemas import AnalysisSliceConfig, ConditionSliceSpec
         from battery_workbench.analysis.slice_engine import create_analysis_slice
@@ -555,6 +956,7 @@ class AnalysisSliceNode(WorkflowNode):
 
 class UltrasoundFeaturesNode(WorkflowNode):
     node_type = "ULTRASOUND_FEATURES"
+    node_version = "0.2.0"
 
     def requirements(self, plan, inputs):
         extra: dict[str, Any] = {}
@@ -577,6 +979,63 @@ class UltrasoundFeaturesNode(WorkflowNode):
     def output_rel_dir(self, plan):
         return f"features/{plan.project.battery_id}/{plan.project.experiment_id}"
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        slice_ref = inputs.get("ANALYSIS_SLICE")
+        if slice_ref is None:
+            return None, "current AnalysisSlice is required to resolve ultrasound features"
+        slice_path = Path(slice_ref.path) / "analysis_slice.parquet"
+        if not slice_path.is_file():
+            slice_path = Path(slice_ref.path) / slice_ref.artifact_id / "analysis_slice.parquet"
+        waveform_path = (
+            Path(processed_root)
+            / "ultrasound"
+            / plan.project.battery_id
+            / plan.project.experiment_id
+            / "waveforms.zarr"
+        )
+        if not slice_path.is_file() or not waveform_path.is_dir():
+            return None, "current AnalysisSlice or waveform store is unavailable"
+        from battery_workbench.features.feature_set_id import build_feature_set_id
+        from battery_workbench.features.ultrasound_engine import _sha256, _zarr_provenance
+        from battery_workbench.features.ultrasound_schemas import UltrasoundFeatureConfig
+
+        config = UltrasoundFeatureConfig()
+        expected_id = build_feature_set_id(
+            analysis_slice_checksum=_sha256(slice_path),
+            waveform_store_provenance=_zarr_provenance(waveform_path),
+            normalized_config=config.model_dump(mode="json"),
+            feature_definition_version=config.feature_definition_version,
+        )
+        requirements = self.requirements(plan, inputs)
+        ref = find_existing_artifact(
+            processed_root,
+            requirements=requirements,
+            artifact_id=expected_id,
+        )
+        if ref is None:
+            return None, "no reusable feature set matches current slice/waveform content"
+        from battery_workbench.orchestrator.resolver import verify_manifest_provenance
+
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        provenance_ok, provenance_reason = verify_manifest_provenance(
+            manifest, Path(ref.manifest_path), processed_root=processed_root
+        )
+        if not provenance_ok:
+            return None, provenance_reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.features.persistence import verify_feature_set_artifact
+
+        integrity_reasons = verify_feature_set_artifact(
+            Path(processed_root),
+            Path(ref.manifest_path),
+            manifest,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+        )
+        if integrity_reasons:
+            return None, "ultrasound feature set is not current: " + ", ".join(integrity_reasons)
+        return ref, ref.reuse_reason or "feature set identity and integrity verified"
+
     def run(self, plan, inputs, ctx):
         from battery_workbench.features.ultrasound_engine import (
             UltrasoundFeatureConfig,
@@ -584,8 +1043,11 @@ class UltrasoundFeaturesNode(WorkflowNode):
         )
 
         slice_ref = inputs["ANALYSIS_SLICE"]
+        slice_path = Path(slice_ref.path) / "analysis_slice.parquet"
+        if not slice_path.is_file():
+            slice_path = Path(slice_ref.path) / slice_ref.artifact_id / "analysis_slice.parquet"
         report = extract_ultrasound_features(
-            analysis_slice_path=Path(slice_ref.path) / "analysis_slice.parquet",
+            analysis_slice_path=slice_path,
             waveform_store_path=Path(ctx.processed_root)
             / "ultrasound"
             / plan.project.battery_id
@@ -606,6 +1068,7 @@ class UltrasoundFeaturesNode(WorkflowNode):
 
 class ReferenceLabelsNode(WorkflowNode):
     node_type = "REFERENCE_LABELS"
+    node_version = "0.3.0"
 
     def requirements(self, plan, inputs):
         req = ArtifactRequirements(
@@ -626,6 +1089,63 @@ class ReferenceLabelsNode(WorkflowNode):
     def output_rel_dir(self, plan):
         return f"labels/{plan.project.battery_id}/{plan.project.experiment_id}"
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.labels.persistence import verify_label_artifact
+
+        integrity_reasons = verify_label_artifact(
+            Path(processed_root),
+            Path(ref.manifest_path),
+            manifest,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+        )
+        if integrity_reasons:
+            return None, "reference labels are not current: " + ", ".join(integrity_reasons)
+        try:
+            from battery_workbench.labels.builder import validate_reference_label_inputs
+
+            battery_id = plan.project.battery_id
+            experiment_id = plan.project.experiment_id
+            validate_reference_label_inputs(
+                measurement_events_path=(
+                    Path(processed_root)
+                    / "multimodal"
+                    / battery_id
+                    / experiment_id
+                    / "measurement_events.parquet"
+                ),
+                records_path=(
+                    Path(processed_root)
+                    / "electrical"
+                    / battery_id
+                    / experiment_id
+                    / "records.parquet"
+                ),
+                cycles_path=(
+                    Path(processed_root)
+                    / "electrical"
+                    / battery_id
+                    / experiment_id
+                    / "cycles.parquet"
+                ),
+                steps_path=(
+                    Path(processed_root)
+                    / "electrical"
+                    / battery_id
+                    / experiment_id
+                    / "steps.parquet"
+                ),
+                expected_battery_id=battery_id,
+                expected_experiment_id=experiment_id,
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            return None, f"reference labels are not current: LABEL_INPUT_SEMANTICS_INVALID:{exc}"
+        return ref, reason
+
     def run(self, plan, inputs, ctx):
         from battery_workbench.labels.builder import build_reference_labels
 
@@ -645,6 +1165,8 @@ class ReferenceLabelsNode(WorkflowNode):
             / e
             / "parser_manifest.json",
             output_root=Path(ctx.processed_root),
+            expected_battery_id=b,
+            expected_experiment_id=e,
         )
         out_dir = Path(ctx.processed_root) / "labels" / b / e
         limitations = list(report.limitations) if hasattr(report, "limitations") else []
@@ -679,9 +1201,142 @@ class ParameterSetNode(WorkflowNode):
     def pinned_artifact_id(self, plan):
         return plan.parameters.get("parameter_set_id")
 
-    def _user_overrides(self, plan) -> dict[str, Any]:
+    def _user_overrides(self, plan, *, processed_root: Path | None = None) -> dict[str, Any]:
         overrides = plan.parameters.get("user_overrides") or {}
-        return dict(overrides)
+        if overrides:
+            return dict(overrides)
+
+        # Rebuilding a stale ParameterSet must not silently discard the
+        # explicitly pinned user's prior records. Only recover from the exact
+        # pinned set; never infer intent from whichever sibling set is newest.
+        parameter_set_id = plan.parameters.get("parameter_set_id")
+        if not parameter_set_id or processed_root is None:
+            return {}
+        record_path = (
+            Path(processed_root)
+            / "parameters"
+            / plan.project.battery_id
+            / plan.project.experiment_id
+            / str(parameter_set_id)
+            / "parameter_records.parquet"
+        )
+        manifest_path = record_path.parent / "parameter_set_manifest.json"
+        manifest = _load_json(manifest_path)
+        from battery_workbench.provenance.processed_manifest import content_sha256
+
+        root = Path(processed_root).resolve()
+        expected_dir = (
+            root
+            / "parameters"
+            / plan.project.battery_id
+            / plan.project.experiment_id
+            / str(parameter_set_id)
+        ).resolve()
+        reasons = []
+        if not isinstance(manifest, dict):
+            reasons.append("MANIFEST_INVALID")
+        else:
+            if manifest.get("battery_id") != plan.project.battery_id:
+                reasons.append("MANIFEST_BATTERY_ID_MISMATCH")
+            if manifest.get("experiment_id") != plan.project.experiment_id:
+                reasons.append("MANIFEST_EXPERIMENT_ID_MISMATCH")
+            if manifest.get("parameter_set_id") != str(parameter_set_id):
+                reasons.append("PARAMETER_SET_ID_MISMATCH")
+            try:
+                manifest_path.resolve().relative_to(expected_dir)
+            except (OSError, ValueError):
+                reasons.append("MANIFEST_PATH_INVALID")
+            output_paths = manifest.get("output_paths") or {}
+            output_checksums = manifest.get("output_checksums") or {}
+            declared_records = output_paths.get("records")
+            if declared_records:
+                declared_path = Path(declared_records)
+                try:
+                    if declared_path.is_absolute():
+                        resolved_declared = declared_path.resolve()
+                    else:
+                        parts = declared_path.parts
+                        if parts[:2] == ("data", "processed"):
+                            parts = parts[2:]
+                        if not parts or any(part in {"", ".", ".."} for part in parts):
+                            raise ValueError("noncanonical relative records path")
+                        resolved_declared = root.joinpath(*parts).resolve()
+                        resolved_declared.relative_to(root)
+                    if resolved_declared != record_path.resolve():
+                        # Rebase only repository data/processed references
+                        # when validating a copied sandbox; arbitrary paths
+                        # remain ineligible for recovery.
+                        normalized = str(declared_path).replace("\\", "/")
+                        marker = "/data/processed/"
+                        if marker in normalized:
+                            suffix = normalized.split(marker, 1)[1]
+                            rebased = root.joinpath(*Path(suffix).parts).resolve()
+                            if rebased != record_path.resolve():
+                                reasons.append("RECORDS_PATH_NONCANONICAL")
+                        else:
+                            reasons.append("RECORDS_PATH_NONCANONICAL")
+                except (OSError, RuntimeError, ValueError):
+                    reasons.append("RECORDS_PATH_INVALID")
+            elif output_checksums.get("records"):
+                # Historical manifests may omit output_paths; only their
+                # canonical pinned records path is eligible for recovery.
+                pass
+            else:
+                reasons.append("RECORDS_PROVENANCE_MISSING")
+            expected_checksum = output_checksums.get("records")
+            if (
+                not isinstance(expected_checksum, str)
+                or len(expected_checksum) != 64
+                or any(char not in "0123456789abcdefABCDEF" for char in expected_checksum)
+            ):
+                reasons.append("RECORDS_CHECKSUM_MISSING_OR_INVALID")
+            elif (
+                not record_path.is_file()
+                or content_sha256(record_path) != expected_checksum.lower()
+            ):
+                reasons.append("RECORDS_CHECKSUM_MISMATCH")
+        if reasons:
+            raise ValueError(
+                "cannot recover user parameters without verified parameter records; "
+                "re-enter the values explicitly (" + ", ".join(reasons) + ")"
+            )
+        if not record_path.is_file():
+            raise ValueError("cannot recover user parameters: parameter records are missing")
+        records = pd.read_parquet(record_path)
+        required = {
+            "canonical_name",
+            "value",
+            "unit",
+            "source_type",
+            "verification_status",
+        }
+        if not required.issubset(records.columns):
+            return {}
+        user_records = records[
+            records["source_type"].astype(str).str.rsplit(".", n=1).str[-1].eq("USER_SUPPLIED")
+        ]
+        recovered: dict[str, dict[str, Any]] = {}
+        for _, row in user_records.iterrows():
+            name = str(row["canonical_name"])
+            if name in recovered:
+                raise ValueError(
+                    f"pinned parameter set {parameter_set_id} has multiple user records "
+                    f"for {name}; explicit resolution is required"
+                )
+            value = row["value"]
+            if isinstance(value, str):
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass
+            recovered[name] = {
+                "value": value,
+                "unit": row["unit"],
+                "source_reference": row.get("source_reference", ""),
+                "evidence_note": row.get("evidence_note", ""),
+                "verification_status": row["verification_status"],
+            }
+        return recovered
 
     def resolve_existing_output(self, plan, inputs, processed_root):
         # user_overrides define a NEW artifact: existing sets (built without
@@ -689,6 +1344,20 @@ class ParameterSetNode(WorkflowNode):
         if self._user_overrides(plan) and not self.pinned_artifact_id(plan):
             return None, "user_overrides present — new parameter set required"
         ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is not None:
+            manifest = _load_json(Path(ref.manifest_path)) or {}
+            from battery_workbench.parameters.persistence import verify_parameter_set_artifact
+
+            integrity_reasons = verify_parameter_set_artifact(
+                Path(processed_root),
+                Path(ref.manifest_path),
+                manifest,
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                parameter_set_id=ref.artifact_id,
+            )
+            if integrity_reasons:
+                return None, "parameter set is not current: " + ", ".join(integrity_reasons)
         if ref is not None and plan.parameters.get("require_sampling_rate"):
             # reuse only a parameter set that actually resolves the demanded input
             manifest = _load_json(Path(ref.manifest_path)) or {}
@@ -742,7 +1411,7 @@ class ParameterSetNode(WorkflowNode):
 
         b, e = plan.project.battery_id, plan.project.experiment_id
         base = Path(ctx.processed_root)
-        overrides = self._user_overrides(plan)
+        overrides = self._user_overrides(plan, processed_root=Path(ctx.processed_root))
         report = build_parameter_set(
             output_root=base,
             measurement_events_path=base / "multimodal" / b / e / "measurement_events.parquet",
@@ -940,6 +1609,10 @@ class CanonicalTofNode(WorkflowNode):
 
     def resolve_existing_output(self, plan, inputs, processed_root):
         """Invalidate on gate-calibration identity change (TOF downstream only)."""
+        feature_ref = inputs.get("ULTRASOUND_FEATURES")
+        parameter_ref = inputs.get("PARAMETER_SET")
+        if feature_ref is None or parameter_ref is None:
+            return None, "current FeatureSet and ParameterSet are required for canonical TOF reuse"
         ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
         if ref is None:
             return None, reason
@@ -947,12 +1620,28 @@ class CanonicalTofNode(WorkflowNode):
         cal = resolve_tof_gate_calibration(
             plan.project.battery_id, plan.project.experiment_id, Path(processed_root)
         )
-        stored_cal = manifest.get("gate_calibration_id")
-        stored_source = manifest.get("gate_calibration_source")
-        if stored_cal != cal["gate_calibration_id"] or (
-            stored_source is not None and stored_source != cal["source"]
-        ):
-            return None, "TOF gate calibration changed — canonical TOF recompute required"
+        feature_table_path = Path(feature_ref.path) / "ultrasound_features.parquet"
+        if not feature_table_path.is_file():
+            feature_table_path = (
+                Path(feature_ref.path) / feature_ref.artifact_id / "ultrasound_features.parquet"
+            )
+        from battery_workbench.features_physical.canonical_tof import (
+            verify_canonical_tof_artifact,
+        )
+
+        integrity_reasons = verify_canonical_tof_artifact(
+            Path(processed_root),
+            Path(ref.manifest_path),
+            manifest,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            feature_set_id=feature_ref.artifact_id,
+            feature_table_path=feature_table_path,
+            parameter_set_id=parameter_ref.artifact_id,
+            gate_calibration=cal,
+        )
+        if integrity_reasons:
+            return None, "canonical TOF is not current: " + ", ".join(integrity_reasons)
         # fs verification state change also invalidates (verified↔unverified)
         eff = self._load_effective_parameters(inputs)
         from battery_workbench.features_physical.canonical_tof import effective_fs
@@ -977,13 +1666,27 @@ class CanonicalTofNode(WorkflowNode):
             compute_canonical_tof_series,
             effective_fs,
         )
+        from battery_workbench.provenance.processed_manifest import content_sha256
 
         b, e = plan.project.battery_id, plan.project.experiment_id
-        features_path = Path(ctx.processed_root) / "features" / b / e
-        feature_sets = sorted(p for p in features_path.glob("AS::*/FS::*") if p.is_dir())
-        if not feature_sets:
-            raise FileNotFoundError("no ULTRASOUND_FEATURE_SET available for canonical TOF")
-        features = pd.read_parquet(feature_sets[-1] / "ultrasound_features.parquet")
+        feature_ref = inputs.get("ULTRASOUND_FEATURES")
+        if feature_ref is not None:
+            feature_set_dir = Path(feature_ref.path)
+        else:
+            features_path = Path(ctx.processed_root) / "features" / b / e
+            feature_sets = sorted(p for p in features_path.glob("AS::*/FS::*") if p.is_dir())
+            if not feature_sets:
+                raise FileNotFoundError("no ULTRASOUND_FEATURE_SET available for canonical TOF")
+            feature_set_dir = feature_sets[-1]
+        feature_table_path = feature_set_dir / "ultrasound_features.parquet"
+        if not feature_table_path.is_file() and feature_ref is not None:
+            feature_table_path = (
+                feature_set_dir / feature_ref.artifact_id / "ultrasound_features.parquet"
+            )
+        features = pd.read_parquet(feature_table_path)
+        feature_set_id = (
+            feature_ref.artifact_id if feature_ref is not None else feature_set_dir.name
+        )
         required_feature_identity = {
             "measurement_event_id",
             "ultrasound_asset_id",
@@ -999,7 +1702,9 @@ class CanonicalTofNode(WorkflowNode):
                 f"{sorted(missing_identity)}"
             )
         if features["measurement_event_id"].astype(str).duplicated().any():
-            raise ValueError("ultrasound feature rows contain duplicate MeasurementEvent identities")
+            raise ValueError(
+                "ultrasound feature rows contain duplicate MeasurementEvent identities"
+            )
         features = features.sort_values("event_order_index", kind="stable").reset_index(drop=True)
         frames = load_waveform_frames(
             Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr", features
@@ -1094,14 +1799,70 @@ class CanonicalTofNode(WorkflowNode):
         (out_dir / "canonical_tof_audit.json").write_text(
             json.dumps(audit, ensure_ascii=False, indent=2) + "\n"
         )
+        parameter_ref = inputs.get("PARAMETER_SET")
+        parameter_set_dir = (
+            Path(parameter_ref.manifest_path).parent
+            if parameter_ref is not None
+            else Path(ctx.processed_root) / "parameters" / b / e / ps_id
+        )
+        effective_parameters_path = parameter_set_dir / "effective_parameters.json"
+        analysis_slice_id = feature_table_path.parent.parent.name
+        input_paths = {
+            "ultrasound_features": feature_table_path,
+            "feature_set_manifest": feature_table_path.parent / "feature_set_manifest.json",
+            "analysis_slice": Path(ctx.processed_root)
+            / "analysis_slices"
+            / b
+            / e
+            / analysis_slice_id
+            / "analysis_slice.parquet",
+            "measurement_events": Path(ctx.processed_root)
+            / "multimodal"
+            / b
+            / e
+            / "measurement_events.parquet",
+            "waveform_store": Path(ctx.processed_root) / "ultrasound" / b / e / "waveforms.zarr",
+            "effective_parameters": effective_parameters_path,
+            "parameter_set_manifest": parameter_set_dir / "parameter_set_manifest.json",
+        }
+        if cal["source"] == "EXPERIMENT_CONFIRMED":
+            input_paths["gate_calibration_record"] = (
+                Path(ctx.processed_root)
+                / "gate_calibrations"
+                / b
+                / e
+                / f"{cal['gate_calibration_id']}.json"
+            )
+        tof_path = out_dir / "canonical_tof.parquet"
+        audit_path = out_dir / "canonical_tof_audit.json"
         manifest = {
+            "battery_id": b,
+            "experiment_id": e,
+            "feature_set_id": feature_set_id,
             "tof_method_id": CANONICAL_TOF_METHOD,
             "tof_definition_version": TOF_DEFINITION_VERSION,
+            "tof_policy_version": TOF_POLICY_VERSION,
+            "surface_gate_id": surface_binding.gate_id,
+            "bottom_gate_id": bottom_binding.gate_id,
+            "gate_calibration_id": cal["gate_calibration_id"],
+            "gate_calibration_source": cal["source"],
+            "gate_calibration_version": cal["version"],
+            "gate_calibration": cal,
             "sampling_rate_hz": fs,
             "sampling_rate_verified": bool(fs_verified),
             "parameter_set_id": ps_id,
             "row_count": len(table),
             "canonical_tof_valid": len(valid),
+            "input_paths": {key: str(path) for key, path in input_paths.items()},
+            "input_checksums": {key: content_sha256(path) for key, path in input_paths.items()},
+            "output_paths": {
+                "canonical_tof": str(tof_path),
+                "audit": str(audit_path),
+            },
+            "output_checksums": {
+                "canonical_tof": content_sha256(tof_path),
+                "audit": content_sha256(audit_path),
+            },
         }
         (out_dir / "canonical_tof_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         limitations = (
@@ -1164,8 +1925,20 @@ class GatedFeaturesNode(WorkflowNode):
             )
             if ref is None:
                 return None, "gate specs changed — new gate set required"
-            return ref, "gate specs match existing gate set"
-        return super().resolve_existing_output(plan, inputs, processed_root)
+            reason = "gate specs match existing gate set"
+        else:
+            ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.gates.persistence import verify_gated_feature_artifact
+
+        integrity_reasons = verify_gated_feature_artifact(
+            Path(processed_root), Path(ref.path), manifest
+        )
+        if integrity_reasons:
+            return None, "gated feature artifact is not current: " + ", ".join(integrity_reasons)
+        return ref, reason
 
     def run(self, plan, inputs, ctx):
         import numpy as np
@@ -1284,6 +2057,22 @@ class FeatureLabelAnalysisNode(WorkflowNode):
     def pinned_artifact_id(self, plan):
         return plan.gates.get("gate_set_id")
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.gates.persistence import verify_gated_analysis_artifact
+
+        integrity_reasons = verify_gated_analysis_artifact(
+            Path(processed_root), Path(ref.manifest_path).parent, manifest
+        )
+        if integrity_reasons:
+            return None, "gated feature-label analysis is not current: " + ", ".join(
+                integrity_reasons
+            )
+        return ref, reason
+
     def run(self, plan, inputs, ctx):
         import pandas as pd
 
@@ -1295,6 +2084,7 @@ class FeatureLabelAnalysisNode(WorkflowNode):
 
         b, e = plan.project.battery_id, plan.project.experiment_id
         gate_ref = inputs["GATED_FEATURES"]
+        _assert_current_measurement_event_labels(Path(ctx.processed_root), b, e)
         gated = pd.read_parquet(Path(gate_ref.path) / "gated_features.parquet")
         labels = pd.read_parquet(
             Path(ctx.processed_root) / "labels" / b / e / "event_labels.parquet"
@@ -1311,9 +2101,11 @@ class FeatureLabelAnalysisNode(WorkflowNode):
         analysis.columns = [f"{feat}@{gid}" for feat, gid in analysis.columns]
         analysis = analysis.reset_index()
         delay_path = Path(gate_ref.path) / "gate_delay.parquet"
+        gate_manifest_path = Path(gate_ref.manifest_path)
+        gate_specs_path = Path(gate_ref.path) / "gate_specs.json"
         if delay_path.exists():
             d = pd.read_parquet(delay_path)
-            gate_ids = json.loads((Path(gate_ref.manifest_path)).read_text())["gates"]
+            gate_ids = json.loads(gate_manifest_path.read_text())["gates"]
             if len(gate_ids) >= 2:
                 loc = delay_locator(gate_ids[0]["gate_id"], gate_ids[1]["gate_id"])
                 analysis[loc] = (
@@ -1327,6 +2119,17 @@ class FeatureLabelAnalysisNode(WorkflowNode):
             cycle_labels=cycles,
             event_grain=True,
         )
+        labels_dir = Path(ctx.processed_root) / "labels" / b / e
+        input_files = {
+            "gated_features": Path(gate_ref.path) / "gated_features.parquet",
+            "gated_feature_manifest": gate_manifest_path,
+            "gate_specs": gate_specs_path,
+            "event_labels": labels_dir / "event_labels.parquet",
+            "cycle_labels": labels_dir / "cycle_labels.parquet",
+            "label_manifest": labels_dir / "label_manifest.json",
+        }
+        if delay_path.is_file():
+            input_files["gate_delay"] = delay_path
         paths = write_gated_analysis_payload(
             analysis_df=analysis_full,
             manifest={
@@ -1340,6 +2143,7 @@ class FeatureLabelAnalysisNode(WorkflowNode):
             experiment_id=e,
             gate_set_id=gate_ref.artifact_id,
             output_root=Path(ctx.processed_root),
+            input_files=input_files,
         )
         return {
             "artifact_id": gate_ref.artifact_id,
@@ -1352,6 +2156,46 @@ class FeatureLabelAnalysisNode(WorkflowNode):
 
 class DatasetNode(WorkflowNode):
     node_type = "DATASET"
+    node_version = "0.4.0"
+
+    @staticmethod
+    def _target_readiness(plan) -> Readiness:
+        target = plan.target or "soc_reference_percent"
+        if target == "soc_reference_percent":
+            return Readiness(ok=True, reason="Reference SOC dataset contract supported")
+        if target == "soh_capacity_reference_percent":
+            return Readiness(
+                ok=True,
+                reason=(
+                    "SOH descriptive dataset may be materialized with NOT_READY status; "
+                    "model evaluation remains blocked until independent-state readiness"
+                ),
+            )
+        if target == "temperature_c":
+            return Readiness(
+                ok=False,
+                reason=(
+                    "temperature_c dataset is BLOCKED_BY_VALIDATION: the orchestrated "
+                    "dataset path does not yet enforce sensor location/calibration evidence"
+                ),
+                deferable=False,
+            )
+        if target == "soh_capacity_reference_percent":
+            return Readiness(
+                ok=False,
+                reason=(
+                    "soh_capacity_reference_percent dataset is NOT_READY: independent "
+                    "SOH-state readiness is not satisfied by the current modeling contract"
+                ),
+            )
+        return Readiness(
+            ok=False,
+            reason=f"unsupported target for dataset builder: {target}",
+            deferable=False,
+        )
+
+    def validate_readiness(self, plan, inputs):
+        return self._target_readiness(plan)
 
     def _gate_calibration(
         self, plan, processed_root: Path
@@ -1368,39 +2212,84 @@ class DatasetNode(WorkflowNode):
         )
 
     def resolve_existing_output(self, plan, inputs, processed_root):
+        readiness = self._target_readiness(plan)
+        if not readiness.ok:
+            return None, readiness.reason
         calibration_id, _bounds = self._gate_calibration(plan, Path(processed_root))
         if not calibration_id:
-            return super().resolve_existing_output(plan, inputs, processed_root)
+            return self._resolve_current_dataset(
+                self.requirements(plan, inputs), Path(processed_root)
+            )
         req = self.requirements(plan, inputs)
         req.extra_match["gate_calibration_id"] = calibration_id
-        ref = find_existing_artifact(
-            Path(processed_root),
-            requirements=req,
-            artifact_id=self.pinned_artifact_id(plan),
-        )
+        ref, reason = self._resolve_current_dataset(req, Path(processed_root))
         if ref is not None:
-            from battery_workbench.orchestrator.resolver import verify_manifest_provenance
-
-            manifest = _load_json(Path(ref.manifest_path)) or {}
-            ok, reason = verify_manifest_provenance(
-                manifest, Path(ref.manifest_path), processed_root=Path(processed_root)
+            return ref, reason
+        if reason == "no reusable artifact found":
+            return (
+                None,
+                "frozen gate calibration changed or dataset manifest is missing gate provenance",
             )
-            if not ok:
-                return None, reason
-            return ref, ref.reuse_reason
-        return (
-            None,
-            "frozen gate calibration changed or dataset manifest is missing gate provenance",
+        return None, reason
+
+    @classmethod
+    def _resolve_current_dataset(cls, requirements, processed_root: Path):
+        """Skip stale sibling manifests and reuse a matching fresh Dataset."""
+        from battery_workbench.datasets.freshness import dataset_freshness
+        from battery_workbench.orchestrator.resolver import verify_manifest_provenance
+
+        base = processed_root / requirements.output_rel_dir
+        candidates = (
+            sorted(
+                {
+                    path.parent.name
+                    for path in base.rglob(requirements.manifest_name)
+                    if path.parent.name.startswith("DS::")
+                }
+            )
+            if base.is_dir()
+            else []
         )
+        stale_reason = "no reusable artifact found"
+        for artifact_id in candidates:
+            ref = find_existing_artifact(
+                processed_root,
+                requirements=requirements,
+                artifact_id=artifact_id,
+            )
+            if ref is None:
+                continue
+            manifest_path = Path(ref.manifest_path)
+            manifest = _load_json(manifest_path) or {}
+            provenance_ok, provenance_reason = verify_manifest_provenance(
+                manifest, manifest_path, processed_root=processed_root
+            )
+            if not provenance_ok:
+                stale_reason = provenance_reason
+                continue
+            freshness = dataset_freshness(processed_root, manifest_path, manifest)
+            if freshness["freshness_status"] != "FRESH":
+                stale_reason = "STALE_SOURCE: " + ", ".join(freshness["freshness_reasons"])
+                continue
+            return ref, ref.reuse_reason
+        return None, stale_reason
 
     def requirements(self, plan, inputs):
+        target = plan.target or "soc_reference_percent"
+        family = (
+            "SOC"
+            if target == "soc_reference_percent"
+            else "SOH_CAPACITY"
+            if target == "soh_capacity_reference_percent"
+            else "UNSUPPORTED_TARGET"
+        )
         return ArtifactRequirements(
             artifact_type="DATASET",
             manifest_name="dataset_manifest.json",
             identity=ArtifactIdentity(
                 battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
             ),
-            output_rel_dir=f"datasets/{plan.project.battery_id}/{plan.project.experiment_id}/{'SOC' if (plan.target or 'soc').startswith('soc') else 'SOH_CAPACITY'}",
+            output_rel_dir=f"datasets/{plan.project.battery_id}/{plan.project.experiment_id}/{family}",
             id_key="dataset_id",
             version_key="dataset_builder_version",
             expected_version=self.node_version,
@@ -1411,7 +2300,7 @@ class DatasetNode(WorkflowNode):
                     # SOH legacy builder ignores selected_features — only pin when selection applies
                     "selected_features": (
                         plan.features.get("selected_features")
-                        if (plan.target or "soc").startswith("soc")
+                        if target == "soc_reference_percent"
                         else None
                     ),
                     "target_name": plan.target,
@@ -1421,7 +2310,14 @@ class DatasetNode(WorkflowNode):
         )
 
     def output_rel_dir(self, plan):
-        family = "SOC" if (plan.target or "soc").startswith("soc") else "SOH_CAPACITY"
+        target = plan.target or "soc_reference_percent"
+        family = (
+            "SOC"
+            if target == "soc_reference_percent"
+            else "SOH_CAPACITY"
+            if target == "soh_capacity_reference_percent"
+            else "UNSUPPORTED_TARGET"
+        )
         return f"datasets/{plan.project.battery_id}/{plan.project.experiment_id}/{family}"
 
     def run(self, plan, inputs, ctx):
@@ -1431,6 +2327,7 @@ class DatasetNode(WorkflowNode):
         from battery_workbench.datasets.schemas import DatasetConfig
 
         features_ref = inputs["ULTRASOUND_FEATURES"]
+        _assert_current_measurement_event_labels(Path(ctx.processed_root), b, e)
         feature_frame = pd.read_parquet(Path(features_ref.path) / "ultrasound_features.parquet")
         selected = list(plan.features.get("selected_features") or [])
         from battery_workbench.features.selected_series import FEATURE_GATE_TEMPLATES
@@ -1467,15 +2364,43 @@ class DatasetNode(WorkflowNode):
         # BRW-017R2 canonical envelope-peak TOF predictor: joined read-only from
         # the materialized artifact (never recomputed here); VALID rows only.
         tof_provenance: dict[str, Any] = {}
+        canonical_tof_manifest_path: Path | None = None
+        canonical_tof_manifest_checksum = ""
         if "tof_us" in selected:
             ct_path = (
                 Path(ctx.processed_root) / "features_physical" / b / e / "canonical_tof.parquet"
             )
+            canonical_ref = inputs.get("CANONICAL_TOF_FEATURES")
+            if canonical_ref is None:
+                raise ValueError(
+                    "canonical TOF dependency is required before materializing a tof_us Dataset"
+                )
             if not ct_path.is_file():
                 raise FileNotFoundError(
                     "canonical TOF artifact not materialized — "
                     "run CANONICAL_TOF_FEATURES before selecting tof_us"
                 )
+            canonical_tof_manifest_path = ct_path.parent / "canonical_tof_manifest.json"
+            if Path(canonical_ref.manifest_path).resolve() != canonical_tof_manifest_path.resolve():
+                raise ValueError("canonical TOF dependency points outside the experiment artifact")
+            canonical_manifest = _load_json(canonical_tof_manifest_path) or {}
+            if canonical_manifest.get("feature_set_id") != features_ref.artifact_id:
+                raise ValueError("canonical TOF FeatureSet does not match the Dataset input")
+            if canonical_manifest.get("parameter_set_id") != inputs["PARAMETER_SET"].artifact_id:
+                raise ValueError("canonical TOF ParameterSet does not match the Dataset input")
+            from battery_workbench.features_physical.canonical_tof import (
+                canonical_tof_integrity_reasons,
+            )
+
+            integrity_reasons = canonical_tof_integrity_reasons(Path(ctx.processed_root), b, e)
+            if integrity_reasons:
+                raise ValueError(
+                    "canonical TOF is stale or unverifiable: " + ", ".join(integrity_reasons)
+                )
+            from battery_workbench.provenance.processed_manifest import content_sha256
+
+            canonical_tof_manifest_checksum = content_sha256(canonical_tof_manifest_path)
+            canonical_tof_checksum = content_sha256(ct_path)
             ct = pd.read_parquet(ct_path)
             valid = ct[ct["tof_status"] == "VALID"]
             feature_frame = feature_frame.merge(
@@ -1490,6 +2415,7 @@ class DatasetNode(WorkflowNode):
                 "tof_gate_calibration_id": str(first["gate_calibration_id"]),
                 "tof_parameter_set_id": str(first["parameter_set_id"]),
                 "canonical_tof_valid_rows": len(valid),
+                "canonical_tof_checksum": canonical_tof_checksum,
             }
         labels_dir = Path(ctx.processed_root) / "labels" / b / e
         event_labels = pd.read_parquet(labels_dir / "event_labels.parquet")
@@ -1497,7 +2423,7 @@ class DatasetNode(WorkflowNode):
         slice_ref = inputs.get("ANALYSIS_SLICE")
         config = DatasetConfig()
         target = plan.target or "soc_reference_percent"
-        if target.startswith("soc"):
+        if target == "soc_reference_percent":
             report, df = build_soc_dataset(
                 features=feature_frame,
                 event_labels=event_labels,
@@ -1511,6 +2437,7 @@ class DatasetNode(WorkflowNode):
                 label_set_path=labels_dir / "event_labels.parquet",
                 selected_features=selected or None,
                 gate_calibration_id=gate_calibration_id,
+                canonical_tof_checksum=canonical_tof_manifest_checksum,
             )
         else:
             report, df = build_soh_dataset(
@@ -1526,6 +2453,7 @@ class DatasetNode(WorkflowNode):
                 label_set_path=labels_dir / "event_labels.parquet",
                 selected_features=selected or None,
                 gate_calibration_id=gate_calibration_id,
+                canonical_tof_checksum=canonical_tof_manifest_checksum,
             )
         payload = write_dataset_payload(
             report=report,
@@ -1537,6 +2465,7 @@ class DatasetNode(WorkflowNode):
             feature_set_path=Path(features_ref.path) / "ultrasound_features.parquet",
             label_set_path=labels_dir / "event_labels.parquet",
             output_root=Path(ctx.processed_root),
+            canonical_tof_manifest_path=canonical_tof_manifest_path,
         )
         if tof_provenance:
             man_path = Path(payload["dataset_manifest"])
@@ -1584,11 +2513,15 @@ class FeatureAnalysisNode(WorkflowNode):
         # mode/split/fold are part of the analysis identity: a different
         # fold (or mode) must never reuse another analysis' artifacts.
         selection = dict(fa.get("selection") or {})
+        analysis_mode = str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA"))
         extra_match = {
-            "analysis_mode": str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA")),
+            "analysis_mode": analysis_mode,
             "target": str(fa.get("target", "soc_reference_percent")),
             "selection.selection_requested": bool(selection.get("requested", False)),
         }
+        if analysis_mode == "TRAIN_ONLY_ML_SAFE":
+            extra_match["dataset_id"] = dataset_id
+            extra_match["split_id"] = str(fa.get("split_id") or plan.split_id or "")
         if fa.get("fold_index") is not None:
             extra_match["fold_index"] = fa["fold_index"]
         return ArtifactRequirements(
@@ -1611,7 +2544,11 @@ class FeatureAnalysisNode(WorkflowNode):
     def validate_readiness(self, plan, inputs):
         fa = dict(plan.feature_analysis or {})
         if not fa:
-            return Readiness(ok=False, reason="no feature_analysis block in plan")
+            return Readiness(
+                ok=False,
+                reason="no feature_analysis block in plan",
+                deferable=False,
+            )
         mode = str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA"))
         if mode == "TRAIN_ONLY_ML_SAFE":
             missing = [name for name in ("DATASET", "SPLIT") if name not in inputs]
@@ -1629,40 +2566,50 @@ class FeatureAnalysisNode(WorkflowNode):
         # user gate on a new run, not silently reuse the unconfirmed state.
         selection = dict((plan.feature_analysis or {}).get("selection") or {})
         fa_split_id = plan.split_id
-        if selection.get("requested"):
-            ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
-            if ref is not None:
-                manifest = _load_json(Path(ref.manifest_path)) or {}
-                # Spec identity: the FA spec (incl. selection policy) determines
-                # analysis_id — a policy change must not reuse another
-                # policy's artifacts.
-                try:
-                    from battery_workbench.feature_analysis.schemas import (
-                        FeatureAnalysisSpec,
-                    )
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        manifest = _load_json(Path(ref.manifest_path)) or {}
+        from battery_workbench.feature_analysis.output import verify_analysis_output_checksums
 
-                    fa = dict(plan.feature_analysis or {})
-                    if "fold_index" not in fa and plan.fold_index is not None:
-                        fa["fold_index"] = plan.fold_index
-                    expected_spec = FeatureAnalysisSpec(
-                        analysis_mode=str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA")),
-                        target=str(fa.get("target", "soc_reference_percent")),
-                        candidate_features=list(fa.get("candidate_features", [])),
-                        split_id=fa.get("split_id") or fa_split_id,
-                        fold_index=fa.get("fold_index"),
-                        subgroup_by=list(fa.get("subgroup_by", ["step_type", "cycle"])),
-                        methods=list(fa.get("methods", ["descriptive", "pearson", "spearman"])),
-                        selection=selection,
-                    )
-                    if manifest.get("analysis_id") != expected_spec.analysis_id:
-                        return None, "FA spec changed — new analysis required"
-                except (ValueError, TypeError):
-                    return None, "FA spec invalid"
-                commit = (manifest.get("selection") or {}).get("commit_status")
-                if commit == "WAITING_FOR_USER":
-                    return None, "selection commit not yet user-confirmed"
-            return ref, reason
-        return super().resolve_existing_output(plan, inputs, processed_root)
+        output_status, output_reasons = verify_analysis_output_checksums(Path(ref.path), manifest)
+        if output_status != "CURRENT":
+            return None, "feature analysis outputs are not verifiable: " + ", ".join(output_reasons)
+        from battery_workbench.feature_analysis.output import verify_analysis_input_checksums
+
+        input_status, input_reasons = verify_analysis_input_checksums(
+            Path(processed_root), manifest
+        )
+        if input_status != "CURRENT":
+            return None, "feature analysis inputs are not current: " + ", ".join(input_reasons)
+        if selection.get("requested"):
+            # Spec identity: the FA spec (incl. selection policy) determines
+            # analysis_id — a policy change must not reuse another
+            # policy's artifacts.
+            try:
+                from battery_workbench.feature_analysis.schemas import FeatureAnalysisSpec
+
+                fa = dict(plan.feature_analysis or {})
+                if "fold_index" not in fa and plan.fold_index is not None:
+                    fa["fold_index"] = plan.fold_index
+                expected_spec = FeatureAnalysisSpec(
+                    analysis_mode=str(fa.get("analysis_mode", "EXPLORATORY_FULL_DATA")),
+                    target=str(fa.get("target", "soc_reference_percent")),
+                    candidate_features=list(fa.get("candidate_features", [])),
+                    split_id=fa.get("split_id") or fa_split_id,
+                    fold_index=fa.get("fold_index"),
+                    subgroup_by=list(fa.get("subgroup_by", ["step_type", "cycle"])),
+                    methods=list(fa.get("methods", ["descriptive", "pearson", "spearman"])),
+                    selection=selection,
+                )
+                if manifest.get("analysis_id") != expected_spec.analysis_id:
+                    return None, "FA spec changed — new analysis required"
+            except (ValueError, TypeError):
+                return None, "FA spec invalid"
+            commit = (manifest.get("selection") or {}).get("commit_status")
+            if commit == "WAITING_FOR_USER":
+                return None, "selection commit not yet user-confirmed"
+        return ref, reason
 
     def run(self, plan, inputs, ctx):
         fa = dict(plan.feature_analysis or {})
@@ -1678,8 +2625,18 @@ class FeatureAnalysisNode(WorkflowNode):
             dataset_id = dataset_ref.artifact_id
 
         analysis_frame: pd.DataFrame
+        input_files: dict[str, Path] = {}
         split_id = None
         if mode == "TRAIN_ONLY_ML_SAFE":
+            if dataset_ref is None:
+                raise ValueError("ML-safe feature analysis requires a current Dataset")
+            dataset_path = _require_current_dataset_path(
+                dataset_ref,
+                ctx,
+                consumer="ML-safe feature analysis",
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+            )
             split_ref = inputs.get("SPLIT")
             if split_ref is None:
                 raise UserInputNeededError(
@@ -1702,26 +2659,23 @@ class FeatureAnalysisNode(WorkflowNode):
                     scientific_reason=("TRAIN_ONLY_ML_SAFE consumes TRAIN rows of a grouped split"),
                 )
             split_id = split_ref.artifact_id
-            split_manifest = _load_json(Path(split_ref.manifest_path)) or {}
-            dataset_id = str(split_manifest.get("dataset_id", dataset_id))
-            split_dir = Path(split_ref.path)
-            if not (split_dir / "split_assignments.parquet").exists():
-                split_dir = split_dir / split_id
-            assignments = pd.read_parquet(split_dir / "split_assignments.parquet")
+            split_assignments_path = _require_current_split_assignments_path(
+                split_ref,
+                ctx,
+                battery_id=plan.project.battery_id,
+                experiment_id=plan.project.experiment_id,
+                dataset_id=dataset_ref.artifact_id,
+                dataset_path=dataset_path,
+                dataset_manifest_path=Path(dataset_ref.manifest_path),
+            )
+            assignments = pd.read_parquet(split_assignments_path)
             assignments["split_id"] = split_id
-            dataset_dir = Path(dataset_ref.path) if dataset_ref is not None else None
-            if dataset_dir is None or not (dataset_dir / "dataset.parquet").exists():
-                family = str(split_manifest.get("dataset_family", "SOC"))
-                family_dir = "SOC" if family.startswith("SOC") else "SOH_CAPACITY"
-                dataset_dir = (
-                    Path(ctx.processed_root)
-                    / "datasets"
-                    / plan.project.battery_id
-                    / plan.project.experiment_id
-                    / family_dir
-                    / dataset_id
-                )
-            dataset_frame = pd.read_parquet(dataset_dir / "dataset.parquet")
+            input_files = {
+                "dataset_parquet": dataset_path,
+                "split_assignments": split_assignments_path,
+                "split_manifest": Path(split_ref.manifest_path),
+            }
+            dataset_frame = pd.read_parquet(dataset_path)
             fold_name = f"fold{fa.get('fold_index', 1)}"
             from battery_workbench.feature_analysis.engine import train_feature_input
 
@@ -1745,6 +2699,51 @@ class FeatureAnalysisNode(WorkflowNode):
                 if not table_candidates:
                     raise FileNotFoundError(f"no feature/label analysis table under {fla_dir}")
                 analysis_frame = pd.read_parquet(table_candidates[0])
+                input_files = {
+                    "feature_label_analysis": table_candidates[0],
+                    "feature_label_manifest": Path(fla_ref.manifest_path),
+                }
+                fla_manifest = _load_json(Path(fla_ref.manifest_path)) or {}
+                gate_set_id = str(fla_manifest.get("gate_set_id", ""))
+                if gate_set_id:
+                    gate_dir = (
+                        Path(ctx.processed_root)
+                        / "gated_features"
+                        / plan.project.battery_id
+                        / plan.project.experiment_id
+                        / gate_set_id
+                    )
+                    for key, filename in (
+                        ("gated_features", "gated_features.parquet"),
+                        ("gated_feature_manifest", "gated_feature_manifest.json"),
+                        ("gate_specs", "gate_specs.json"),
+                    ):
+                        candidate = gate_dir / filename
+                        if candidate.is_file():
+                            input_files[key] = candidate
+                for key, filename in (
+                    ("event_labels", "event_labels.parquet"),
+                    ("cycle_labels", "cycle_labels.parquet"),
+                ):
+                    candidate = (
+                        Path(ctx.processed_root)
+                        / "labels"
+                        / plan.project.battery_id
+                        / plan.project.experiment_id
+                        / filename
+                    )
+                    if candidate.is_file():
+                        input_files[key] = candidate
+                for modality in ("electrical", "ultrasound"):
+                    parser_manifest = (
+                        Path(ctx.processed_root)
+                        / modality
+                        / plan.project.battery_id
+                        / plan.project.experiment_id
+                        / "parser_manifest.json"
+                    )
+                    if parser_manifest.is_file():
+                        input_files[f"{modality}_parser_manifest"] = parser_manifest
 
         target = str(fa.get("target", "soc_reference_percent"))
         if target not in analysis_frame.columns:
@@ -1813,6 +2812,10 @@ class FeatureAnalysisNode(WorkflowNode):
         else:
             selection = run_selection(spec, analysis_frame)
         selection["confirmed"] = bool((fa.get("selection") or {}).get("confirmed", False))
+        if selection["confirmed"]:
+            _assert_feature_selection_confirmation_matches(
+                dict(fa.get("selection") or {}), selection
+            )
         if selection["confirmed"] and selection.get("selected_features"):
             selection["commit_status"] = "CONFIRMED"
         selection["held_out_target_accessed"] = False
@@ -1825,6 +2828,7 @@ class FeatureAnalysisNode(WorkflowNode):
             experiment_id=plan.project.experiment_id,
             dataset_id=dataset_id or "EXPLORATORY",
             output_root=Path(ctx.processed_root),
+            input_files=input_files,
         )
         limitations: list[str] = []
         if mode == "EXPLORATORY_FULL_DATA":
@@ -1836,18 +2840,24 @@ class FeatureAnalysisNode(WorkflowNode):
                 limitations.append(f"{a['feature_name']}: UNAVAILABLE — {a['reason']}")
         if selection["selection_requested"] and selection["selected_features"]:
             if not selection.get("confirmed"):
+                selected_feature_locators = ", ".join(selection["selected_features"])
                 raise UserInputNeededError(
                     node_id=self.node_type,
                     action=f"UA::CONFIRM_FEATURE_SELECTION::{selection['selection_id']}",
                     action_type="CONFIRM_FEATURE_SELECTION",
                     message=(
-                        "Confirm selected features to build a new dataset "
-                        "(no automatic rebuild, no analysis→dataset loop)"
+                        "Review and confirm this TRAIN_ONLY_ML_SAFE feature selection for "
+                        "downstream dataset/modeling use; "
+                        "matching dataset artifacts may be reused, while changed selections "
+                        "require a new dataset (no automatic rebuild or analysis→dataset loop)"
                     ),
                     required_fields=[{"field": "selection_id", "value": selection["selection_id"]}],
                     scientific_reason=(
-                        "Feature selection commit is user-gated; dataset rebuild requires "
-                        "explicit confirmation"
+                        f"TRAIN_ONLY_ML_SAFE target={target}, split_id={split_id}, "
+                        f"fold={fa.get('fold_index')}; selected feature locators: "
+                        f"{selected_feature_locators}. Feature selection is user-gated; "
+                        "matching dataset artifacts are reused, and changed feature selections "
+                        "invalidate downstream artifacts."
                     ),
                 )
             selection["commit_status"] = "CONFIRMED"
@@ -1884,6 +2894,12 @@ def _confirmed_fold_fingerprint(
     out: set[str] = set()
     if not dataset_id or not base.is_dir():
         return out
+    fa_cfg = dict(getattr(plan, "feature_analysis", None) or {})
+    expected_target = fa_cfg.get("target") or getattr(plan, "target", None)
+    expected_candidates = fa_cfg.get("candidate_features")
+    expected_methods = fa_cfg.get("methods")
+    expected_selection = fa_cfg.get("selection") or {}
+    expected_policy = expected_selection.get("policy")
     for mp in base.rglob("analysis_manifest.json"):
         m = _load_json(mp) or {}
         sel = m.get("selection") or {}
@@ -1892,6 +2908,13 @@ def _confirmed_fold_fingerprint(
             and sel.get("commit_status") == "CONFIRMED"
             and sel.get("selected_features")
             and m.get("split_id") == split_id
+            and (expected_target is None or m.get("target") == expected_target)
+            and (
+                expected_candidates is None
+                or sorted(m.get("candidate_features") or []) == sorted(expected_candidates)
+            )
+            and (expected_methods is None or m.get("methods") == expected_methods)
+            and (expected_policy is None or sel.get("policy") == expected_policy)
         ):
             out.add(f"{m.get('fold_index')}:{sel['selection_id']}")
     return out
@@ -1905,43 +2928,206 @@ class SocModelingNode(WorkflowNode):
     def requirements(self, plan, inputs):
         dataset_ref = inputs.get("DATASET")
         dataset_id = dataset_ref.artifact_id if dataset_ref else ""
+        split_ref = inputs.get("SPLIT")
+        split_id = split_ref.artifact_id if split_ref else ""
         return ArtifactRequirements(
             artifact_type="SOC_MODELING",
-            manifest_name="model_manifest.json",
+            manifest_name="model_set_manifest.json",
             identity=ArtifactIdentity(
                 battery_id=plan.project.battery_id, experiment_id=plan.project.experiment_id
             ),
             output_rel_dir=(
-                f"models/{plan.project.battery_id}/{plan.project.experiment_id}/{dataset_id}"
+                f"models/{plan.project.battery_id}/{plan.project.experiment_id}/"
+                f"{dataset_id}/{split_id}"
             ),
-            id_key="model_id",
+            id_key="model_set_id",
+            version_key="modeling_policy_version",
+            expected_version="0.1.0",
+            extra_match={"dataset_id": dataset_id, "split_id": split_id},
             scan=True,
         )
 
+    @staticmethod
+    def _target_block_reason(plan) -> str | None:
+        target = plan.target or "soc_reference_percent"
+        if target != "soc_reference_percent":
+            return (
+                f"SOC_MODELING only supports soc_reference_percent; requested target was {target!r}"
+            )
+        return None
+
     def resolve_existing_output(self, plan, inputs, processed_root):
-        """Reuse only when every confirmed fold selection is already covered."""
+        """Reuse only a complete, checksum-verified ModelSet for current inputs."""
+        target_reason = self._target_block_reason(plan)
+        if target_reason:
+            return None, target_reason
+        dataset_ref = inputs.get("DATASET")
+        split_ref = inputs.get("SPLIT")
+        if dataset_ref is None or split_ref is None:
+            return None, "current Dataset and Split are required to resolve a ModelSet"
         ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
         if ref is None:
             return None, reason
-        manifest = _load_json(Path(ref.manifest_path)) or {}
-        covered = set(manifest.get("confirmed_fold_selections") or {})
-        current = _confirmed_fold_fingerprint(
-            processed_root,
-            plan,
-            str(manifest.get("dataset_id") or ""),
-            str(manifest.get("split_id") or ""),
+        manifest_path = Path(ref.manifest_path)
+        manifest = _load_json(manifest_path) or {}
+        expected_model_set_id = (
+            "MODELSET::"
+            + hashlib.sha256(
+                f"{plan.project.battery_id}:{plan.project.experiment_id}:"
+                f"{dataset_ref.artifact_id}:{split_ref.artifact_id}".encode()
+            ).hexdigest()[:24]
         )
-        if not current.issubset(covered):
-            missing = sorted(current - covered)
-            return None, (
-                f"new confirmed fold selection(s) not covered by existing models: {missing}"
+        if (
+            manifest.get("model_set_id") != expected_model_set_id
+            or manifest.get("dataset_id") != dataset_ref.artifact_id
+            or manifest.get("split_id") != split_ref.artifact_id
+        ):
+            return None, "ModelSet identity does not match current Dataset/Split"
+        current = _confirmed_fold_fingerprint(
+            processed_root, plan, dataset_ref.artifact_id, split_ref.artifact_id
+        )
+        if set(manifest.get("confirmed_fold_selections") or []) != current:
+            return None, "confirmed fold selections changed — ModelSet recompute required"
+        from battery_workbench.modeling.schemas import STRATEGIES
+
+        strategies = list((plan.modeling or {}).get("strategies") or list(STRATEGIES))
+        if sorted(set(manifest.get("strategies") or [])) != sorted(set(strategies)):
+            return None, "ModelSet strategy inventory changed — recompute required"
+        current_selections = {
+            (int(value.split(":", 1)[0]), value.split(":", 1)[1]) for value in current
+        }
+        expected_pairs = {
+            (int(fingerprint.split(":", 1)[0]), strategy)
+            for fingerprint in current
+            for strategy in strategies
+        }
+        artifact_entries = manifest.get("model_artifacts")
+        if not isinstance(artifact_entries, list):
+            return None, "ModelSet member inventory is missing"
+        model_root = manifest_path.parent
+        observed_pairs: set[tuple[int, str]] = set()
+        expected_artifacts: set[str] = set()
+        for entry in artifact_entries:
+            if not isinstance(entry, dict):
+                return None, "ModelSet member inventory is invalid"
+            model_id = entry.get("model_id")
+            if (
+                not isinstance(model_id, str)
+                or not model_id
+                or Path(model_id).name != model_id
+                or model_id in {".", ".."}
+            ):
+                return None, "ModelSet contains an invalid model identity"
+            model_manifest_path = model_root / model_id / "model_manifest.json"
+            try:
+                resolved_member = model_manifest_path.resolve(strict=True)
+                resolved_member.relative_to(model_root.resolve())
+                resolved_member.relative_to(Path(processed_root).resolve())
+                if _sha256_file(model_manifest_path) != entry.get("manifest_sha256"):
+                    return None, f"ModelSet member manifest checksum mismatch: {model_id}"
+            except (OSError, RuntimeError, ValueError):
+                return (
+                    None,
+                    f"ModelSet member manifest is missing or outside processed root: {model_id}",
+                )
+            model_manifest = _load_json(model_manifest_path)
+            if (
+                not isinstance(model_manifest, dict)
+                or model_manifest.get("model_id") != model_id
+                or model_manifest.get("dataset_id") != dataset_ref.artifact_id
+                or model_manifest.get("split_id") != split_ref.artifact_id
+            ):
+                return None, f"ModelSet member identity mismatch: {model_id}"
+            try:
+                pair = (int(model_manifest.get("fold_index")), str(model_manifest.get("strategy")))
+            except (TypeError, ValueError):
+                return None, f"ModelSet member fold identity is invalid: {model_id}"
+            if pair in observed_pairs:
+                return None, f"ModelSet contains duplicate fold/strategy member: {pair}"
+            if (pair[0], str(model_manifest.get("selection_id"))) not in current_selections:
+                return None, f"ModelSet member is bound to a stale feature selection: {model_id}"
+            observed_pairs.add(pair)
+            expected_artifacts.add(model_id)
+            from battery_workbench.provenance.processed_manifest import (
+                verify_output_checksums_in_directory,
             )
+
+            integrity_reasons = verify_output_checksums_in_directory(
+                Path(processed_root),
+                model_manifest_path.parent,
+                model_manifest.get("output_checksums"),
+                {
+                    "model": "model.joblib",
+                    "held_out_predictions": "held_out_predictions.parquet",
+                },
+            )
+            if integrity_reasons:
+                return None, f"ModelSet member outputs are invalid: {model_id}: {integrity_reasons}"
+        if observed_pairs != expected_pairs:
+            return None, "ModelSet strategy/fold inventory is incomplete or stale"
+        active_artifacts = set()
+        for candidate in model_root.glob("*/model_manifest.json"):
+            candidate_manifest = _load_json(candidate)
+            if not isinstance(candidate_manifest, dict):
+                continue
+            try:
+                candidate_pair = (
+                    int(candidate_manifest.get("fold_index")),
+                    str(candidate_manifest.get("selection_id")),
+                )
+            except (TypeError, ValueError):
+                continue
+            if (
+                candidate_pair in current_selections
+                and candidate_manifest.get("strategy") in strategies
+            ):
+                active_artifacts.add(candidate.parent.name)
+        if active_artifacts != expected_artifacts:
+            return None, "ModelSet member inventory does not match current fold/strategy outputs"
+        comparison_checksums = manifest.get("output_checksums")
+        from battery_workbench.provenance.processed_manifest import (
+            verify_output_checksums_in_directory,
+        )
+
+        comparison_reasons = verify_output_checksums_in_directory(
+            Path(processed_root),
+            model_root,
+            comparison_checksums,
+            {
+                "model_comparison_parquet": "model_comparison.parquet",
+                "model_comparison_json": "model_comparison.json",
+            },
+        )
+        if comparison_reasons:
+            return None, "ModelSet comparison outputs are invalid: " + ", ".join(comparison_reasons)
         return ref, reason
 
     def output_rel_dir(self, plan):
         return f"models/{plan.project.battery_id}/{plan.project.experiment_id}"
 
     def validate_readiness(self, plan, inputs):
+        target_reason = self._target_block_reason(plan)
+        if target_reason:
+            target = plan.target or "soc_reference_percent"
+            if target == "soh_capacity_reference_percent":
+                return Readiness(
+                    ok=False,
+                    reason=target_reason,
+                    user_action=UserActionRequired(
+                        action_id=_action_id(self.node_type, "SOH_MODELING_NOT_READY"),
+                        node_id=self.node_type,
+                        action_type="SOH_MODELING_NOT_READY",
+                        message=(
+                            "SOH modeling is unavailable until independent-state readiness "
+                            "and target-specific evaluation are established"
+                        ),
+                        required_fields=[{"field": "none"}],
+                        scientific_reason=target_reason,
+                        blocking=True,
+                    ),
+                    deferable=False,
+                )
+            return Readiness(ok=False, reason=target_reason, deferable=False)
         # selection confirmation is decided by the on-disk FA artifact
         # (commit_status=CONFIRMED), not by the plan kwargs.
         return Readiness(ok=True, reason="modeling spec present")
@@ -1954,6 +3140,7 @@ class SocModelingNode(WorkflowNode):
             predict,
         )
         from battery_workbench.modeling.persistence import (
+            fold_coverage,
             write_model_comparison,
             write_model_payload,
         )
@@ -1975,17 +3162,29 @@ class SocModelingNode(WorkflowNode):
         dataset_ref = inputs.get("DATASET")
         if dataset_ref is None:
             raise ValueError("DATASET artifact required for SOC modeling")
-        dataset_dir = Path(dataset_ref.manifest_path).parent
-        dataset = pd.read_parquet(dataset_dir / "dataset.parquet")
+        dataset_path = _require_current_dataset_path(
+            dataset_ref,
+            ctx,
+            consumer="SOC modeling",
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+        )
+        dataset = pd.read_parquet(dataset_path)
         dataset_id = dataset_ref.artifact_id
 
         split_ref = inputs.get("SPLIT")
         if split_ref is None:
             raise ValueError("SPLIT artifact required for SOC modeling")
-        split_dir = Path(split_ref.manifest_path).parent
-        if not (split_dir / "split_assignments.parquet").exists():
-            split_dir = split_dir / split_ref.artifact_id
-        assignments = pd.read_parquet(split_dir / "split_assignments.parquet")
+        split_assignments_path = _require_current_split_assignments_path(
+            split_ref,
+            ctx,
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            dataset_id=dataset_ref.artifact_id,
+            dataset_path=dataset_path,
+            dataset_manifest_path=Path(dataset_ref.manifest_path),
+        )
+        assignments = pd.read_parquet(split_assignments_path)
         split_id = split_ref.artifact_id
 
         if plan.target == "soh_capacity_reference_percent":
@@ -2011,6 +3210,11 @@ class SocModelingNode(WorkflowNode):
             / dataset_id
         )
         fold_selections: dict[int, dict] = {}
+        fa_cfg = dict(plan.feature_analysis or {})
+        expected_candidates = fa_cfg.get("candidate_features")
+        expected_methods = fa_cfg.get("methods")
+        expected_selection = fa_cfg.get("selection") or {}
+        expected_policy = expected_selection.get("policy")
         for manifest_path in sorted(fa_dir.rglob("analysis_manifest.json")):
             m = _load_json(manifest_path) or {}
             sel = m.get("selection") or {}
@@ -2019,12 +3223,31 @@ class SocModelingNode(WorkflowNode):
                 and sel.get("commit_status") == "CONFIRMED"
                 and sel.get("selected_features")
                 and m.get("split_id") == split_id
+                and m.get("target") == target
+                and (
+                    expected_candidates is None
+                    or sorted(m.get("candidate_features") or []) == sorted(expected_candidates)
+                )
+                and (expected_methods is None or m.get("methods") == expected_methods)
+                and (expected_policy is None or sel.get("policy") == expected_policy)
             ):
-                fold_selections[int(m.get("fold_index") or 0)] = {
+                fold_index = int(m.get("fold_index") or 0)
+                candidate_selection = {
                     "analysis_id": m["analysis_id"],
                     "selection_id": sel["selection_id"],
                     "selected_features": sel["selected_features"],
                 }
+                existing = fold_selections.get(fold_index)
+                if (
+                    existing is not None
+                    and existing["selection_id"] != candidate_selection["selection_id"]
+                ):
+                    raise ValueError(
+                        "multiple confirmed TRAIN_ONLY_ML_SAFE selections match the exact "
+                        f"modeling specification for fold {fold_index}; resolve the selection "
+                        "ambiguity before modeling"
+                    )
+                fold_selections[fold_index] = candidate_selection
         if not fold_selections:
             raise UserInputNeededError(
                 node_id=self.node_type,
@@ -2044,6 +3267,10 @@ class SocModelingNode(WorkflowNode):
         confirmed_fingerprint = sorted(
             f"{fi}:{info['selection_id']}" for fi, info in fold_selections.items()
         )
+        expected_fold_indices = sorted(
+            int(str(value).removeprefix("fold")) for value in assignments["fold"].dropna().unique()
+        )
+        coverage = fold_coverage(expected_fold_indices, list(fold_selections))
         comparison_rows: list[dict[str, Any]] = []
         fold_metrics_by_model: dict[str, list[dict[str, Any]]] = {}
         written_manifests: list[str] = []
@@ -2111,6 +3338,7 @@ class SocModelingNode(WorkflowNode):
                     experiment_id=plan.project.experiment_id,
                     output_root=Path(ctx.processed_root),
                     confirmed_fold_selections=confirmed_fingerprint,
+                    fold_coverage_status=coverage,
                 )
                 written_manifests.append(payload["model_manifest"])
                 comparison_rows.append(
@@ -2148,13 +3376,18 @@ class SocModelingNode(WorkflowNode):
                     ),
                     "limited_evaluation_note": (
                         "LOWEST_MACRO_MAE_AMONG_FIXED_BASELINES — "
-                        "LIMITED_TWO_CYCLE_EVALUATION, no cross-battery claim"
+                        + (
+                            "LIMITED_TWO_CYCLE_EVALUATION, no cross-battery claim"
+                            if coverage["complete"]
+                            else "PARTIAL_FOLD_COVERAGE; not a complete split evaluation"
+                        )
                     ),
                 }
             )
 
         comp_paths = write_model_comparison(
             comparison_rows=comparison_rows,
+            summary_rows=comparison,
             battery_id=plan.project.battery_id,
             experiment_id=plan.project.experiment_id,
             dataset_id=dataset_id,
@@ -2162,17 +3395,42 @@ class SocModelingNode(WorkflowNode):
             output_root=Path(ctx.processed_root),
         )
         comp_json = Path(comp_paths["model_comparison_json"])
-        comp_json.write_text(
-            json.dumps(comparison, indent=2, ensure_ascii=False, default=str) + "\n"
-        )
-
-        import hashlib
 
         model_set_id = (
             "MODELSET::"
             + hashlib.sha256(
                 f"{plan.project.battery_id}:{plan.project.experiment_id}:{dataset_id}:{split_id}".encode()
             ).hexdigest()[:24]
+        )
+        model_set_manifest_path = comp_json.parent / "model_set_manifest.json"
+        model_set_manifest = {
+            "model_set_id": model_set_id,
+            "modeling_policy_version": modeling_policy_version,
+            "battery_id": plan.project.battery_id,
+            "experiment_id": plan.project.experiment_id,
+            "dataset_id": dataset_id,
+            "split_id": split_id,
+            "confirmed_fold_selections": confirmed_fingerprint,
+            "fold_coverage": coverage,
+            "readiness": coverage["readiness"],
+            "strategies": sorted({str(value) for value in strategies}),
+            "model_artifacts": [
+                {
+                    "model_id": Path(manifest_path).parent.name,
+                    "manifest_sha256": _sha256_file(Path(manifest_path)),
+                }
+                for manifest_path in sorted(written_manifests)
+            ],
+            "output_checksums": {
+                "model_comparison_parquet": _sha256_file(
+                    Path(comp_paths["model_comparison_parquet"])
+                ),
+                "model_comparison_json": _sha256_file(comp_json),
+            },
+        }
+        model_set_manifest_path.write_text(
+            json.dumps(model_set_manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
         return {
             "artifact_id": model_set_id,
@@ -2184,7 +3442,7 @@ class SocModelingNode(WorkflowNode):
                 / dataset_id
                 / split_id
             ),
-            "manifest_path": written_manifests[0] if written_manifests else "",
+            "manifest_path": str(model_set_manifest_path),
             "producer_version": modeling_policy_version,
             "metrics": {
                 "comparison_rows": len(comparison_rows),
@@ -2192,6 +3450,15 @@ class SocModelingNode(WorkflowNode):
             },
             "limitations": [
                 "within-battery cross-cycle limited evaluation only",
+                *(
+                    []
+                    if coverage["complete"]
+                    else [
+                        "partial split fold coverage; do not interpret as a complete evaluation",
+                        "missing confirmed TRAIN_ONLY_ML_SAFE selections for folds: "
+                        + ", ".join(str(value) for value in coverage["missing_fold_indices"]),
+                    ]
+                ),
                 "no cross-battery generalization claim",
                 "no hyperparameter tuning (2 cycles)",
                 "EVALUATION_UNCERTAINTY_HIGH",
@@ -2234,6 +3501,7 @@ class ScientificReportNode(WorkflowNode):
     """BRW-023 node: aggregates existing artifacts into a scientific report."""
 
     node_type = "SCIENTIFIC_REPORT"
+    node_version = "0.3.0"
 
     def requirements(self, plan, inputs):
         return ArtifactRequirements(
@@ -2246,13 +3514,38 @@ class ScientificReportNode(WorkflowNode):
                 f"artifacts/{plan.project.battery_id}/{plan.project.experiment_id}/reports"
             ),
             id_key="report_id",
+            version_key="producer_version",
+            expected_version="0.3.0",
+            extra_match={
+                "analysis_plan_sha256": plan.scientific_report.get("analysis_plan_sha256")
+            },
             scan=True,
         )
 
     def output_rel_dir(self, plan):
         return f"artifacts/{plan.project.battery_id}/{plan.project.experiment_id}/reports"
 
+    def resolve_existing_output(self, plan, inputs, processed_root):
+        ref, reason = super().resolve_existing_output(plan, inputs, processed_root)
+        if ref is None:
+            return None, reason
+        from battery_workbench.reporting.report import verify_report_outputs
+
+        status, reasons = verify_report_outputs(
+            Path(ref.manifest_path),
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+            reports_root=Path(processed_root) / self.output_rel_dir(plan),
+        )
+        if status != "CURRENT":
+            return None, "report output is not verifiable: " + ", ".join(reasons)
+        return ref, reason
+
     def run(self, plan, inputs, ctx):
+        from battery_workbench.features.state_correlation import (
+            CORRELATION_POLICY_VERSIONS,
+            exploratory_inference_assessment,
+        )
         from battery_workbench.reporting.collector import (
             collect_evidence_registry,
             collect_experiment_record,
@@ -2273,19 +3566,27 @@ class ScientificReportNode(WorkflowNode):
         )
 
         b, e = plan.project.battery_id, plan.project.experiment_id
+        analysis_plan_assessment = plan.scientific_report.get("analysis_plan_assessment")
+        if not isinstance(analysis_plan_assessment, dict):
+            from battery_workbench.analysis.plan_registry import resolve_experiment_analysis_plan
+
+            analysis_plan_assessment = resolve_experiment_analysis_plan(
+                ctx.raw_root, battery_id=b, experiment_id=e
+            )
         spec = ReportSpec(
             target=str(plan.target or "soc_reference_percent"),
             battery_id=b,
             experiment_id=e,
             source_artifact_ids=list(plan.scientific_report.get("source_artifact_ids") or []),
             sections=list(plan.scientific_report.get("section_names") or []),
+            analysis_plan_sha256=analysis_plan_assessment.get("plan_sha256"),
         )
         ClaimGuard.check("TOF currently blocked / unavailable")
 
         exp_record = collect_experiment_record(Path(ctx.processed_root), b, e)
         results = collect_results(Path(ctx.processed_root), b, e)
         evidence_registry = collect_evidence_registry(results)
-        limitations = collect_limitation_registry()
+        limitations = collect_limitation_registry(Path(ctx.processed_root), b, e)
         lineage = build_lineage_snapshot(Path(ctx.processed_root), b, e)
         git_commit = _git_commit(Path(ctx.processed_root).parent.parent)
 
@@ -2296,13 +3597,30 @@ class ScientificReportNode(WorkflowNode):
                     "note": "see result_registry / reproducibility_manifest"
                 }
 
+        inference_assessment = exploratory_inference_assessment(
+            correlation_results_included=False,
+            study_protocol_assessment=analysis_plan_assessment,
+        )
+        feature_label_section = section_payloads.get("Feature–Label Analysis")
+        if isinstance(feature_label_section, dict):
+            feature_label_section = dict(feature_label_section)
+        elif feature_label_section is None:
+            feature_label_section = {}
+        else:
+            feature_label_section = {"provided_content": feature_label_section}
+        feature_label_section["inference_assessment"] = inference_assessment
+        section_payloads["Feature–Label Analysis"] = feature_label_section
+
         report = {
             "report_id": spec.report_id,
+            "producer_version": self.node_version,
             "analysis_mode": "AGGREGATION_ONLY (no scientific recomputation)",
             "sections": section_payloads,
             "experiment_record": exp_record.model_dump(mode="json"),
             "result_registry": [r.model_dump(mode="json") for r in results],
             "evidence_registry": evidence_registry,
+            "inference_assessment": inference_assessment,
+            "analysis_plan_sha256": analysis_plan_assessment.get("plan_sha256"),
             "limitation_registry": limitations,
             "lineage_snapshot": lineage,
             "reproducibility_manifest": {
@@ -2314,6 +3632,7 @@ class ScientificReportNode(WorkflowNode):
                 "policy_versions": {
                     "sync_schema": "0.2.0",
                     "modeling_policy": "0.1.0",
+                    **CORRELATION_POLICY_VERSIONS,
                     "reporting_policy": spec.reporting_policy_version,
                     "leakage_policy": "0.1.0",
                 },
@@ -2327,6 +3646,8 @@ class ScientificReportNode(WorkflowNode):
                 "feature_set_id": exp_record.latest_canonical_artifacts.get("feature_set_id"),
                 "gate_set_id": exp_record.latest_canonical_artifacts.get("gate_set_id"),
                 "parameter_set_ids": exp_record.parameter_set_ids,
+                "analysis_plan_status": analysis_plan_assessment.get("status"),
+                "analysis_plan_sha256": analysis_plan_assessment.get("plan_sha256"),
             },
             "scientific_findings": _scientific_findings_from_results(results),
             "limitations_summary": [l["code"] for l in limitations],
@@ -2343,7 +3664,7 @@ class ScientificReportNode(WorkflowNode):
             "artifact_id": spec.report_id,
             "path": str(Path(paths["report_json"]).parent),
             "manifest_path": paths["report_json"],
-            "producer_version": "0.1.0",
+            "producer_version": self.node_version,
             "metrics": {"sections": len(REPORT_SECTIONS), "results": len(results)},
             "limitations": [l["code"] for l in limitations],
         }
@@ -2422,6 +3743,51 @@ class SplitNode(WorkflowNode):
             requirements=self.requirements(plan, inputs),
             artifact_id=expected.split_id,
         )
+        if ref is not None:
+            manifest = _load_json(Path(ref.manifest_path)) or {}
+            from battery_workbench.provenance.processed_manifest import (
+                verify_output_checksums_in_directory,
+            )
+
+            integrity_reasons = verify_output_checksums_in_directory(
+                Path(processed_root),
+                Path(ref.path),
+                manifest.get("output_checksums"),
+                {
+                    "split_assignments": "split_assignments.parquet",
+                    "leakage_audit": "leakage_audit.json",
+                    "evaluation_readiness": "evaluation_readiness.json",
+                },
+            )
+            if integrity_reasons:
+                return None, "split outputs are not verifiable: " + ", ".join(integrity_reasons)
+            dataset_ref = inputs.get("DATASET")
+            if dataset_ref is None:
+                return None, "current Dataset is required to verify Split source checksums"
+            dataset_path = Path(dataset_ref.manifest_path).parent / "dataset.parquet"
+            from battery_workbench.splits.integrity import (
+                split_assignment_reasons,
+                split_dataset_source_reasons,
+            )
+
+            source_reasons = split_dataset_source_reasons(
+                Path(processed_root),
+                manifest,
+                dataset_path=dataset_path,
+                dataset_manifest_path=Path(dataset_ref.manifest_path),
+            )
+            if source_reasons:
+                return None, "Split source Dataset changed or is unverifiable: " + ", ".join(
+                    source_reasons
+                )
+            assignment_reasons = split_assignment_reasons(
+                Path(processed_root),
+                manifest,
+                assignments_path=Path(ref.path) / "split_assignments.parquet",
+                dataset_path=dataset_path,
+            )
+            if assignment_reasons:
+                return None, "Split assignments are inconsistent: " + ", ".join(assignment_reasons)
         reason = (
             "split spec matches existing artifacts"
             if ref is not None
@@ -2493,10 +3859,16 @@ class SplitNode(WorkflowNode):
         )
 
         dataset_ref = inputs["DATASET"]
+        dataset_path = _require_current_dataset_path(
+            dataset_ref,
+            ctx,
+            consumer="Split generation",
+            battery_id=plan.project.battery_id,
+            experiment_id=plan.project.experiment_id,
+        )
         manifest = _load_json(Path(dataset_ref.manifest_path)) or {}
         family = str(manifest.get("dataset_family", "SOC"))
-        dataset_dir = Path(dataset_ref.manifest_path).parent
-        frame = pd.read_parquet(dataset_dir / "dataset.parquet")
+        frame = pd.read_parquet(dataset_path)
 
         try:
             spec = SplitSpec(**self._split_spec_kwargs(plan, dataset_ref.artifact_id))
@@ -2548,6 +3920,8 @@ class SplitNode(WorkflowNode):
             dataset_family=family,
             output_root=Path(ctx.processed_root),
             group_counts=group_counts,
+            dataset_path=dataset_path,
+            dataset_manifest_path=Path(dataset_ref.manifest_path),
             dataset_status=str(manifest.get("dataset_status", "")),
             independent_soh_states=independent_soh,
         )

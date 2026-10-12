@@ -21,6 +21,23 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def fold_coverage(expected_fold_indices: list[int], evaluated_fold_indices: list[int]) -> dict[str, Any]:
+    """Describe whether evaluated folds cover the full declared split."""
+    expected = sorted({int(value) for value in expected_fold_indices})
+    evaluated = sorted({int(value) for value in evaluated_fold_indices})
+    missing = sorted(set(expected) - set(evaluated))
+    unexpected = sorted(set(evaluated) - set(expected))
+    complete = bool(expected) and not missing and not unexpected
+    return {
+        "expected_fold_indices": expected,
+        "evaluated_fold_indices": evaluated,
+        "missing_fold_indices": missing,
+        "unexpected_fold_indices": unexpected,
+        "complete": complete,
+        "readiness": "READY_FOR_LIMITED_EVALUATION" if complete else "PARTIAL_FOLD_COVERAGE",
+    }
+
+
 def write_model_payload(
     *,
     spec: ModelSpec,
@@ -32,6 +49,7 @@ def write_model_payload(
     experiment_id: str,
     output_root: Path,
     confirmed_fold_selections: list[str] | None = None,
+    fold_coverage_status: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     import joblib
 
@@ -88,7 +106,17 @@ def write_model_payload(
         "held_out_group_ids": sorted(view.held_out_group_ids),
         "scientific_claims": {
             "evaluation_scope": "WITHIN_BATTERY_CROSS_CYCLE",
-            "readiness": "READY_FOR_LIMITED_EVALUATION",
+            "readiness": (fold_coverage_status or {}).get(
+                "readiness", "READY_FOR_LIMITED_EVALUATION"
+            ),
+            "fold_coverage": fold_coverage_status or {
+                "expected_fold_indices": [spec.fold_index],
+                "evaluated_fold_indices": [spec.fold_index],
+                "missing_fold_indices": [],
+                "unexpected_fold_indices": [],
+                "complete": True,
+                "readiness": "READY_FOR_LIMITED_EVALUATION",
+            },
             "battery_group_count": 1,
             "cycle_group_count": 2,
             "no_cross_battery_generalization_claim": True,
@@ -140,6 +168,7 @@ def write_model_comparison(
     dataset_id: str,
     split_id: str,
     output_root: Path,
+    summary_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     out_dir = output_root / "models" / battery_id / experiment_id / dataset_id / split_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -147,8 +176,31 @@ def write_model_comparison(
     parquet_path = out_dir / "model_comparison.parquet"
     df.to_parquet(parquet_path, index=False)
     json_path = out_dir / "model_comparison.json"
-    json_path.write_text(json.dumps(comparison_rows, indent=2, ensure_ascii=False) + "\n")
+    json_rows = comparison_rows if summary_rows is None else summary_rows
+    json_path.write_text(
+        json.dumps(json_rows, indent=2, ensure_ascii=False, default=str) + "\n"
+    )
+    manifest_path = out_dir / "model_comparison_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "dataset_id": dataset_id,
+                "split_id": split_id,
+                "output_checksums": {
+                    "model_comparison_parquet": _sha256_file(parquet_path),
+                    "model_comparison_json": _sha256_file(json_path),
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return {
         "model_comparison_parquet": str(parquet_path),
         "model_comparison_json": str(json_path),
+        "model_comparison_manifest": str(manifest_path),
     }

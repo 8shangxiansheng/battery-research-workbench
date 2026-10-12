@@ -24,7 +24,7 @@ export function WorkflowStepper({ current, onStep }: { current: WorkflowStepKey;
         onClick={() => onStep(s.key)}
         className={`flex gap-2 items-center text-sm rounded-full border px-4 py-1.5 transition-colors ${
           current === s.key ? "border-primary bg-[#e9f1ef] font-medium"
-          : i < idx ? "border-muted text-muted hover:bg-[#f3f7f6]" : "border-border text-muted"}`}
+          : i < idx ? "border-muted text-muted-foreground hover:bg-[#f3f7f6]" : "border-border text-muted-foreground"}`}
       >
         <span className="text-xs">{i + 1}</span>{s.label}
       </button>
@@ -35,8 +35,10 @@ export function WorkflowStepper({ current, onStep }: { current: WorkflowStepKey;
 function readinessBadge(t: TargetDefinition) {
   if (t.readiness === "READY" || t.readiness === "READY_FOR_LIMITED_EVALUATION")
     return <Badge variant="secondary" data-testid={`target-ready-${t.target_id}`}><CircleCheck size={12} className="mr-1" />可分析 / Usable</Badge>;
-  if (t.readiness === "NOT_READY")
+  if (t.readiness === "NOT_READY" || t.readiness === "INSUFFICIENT_VARIATION")
     return <Badge variant="outline" data-testid={`target-limited-${t.target_id}`}><CircleAlert size={12} className="mr-1" />Limited / 受限</Badge>;
+  if (t.readiness === "BLOCKED_BY_VALIDATION")
+    return <Badge variant="outline" data-testid={`target-validation-blocked-${t.target_id}`}><CircleAlert size={12} className="mr-1" />Validation required / 待验证</Badge>;
   return <Badge variant="outline" data-testid={`target-unavailable-${t.target_id}`}><CircleDashed size={12} className="mr-1" />Unavailable / 不可用</Badge>;
 }
 
@@ -54,13 +56,15 @@ export function TargetSelector({ batteryId, experimentId, selected, onSelect }: 
     <h2 className="text-xl">What do you want to study? / 你想研究什么？</h2>
     <p className="muted text-sm mt-1">目标来自后端能力报告；每个目标显示来源、覆盖与限制。</p>
     <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4 mt-4">
-      {list.map(t => <label key={t.target_id} data-testid={`target-card-${t.target_id}`}
-        className={`feature-card cursor-pointer ${selected === t.target_id ? "!border-primary !bg-[#f0f6f4]" : ""}`}>
+      {list.map(t => <div key={t.target_id} data-testid={`target-card-${t.target_id}`}
+        className={`feature-card ${selected === t.target_id ? "!border-primary !bg-[#f0f6f4]" : ""}`}>
         <div className="flex items-start gap-3">
-          <input type="radio" name="study-target" className="mt-1 accent-[#385c66]"
+          <input id={`target-${t.target_id}`} type="radio" name="study-target" className="mt-1 accent-[#385c66]"
+            disabled={t.readiness === "UNAVAILABLE"}
+            title={t.readiness === "UNAVAILABLE" ? (t.limitation_zh ?? t.limitation ?? undefined) : undefined}
             checked={selected === t.target_id} onChange={() => onSelect(t.target_id)}
             aria-label={`Select ${t.display_name_en}`} data-testid={`select-target-${t.target_id}`} />
-          <div className="flex-1 min-w-0">
+          <label htmlFor={`target-${t.target_id}`} className="flex-1 min-w-0 cursor-pointer">
             <h3 className="font-medium">{t.display_name_en} / {t.display_name_zh}</h3>
             <p className="text-xs muted mt-1">{t.semantic_type.replace(/_/g, " ").toLowerCase()} · {t.unit}</p>
             {readinessBadge(t)}
@@ -72,9 +76,23 @@ export function TargetSelector({ batteryId, experimentId, selected, onSelect }: 
             </dl>
             {t.target_id === "reference_soc_percent" && <p className="text-xs mt-2 text-[#5c7078]" data-testid="soc-retrospective-note">
               Retrospective segment-normalized reference label / 回顾性分段归一化参考标签</p>}
-          </div>
+          </label>
         </div>
-      </label>)}
+        {t.provenance && <details className="text-xs mt-3 border-t pt-2" data-testid={`target-provenance-${t.target_id}`}>
+              <summary className="cursor-pointer font-medium">Label evidence / 标签来源与不确定度</summary>
+              <dl className="mt-2 space-y-1 break-words">
+                <div><dt className="inline muted">Grain / 标签粒度: </dt><dd className="inline">{t.provenance.target_grain}</dd></div>
+                <div><dt className="inline muted">Independent unit / 独立分组单位: </dt><dd className="inline">{t.provenance.independent_unit}</dd></div>
+                <div><dt className="inline muted">Method / 方法版本: </dt><dd className="inline">{t.provenance.method_id ?? "UNKNOWN"} · {t.provenance.method_version ?? "UNKNOWN"}</dd></div>
+                <div><dt className="inline muted">Definition / 公式或测量方法: </dt><dd className="inline">{t.provenance.definition ?? "UNKNOWN"}</dd></div>
+                {t.provenance.source_assets.map(source => source.source_reference && <div key={`${source.asset_id}-${source.source_reference}`}>
+                  <dt className="inline muted">Source file / 来源文件: </dt><dd className="inline">{source.source_reference}</dd>
+                </div>)}
+                {t.provenance.observed_channels?.length ? <div><dt className="inline muted">Observed channels / 观测通道: </dt><dd className="inline">{t.provenance.observed_channels.join(", ")}</dd></div> : null}
+                <div className="text-[#9b782e]"><dt className="inline">Uncertainty / 不确定度: </dt><dd className="inline">{t.provenance.uncertainty.status === "UNKNOWN" ? "不确定度未知 / Uncertainty unknown" : `${numberText(t.provenance.uncertainty.standard_uncertainty)} ${t.provenance.uncertainty.unit ?? t.unit}`} — {t.provenance.uncertainty.reason}</dd></div>
+              </dl>
+            </details>}
+      </div>)}
     </div>
     <p className="text-xs muted mt-3">目标值由后端 label engine 与 canonical artifacts 提供；前端不计算 SOC/SOH。</p>
   </div>;

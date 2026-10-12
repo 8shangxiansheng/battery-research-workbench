@@ -60,6 +60,8 @@ def main() -> None:
         dataset_family="SOC",
         output_root=PROCESSED,
         group_counts=group_counts,
+        dataset_path=ds_soc / "dataset.parquet",
+        dataset_manifest_path=ds_soc / "dataset_manifest.json",
         dataset_status="READY_WITH_LIMITATIONS",
     )
     fold_summary = (
@@ -111,6 +113,8 @@ def main() -> None:
         dataset_family="SOH_CAPACITY",
         output_root=PROCESSED,
         group_counts={str(k): int(v) for k, v in soh.groupby("cycle_group_id").size().items()},
+        dataset_path=ds_soh / "dataset.parquet",
+        dataset_manifest_path=ds_soh / "dataset_manifest.json",
         dataset_status="NOT_READY_FOR_MODEL_EVALUATION",
         independent_soh_states=2,
     )

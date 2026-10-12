@@ -100,7 +100,13 @@ def test_limitations(client: TestClient) -> None:
         pytest.skip("real artifacts not available")
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/limitations")
     assert resp.status_code == 200
-    assert len(resp.json()["data"]["limitations"]) >= 11
+    codes = {item["code"] for item in resp.json()["data"]["limitations"]}
+    assert "ABSOLUTE_ARRIVAL_TOF_BLOCKED" in codes
+    from battery_workbench.reporting.collector import _canonical_tof_active
+
+    assert ("TOF_UNAVAILABLE_OR_BLOCKED" in codes) is not _canonical_tof_active(
+        PROCESSED, "CELL_001", "EXP_001"
+    )
 
 
 def test_evidence(client: TestClient) -> None:

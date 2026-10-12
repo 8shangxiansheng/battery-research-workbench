@@ -24,6 +24,12 @@ export function recoveryActionFor(
     case "PROVIDE_SAMPLING_RATE":
     case "RESOLVE_PENDING_ACTION":
       return { label: "前往总览处理参数", route: `${base}/overview` };
+    case "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE":
+      return { label: "重新解析并复核来源链", route: `${base}/runs` };
+    case "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT":
+      return { label: "重建时间基准与同步链", route: `${base}/runs` };
+    case "REBUILD_MEASUREMENT_EVENTS_AND_LABELS_FROM_VERIFIED_INPUTS":
+      return { label: "重建声电事件与标签", route: `${base}/runs` };
     default:
       return null;
   }

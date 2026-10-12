@@ -11,6 +11,15 @@ describe("workflow recovery routes", () => {
     });
     expect(recoveryActionFor("CELL_001", "EXP_001", "BUILD_DATASET")?.route)
       .toBe("/experiments/CELL_001/EXP_001/analysis?step=dataset");
+    expect(recoveryActionFor("CELL_001", "EXP_001", "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE")).toEqual({
+      label: "重新解析并复核来源链", route: "/experiments/CELL_001/EXP_001/runs",
+    });
+    expect(recoveryActionFor("CELL_001", "EXP_001", "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT")).toEqual({
+      label: "重建时间基准与同步链", route: "/experiments/CELL_001/EXP_001/runs",
+    });
+    expect(recoveryActionFor("CELL_001", "EXP_001", "REBUILD_MEASUREMENT_EVENTS_AND_LABELS_FROM_VERIFIED_INPUTS")).toEqual({
+      label: "重建声电事件与标签", route: "/experiments/CELL_001/EXP_001/runs",
+    });
   });
 
   it("does not invent a recovery action for unknown backend action ids", () => {

@@ -110,7 +110,28 @@ def test_candidate_conflict_t07() -> None:
     )
     # A conflict exists because manual != manifest datetime.
     assert len(assessment.conflicts) >= 1
-    assert assessment.anchor_status == "MANUALLY_ACCEPTED"
+    assert assessment.anchor_status == "CONFLICTING"
+
+
+def test_accepted_override_preserves_timezone_and_source_provenance() -> None:
+    from zoneinfo import ZoneInfo
+
+    override = TimeAnchorOverride(
+        anchor_datetime=datetime.fromisoformat("2024-01-06T21:03:01+08:00"),
+        reason="accepted calibration review",
+        timezone_known=True,
+        timezone_name="Asia/Shanghai",
+        source_reference="clock-calibration.csv",
+        source_sha256="a" * 64,
+    )
+    candidates, evidence = collect_candidates("U001", "ultrasound", None, {"U001": override})
+    candidate = select_anchor(candidates)
+    assert candidate is not None
+    assert candidate.status == "MANUALLY_ACCEPTED"
+    assert candidate.timezone_known is True
+    assert candidate.timezone_name == str(ZoneInfo("Asia/Shanghai"))
+    assert candidate.source_ref == "clock-calibration.csv"
+    assert evidence[0].source_sha256 == "a" * 64
 
 
 def test_filename_hint_not_authoritative_t11() -> None:

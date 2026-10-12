@@ -38,7 +38,7 @@ const STATUS_COLORS: Record<WfStepVisualStatus, string> = {
   READY: "text-blue-600 border-blue-300 bg-blue-50",
   BLOCKED: "text-red-600 border-red-300 bg-red-50 cursor-not-allowed",
   STALE: "text-amber-600 border-amber-300 bg-amber-50",
-  NOT_STARTED: "text-muted border-border",
+  NOT_STARTED: "text-muted-foreground border-border",
   LIMITED: "text-orange-600 border-orange-300 bg-orange-50",
 };
 

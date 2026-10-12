@@ -9,6 +9,7 @@ services:
         source: ./data/raw
         target: /srv/brw/data/raw
         read_only: ${BRW_RAW_READ_ONLY:-false}
+      - ./data/annotations:/srv/brw/data/annotations
       - ./data/processed:/srv/brw/data/processed
       - ./data/artifacts:/srv/brw/data/artifacts
     user: "${BRW_UID:-10001}:${BRW_GID:-10001}"

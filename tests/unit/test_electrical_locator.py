@@ -104,7 +104,10 @@ def _aux_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "electrical_asset_id": ["E1", "E1", "E1"],
-            "source_row_index": [3, 4, 5],
+            # Auxiliary sheet rows differ from the record sheet; the shared
+            # raw record index is the exact cross-sheet identity.
+            "source_row_index": [103, 104, 105],
+            "record_index_raw": [1, 2, 3],
             "temperature_c": [25.0, 25.1, 25.2],
             "temperature_channel": ["T1", "T1", "T1"],
         }
@@ -112,28 +115,63 @@ def _aux_df() -> pd.DataFrame:
 
 
 def test_aux_exact_join_success() -> None:
-    """E Case1: record locator has an aux row -> temperature enriched."""
+    """E Case1: shared raw record index maps auxiliary temperatures."""
     aux = build_aux_index(_aux_df())
-    assert aux[("E1", 3)] == 25.0
-    assert aux[("E1", 4)] == 25.1
+    assert aux[("E1", 1)] == (25.0, "T1")
+    assert aux[("E1", 2)] == (25.1, "T1")
 
 
 def test_aux_missing_temperature_null() -> None:
-    """E Case2: record locator has no aux row -> temperature null / limitation."""
+    """E Case2: a missing raw record index remains unavailable."""
     aux = build_aux_index(_aux_df())
-    assert ("E1", 2) not in aux  # locator 2 has no aux row
+    assert ("E1", 4) not in aux
 
 
 def test_aux_duplicate_locator_integrity_error() -> None:
-    """E Case3: one source_row_index maps to multiple aux rows -> integrity error."""
+    """E Case3: duplicate asset + raw record index is an integrity error."""
     df = pd.concat(
         [
             _aux_df(),
             pd.DataFrame(
-                {"source_row_index": [3], "temperature_c": [99.0], "temperature_channel": ["T1"]}
+                {
+                    "electrical_asset_id": ["E1"],
+                    "source_row_index": [999],
+                    "record_index_raw": [1],
+                    "temperature_c": [99.0],
+                    "temperature_channel": ["T1"],
+                }
             ),
         ],
         ignore_index=True,
     )
     with pytest.raises(LocatorError):
         build_aux_index(df)
+
+
+def test_aux_multiple_channels_require_explicit_selection() -> None:
+    aux = pd.concat(
+        [
+            _aux_df(),
+            pd.DataFrame(
+                {
+                    "electrical_asset_id": ["E1"],
+                    "source_row_index": [203],
+                    "record_index_raw": [1],
+                    "temperature_c": [30.0],
+                    "temperature_channel": ["T2"],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    with pytest.raises(LocatorError, match="multiple temperature channels.*explicitly"):
+        build_aux_index(aux)
+
+    selected = build_aux_index(aux, temperature_channel_id="T2")
+    assert selected == {("E1", 1): (30.0, "T2")}
+
+
+def test_aux_rejects_unavailable_temperature_channel() -> None:
+    with pytest.raises(LocatorError, match="configured temperature channel 'T9' is not present"):
+        build_aux_index(_aux_df(), temperature_channel_id="T9")

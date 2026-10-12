@@ -1,6 +1,6 @@
 reference_labels:
-  version: "0.2.0"
-  label_definition_version: "0.2.0"
+  version: "0.3.0"
+  label_definition_version: "0.3.0"
 
   soc:
     method: "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"

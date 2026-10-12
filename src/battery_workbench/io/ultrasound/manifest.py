@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from battery_workbench.io.ultrasound.schemas import UltrasoundExperimentParseResult
+from battery_workbench.provenance.processed_manifest import content_sha256
 
 
 def build_parser_manifest(
@@ -58,5 +59,9 @@ def build_parser_manifest(
             "frames": frames_path.name,
             "waveforms": waveforms_path.name,
             "parser_manifest": manifest_path.name,
+        },
+        "output_checksums": {
+            "frames": content_sha256(frames_path),
+            "waveforms": content_sha256(waveforms_path),
         },
     }

@@ -42,6 +42,12 @@ def _materialize(tmp_path: Path, frame: pd.DataFrame | None = None, **spec_overr
     frame = frame if frame is not None else _four_group_frame()
     spec = _spec(**spec_overrides)
     assignments = build_assignments(spec, frame)
+    source_dir = tmp_path / "source_dataset"
+    source_dir.mkdir(parents=True)
+    dataset_path = source_dir / "dataset.parquet"
+    dataset_path.write_bytes(b"test dataset bytes")
+    dataset_manifest_path = source_dir / "dataset_manifest.json"
+    dataset_manifest_path.write_text('{"dataset_id":"DS::test"}', encoding="utf-8")
     return write_split_payload(
         spec=spec,
         assignments=assignments,
@@ -51,6 +57,8 @@ def _materialize(tmp_path: Path, frame: pd.DataFrame | None = None, **spec_overr
         dataset_family="SOC",
         output_root=tmp_path,
         group_counts=frame.groupby("cycle_group_id").size().to_dict(),
+        dataset_path=dataset_path,
+        dataset_manifest_path=dataset_manifest_path,
     )
 
 
@@ -98,14 +106,36 @@ def test_manifest_records_provenance(tmp_path: Path) -> None:
     assert manifest["group_column"] == "cycle_group_id"
     assert manifest["evaluation_scope"] == "WITHIN_BATTERY_CROSS_CYCLE"
     assert manifest["leakage_audit"]["frame_random_split"] is False
+    assert set(manifest["source_checksums"]) == {"dataset_parquet", "dataset_manifest"}
 
 
 # --- orchestrator integration (T21-T25, T29) ---
 
 
+def _cell001_dataset_current() -> bool:
+    import json
+
+    from battery_workbench.datasets.freshness import dataset_freshness
+
+    root = Path("data/processed")
+    manifest_path = (
+        root
+        / "datasets/CELL_001/EXP_001/SOC/DS::6a3142e5186fc684964ff09e/dataset_manifest.json"
+    )
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return dataset_freshness(
+        root, manifest_path, manifest, raw_root=Path("data/raw")
+    )["availability"] == "AVAILABLE"
+
+
 @pytest.mark.skipif(
-    not Path("data/processed/datasets/CELL_001/EXP_001/SOC/DS::6a3142e5186fc684964ff09e").exists(),
-    reason="real CELL_001/EXP_001 dataset not available",
+    not _cell001_dataset_current(),
+    reason="fixed CELL_001 orchestrator fixtures are stale; isolated split unit tests remain active",
 )
 class TestOrchestratorSplit:
     def _engine(self, tmp_path: Path):

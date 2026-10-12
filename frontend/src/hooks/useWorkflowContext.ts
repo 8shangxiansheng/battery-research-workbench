@@ -60,22 +60,19 @@ export function deriveStepperStatuses(
   for (let i = 0; i < stepKeys.length; i++) {
     const key = stepKeys[i]!;
     const rawStatus = stepStatuses[key] ?? "NOT_STARTED";
+    const freshnessKey = stepToFreshnessKey(key);
+    const fresh = freshnessKey ? freshness[freshnessKey] : null;
 
-    if (key === currentStep) {
-      // The current step is always CURRENT visually
+    if (fresh === "STALE" || fresh === "LEGACY" || fresh === "SUPERSEDED") {
+      // Data lineage takes precedence over navigation position and raw step state.
+      result[key] = "STALE";
+    } else if (rawStatus === "BLOCKED") {
+      // A blocked current step must remain visibly blocked, never look active/ready.
+      result[key] = "BLOCKED";
+    } else if (key === currentStep) {
       result[key] = "CURRENT";
     } else if (rawStatus === "COMPLETE") {
-      // Check if stale
-      // Map step → freshness key
-      const freshnessKey = stepToFreshnessKey(key);
-      const fresh = freshnessKey ? freshness[freshnessKey] : null;
-      if (fresh === "STALE" || fresh === "LEGACY" || fresh === "SUPERSEDED") {
-        result[key] = "STALE";
-      } else {
-        result[key] = "COMPLETE";
-      }
-    } else if (rawStatus === "BLOCKED") {
-      result[key] = "BLOCKED";
+      result[key] = "COMPLETE";
     } else if (rawStatus === "LIMITED") {
       result[key] = "LIMITED";
     } else if (rawStatus === "NOT_STARTED") {
@@ -101,10 +98,11 @@ export function deriveStepperStatuses(
 /** Map step key to artifact_freshness key. */
 function stepToFreshnessKey(step: string): string | null {
   switch (step) {
+    case "FEATURES": return "feature_analysis";
     case "DATASET": return "dataset";
     case "MODELS": return "models";
     case "REPORT": return "report";
-    default: return null; // TARGET/ALIGNMENT/FEATURES/PREVIEW/SPLIT don't have freshness
+    default: return null; // TARGET/ALIGNMENT/PREVIEW/SPLIT don't have standalone artifacts
   }
 }
 

@@ -45,9 +45,10 @@ def collect_candidates(
                 evidence_id=f"{asset_id}-override",
                 asset_id=asset_id,
                 source_type="MANUAL_OVERRIDE",
-                source_ref="time_anchor_overrides",
+                source_ref=override.source_reference or "time_anchor_overrides",
                 raw_value=override.anchor_datetime,
                 parsed_value=override.anchor_datetime,
+                source_sha256=override.source_sha256,
                 message=override.reason or "manual override",
             )
         )
@@ -58,8 +59,10 @@ def collect_candidates(
                 anchor_datetime=override.anchor_datetime,
                 elapsed_time_s_at_anchor=override.elapsed_time_s_at_anchor,
                 source_type="MANUAL_OVERRIDE",
-                source_ref="time_anchor_overrides",
+                source_ref=override.source_reference or "time_anchor_overrides",
                 status="MANUALLY_ACCEPTED",
+                timezone_known=override.timezone_known,
+                timezone_name=override.timezone_name,
                 notes=override.reason,
             )
         )

@@ -300,6 +300,123 @@ describe("ResearchOverview（BRW-025R-OV）", () => {
     await screen.findByTestId("model-comparison-table");
     expect(screen.getByTestId("model-comparison-table")).toHaveTextContent("可用（未用于当前结论）");
   });
+  it("stale Dataset 时隐藏历史模型分数并提供恢复路径", async () => {
+    vi.spyOn(client, "getResearchOverview").mockResolvedValue({
+      data: {
+        ...overviewPayload,
+        scientific_snapshot: {
+          ...overviewPayload.scientific_snapshot,
+          selected_features: [],
+          model_evidence: {
+            dummy_first_conclusion: null,
+            dummy_macro_mae: null,
+            note: "model evaluation is stale because its dataset sources changed",
+          },
+          feature_definition: {
+            ...overviewPayload.scientific_snapshot.feature_definition,
+            status: "STALE",
+            freshness_reasons: ["LABEL_SOURCE_CHECKSUM_MISMATCH"],
+          },
+        },
+        model_comparison: {
+          ...overviewPayload.model_comparison,
+          status: "STALE",
+          strategies: [],
+          dummy: null,
+          dummy_first_conclusion: null,
+          freshness_reasons: ["LABEL_SOURCE_CHECKSUM_MISMATCH"],
+          feature_definition: {
+            ...overviewPayload.model_comparison.feature_definition,
+            status: "STALE",
+            freshness_reasons: ["LABEL_SOURCE_CHECKSUM_MISMATCH"],
+          },
+        },
+      } as never,
+    } as never);
+    mount();
+    expect(await screen.findByTestId("model-chain-stale")).toHaveTextContent("旧分数不能代表当前数据");
+    expect(screen.getByTestId("model-chain-stale")).toHaveTextContent("LABEL_SOURCE_CHECKSUM_MISMATCH");
+    expect(screen.getByRole("link", { name: "Dataset 工作台" })).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/dataset");
+    expect(screen.queryByTestId("model-comparison-table")).not.toBeInTheDocument();
+    expect(screen.queryByText("29.61")).not.toBeInTheDocument();
+  });
+
+  it("来源 provenance 无效时隐藏科学结果并给出重新解析恢复路径", async () => {
+    vi.spyOn(client, "getResearchOverview").mockResolvedValue({
+      data: {
+        ...overviewPayload,
+        readiness_matrix: {
+          ...overviewPayload.readiness_matrix,
+          targets: "INTEGRITY_BLOCKED",
+          modeling: "INTEGRITY_BLOCKED",
+        },
+        metadata: {
+          ...overviewPayload.metadata,
+          temperature: { status: "INTEGRITY_BLOCKED", channel: null },
+          acquisition_window: { status: "INTEGRITY_BLOCKED", start: null, end: null },
+          timebase: { status: "INTEGRITY_BLOCKED" },
+        },
+        electrical: {
+          ...overviewPayload.electrical,
+          status: "INTEGRITY_BLOCKED",
+          record_count: null,
+          cycle_count: null,
+          step_count: null,
+          voltage_range_v: null,
+          current_range_a: null,
+          voltage_sparkline_v: [],
+          current_sparkline_a: [],
+          cycles: [],
+        },
+        ultrasound_tof: {
+          ...overviewPayload.ultrasound_tof,
+          status: "INTEGRITY_BLOCKED",
+          artifact_status_counts: {},
+          artifact_tof_us_summary: null,
+          waveform_tof: { event_count: null, ambiguous_events: null, note: "blocked" },
+          feature_target_eligible: { eligible_count: null, note: "blocked" },
+        },
+        scientific_snapshot: {
+          ...overviewPayload.scientific_snapshot,
+          target: { target_id: "reference_soc_percent", readiness: "INTEGRITY_BLOCKED", note: "source provenance invalid" },
+          leading_exploratory_candidate: null,
+          selected_features: [],
+          model_evidence: { dummy_first_conclusion: null, dummy_macro_mae: null, note: "source provenance invalid" },
+        },
+        model_comparison: {
+          ...overviewPayload.model_comparison,
+          status: "INTEGRITY_BLOCKED",
+          strategies: [],
+          dummy: null,
+          dummy_first_conclusion: null,
+          freshness_reasons: ["SOURCE_PROVENANCE_INVALID"],
+        },
+        limitations_first_screen: [
+          { code: "SOURCE_PROVENANCE_INVALID", severity: "BLOCKING_FOR_CLAIM", description: "source parser manifest invalid", description_zh: "原始来源解析清单无效；来源追溯与相关科学主张已阻断" },
+        ],
+        next_actions: [
+          { action_id: "REPAIR_SOURCE_PROVENANCE", label: "重新解析原始文件并复核来源追溯", route: "/experiments/CELL_001/EXP_001/runs" },
+        ],
+        research_status_banner: { level: "BLOCKED", message: "阻断：原始来源解析清单无效，来源追溯与科学主张不可用。" },
+      } as never,
+    } as never);
+    mount();
+    expect(await screen.findByTestId("research-status-banner")).toHaveTextContent("来源解析清单无效");
+    expect(screen.getByTestId("readiness-targets")).toHaveTextContent("完整性阻断");
+    expect(screen.getByTestId("readiness-modeling")).toHaveTextContent("完整性阻断");
+    expect(screen.getByTestId("limitations-first-screen")).toHaveTextContent("来源追溯与相关科学主张已阻断");
+    expect(screen.getByTestId("quick-action-REPAIR_SOURCE_PROVENANCE")).toHaveTextContent("重新解析原始文件并复核来源追溯");
+    expect(screen.getByTestId("model-chain-integrity-blocked")).toHaveTextContent("模型分数与科学结论已隐藏");
+    for (const testId of ["overview-electrical-integrity-blocked", "overview-tof-integrity-blocked"]) {
+      expect(screen.getByTestId(testId).querySelector("a")).toHaveAttribute("href", "/experiments/CELL_001/EXP_001/runs");
+    }
+    expect(screen.getByTestId("meta-Temperature")).toHaveTextContent("温度完整性阻断");
+    expect(screen.queryByText("15.52–16.08 µs")).not.toBeInTheDocument();
+    expect(screen.queryByText("39,996")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("model-comparison-table")).not.toBeInTheDocument();
+    expect(screen.queryByText("29.61")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("model-evidence-note")).not.toBeInTheDocument();
+  });
 
   // O25–O26 inline fs submission（BRW-018R2 复用）
   it("O25 fs 未验证时 inline 配置走共享 submission service", async () => {

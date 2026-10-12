@@ -146,6 +146,11 @@ class ExperimentRecord(BaseModel):
     name: str
     status: ExperimentLifecycle = "AWAITING_DATA"
     is_demo: bool = False
+    start_time: str | None = None
+    end_time: str | None = None
+    protocol: str = ""
+    condition_id: str = ""
+    condition_description: str = ""
     created_at: str
     updated_at: str
     notes: str = ""

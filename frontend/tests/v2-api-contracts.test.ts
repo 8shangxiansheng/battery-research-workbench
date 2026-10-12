@@ -221,7 +221,12 @@ describe("BRW-025R-FE feature workbench endpoints（沙箱契约）", () => {
 
   it("physical-features / correlations / calibration 无波形产物时 404（沙箱）", async () => {
     const phys = await fetch(`${api}/experiments/CELL_001/EXP_001/physical-features`);
-    expect([200, 404]).toContain(phys.status);
+    expect(phys.status).toBe(404);
+    const physicalError = await phys.json() as {
+      error: { code: string; details: { recovery_action?: string } };
+    };
+    expect(physicalError.error.code).toBe("ARTIFACT_NOT_AVAILABLE");
+    expect(physicalError.error.details.recovery_action).toBe("RUN_ULTRASOUND_PARSE");
     const corr = await fetch(`${api}/experiments/CELL_001/EXP_001/feature-correlations?feature_code=SWA`);
     expect([200, 404]).toContain(corr.status);
     const calib = await fetch(`${api}/experiments/CELL_001/EXP_001/gate-calibration`);

@@ -42,14 +42,14 @@ export function OverviewPage() {
       {status.isError && <ErrorState error={status.error} retry={() => void status.refetch()}/>}
     </section>
     <div className="overview-grid">
-      <section className="panel signal-card"><div className="flex justify-between items-center"><h2 className="flex items-center gap-2"><Battery size={18}/>电气数据</h2><Badge className={q?.electrical ? "state-success" : ""} variant="outline">{q?.electrical ? "已解析" : quality.isPending ? "检查中" : "待检查"}</Badge></div>
-        <p className="signal-stat">{numberText(q?.electrical?.records, 0)} <span>条记录 · {numberText(q?.electrical?.cycles, 0)} 个循环</span></p>
-        <Suspense fallback={<p className="signal-placeholder">加载图表…</p>}><ElectricalMiniView batteryId={batteryId} experimentId={experimentId}/></Suspense>
+      <section className="panel signal-card"><div className="flex justify-between items-center"><h2 className="flex items-center gap-2"><Battery size={18}/>电气数据</h2><Badge className={q?.electrical?.status === "AVAILABLE" ? "state-success" : q?.electrical?.status === "INTEGRITY_BLOCKED" ? "state-warning" : ""} variant="outline">{q?.electrical?.status === "INTEGRITY_BLOCKED" ? "来源完整性阻断" : q?.electrical ? "已解析" : quality.isPending ? "检查中" : "待检查"}</Badge></div>
+        {q?.electrical?.status === "INTEGRITY_BLOCKED" ? <p className="signal-stat" role="status">电学来源或解析产物完整性未通过，已隐藏记录统计。请重新解析并复核来源。</p> : <p className="signal-stat">{numberText(q?.electrical?.records, 0)} <span>条记录 · {numberText(q?.electrical?.cycles, 0)} 个循环</span></p>}
+        {q?.electrical?.status !== "INTEGRITY_BLOCKED" && <Suspense fallback={<p className="signal-placeholder">加载图表…</p>}><ElectricalMiniView batteryId={batteryId} experimentId={experimentId}/></Suspense>}
         <Button variant="ghost" asChild className="mt-2"><Link to={`${base}/advanced/data`}>查看数据质量<ArrowRight/></Link></Button>
       </section>
-      <section className="panel signal-card"><div className="flex justify-between items-center"><h2 className="flex items-center gap-2"><Waves size={18}/>超声数据</h2><Badge className={q?.ultrasound ? "state-success" : ""} variant="outline">{q?.ultrasound ? "已解析" : quality.isPending ? "检查中" : "待检查"}</Badge></div>
-        <p className="signal-stat">{numberText(q?.ultrasound?.frames, 0)} <span>帧 · 原始幅值 / a.u.</span></p>
-        <Suspense fallback={<p className="signal-placeholder">加载图表…</p>}><UltrasoundMiniView batteryId={batteryId} experimentId={experimentId}/></Suspense>
+      <section className="panel signal-card"><div className="flex justify-between items-center"><h2 className="flex items-center gap-2"><Waves size={18}/>超声数据</h2><Badge className={q?.ultrasound?.status === "AVAILABLE" ? "state-success" : q?.ultrasound?.status === "INTEGRITY_BLOCKED" ? "state-warning" : ""} variant="outline">{q?.ultrasound?.status === "INTEGRITY_BLOCKED" ? "来源完整性阻断" : q?.ultrasound ? "已解析" : quality.isPending ? "检查中" : "待检查"}</Badge></div>
+        {q?.ultrasound?.status === "INTEGRITY_BLOCKED" ? <p className="signal-stat" role="status">超声来源或解析产物完整性未通过，已隐藏帧统计。请重新解析并复核来源。</p> : <p className="signal-stat">{numberText(q?.ultrasound?.frames, 0)} <span>帧 · 原始幅值 / a.u.</span></p>}
+        {q?.ultrasound?.status !== "INTEGRITY_BLOCKED" && <Suspense fallback={<p className="signal-placeholder">加载图表…</p>}><UltrasoundMiniView batteryId={batteryId} experimentId={experimentId}/></Suspense>}
         <Button variant="ghost" asChild className="mt-2"><Link to={`${base}/waveform`}>打开波形<ArrowRight/></Link></Button>
       </section>
       <section className="panel readiness-card"><h2>分析前置条件</h2><p className="text-xs muted mt-1">按分析目标分别判断，不将保存视为验证。</p>
@@ -69,7 +69,7 @@ export function OverviewPage() {
     <ScopeNote/>
     <Sheet open={repair !== null} onOpenChange={open => { if (!open) setRepair(null); }}><SheetContent className="sm:max-w-[480px] overflow-y-auto"><SheetHeader><SheetTitle>{repair}</SheetTitle><SheetDescription>当前实验的依据、限制与可执行操作；不会自动修改科学结论。</SheetDescription></SheetHeader><div className="space-y-5 py-6">
       {repair === "重新配置超参数" ? <><Badge className="state-warning">当前 API 不支持调优</Badge><p>服务只提供固定基线模型，尚无超参数配置或训练调优接口。不能将点击此入口视为已配置或已提交训练。</p><Button variant="outline" asChild><Link to={`${base}/analysis`}>先复核特征与 TRAIN 划分</Link></Button></> : <>
-        {repair !== "SOH 数据依据" && <><h3>1. 采样频率</h3><p className="text-sm muted">提供仪器配置记录。保存后刷新就绪状态；未验证时仍保留阻断。</p><ParameterDialog label="填写采样频率"/><h3>2. 时间基准与同步</h3><p className="text-sm">{synced ? "后端报告同步验证通过。" : "需要逐资产时间锚点、时区与校准依据，并重新运行同步验证。当前 API 没有校准文件上传或时间锚点更新接口。"}</p><Button variant="outline" onClick={() => void status.refetch()} disabled={status.isFetching}>{status.isFetching ? "检查中…" : "重新检查后端状态"}</Button><p role="status" className={synced ? "state-success p-3" : "state-warning p-3"}>{synced ? "验证通过" : "尚未验证；原始波形查看不受影响。"}</p></>}
+        {repair !== "SOH 数据依据" && <><h3>1. 采样频率</h3><p className="text-sm muted">提供仪器配置记录。保存后刷新就绪状态；未验证时仍保留阻断。</p><ParameterDialog label="填写采样频率"/><h3>2. 时间基准与同步</h3><p className="text-sm">{synced ? "后端报告同步验证通过。" : "可在 Alignment 登记逐资产时间锚点与校准证据、记录审核决定。审核接受仍需重算并独立验证同步，不会直接解除阻断。"}</p><Button variant="outline" asChild><Link to={`${base}/analysis?step=alignment`}>登记或查看对齐证据</Link></Button><Button variant="outline" onClick={() => void status.refetch()} disabled={status.isFetching}>{status.isFetching ? "检查中…" : "重新检查后端状态"}</Button><p role="status" className={synced ? "state-success p-3" : "state-warning p-3"}>{synced ? "验证通过" : "尚未验证；原始波形查看不受影响。"}</p></>}
         <h3>SOH 所需依据</h3><p className="text-sm">{s?.soh.reason ?? "后端状态未知"}。参考容量及更多独立老化状态需要可靠来源；单次输入容量不会自动解除 SOH 建模限制。</p><Button variant="ghost" asChild><Link to={`${base}/advanced/parameters`}>查看已有参数与来源</Link></Button>
       </>}
     </div></SheetContent></Sheet>

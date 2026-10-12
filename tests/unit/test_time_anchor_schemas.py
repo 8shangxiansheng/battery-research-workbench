@@ -164,6 +164,7 @@ def test_canonical_state_minimal_contract() -> None:
         "assets",
         "warnings",
         "limitations",
+        "timebase_validation_id",
         "validated_sync",
     }
     assert payload["validated_sync"] is False

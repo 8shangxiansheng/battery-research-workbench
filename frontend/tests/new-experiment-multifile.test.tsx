@@ -10,6 +10,8 @@ const { clientMock } = vi.hoisted(() => ({
     getIntakeSession: vi.fn(),
     uploadIntakeAsset: vi.fn(),
     removeIntakeAsset: vi.fn(),
+    createExperiment: vi.fn(),
+    createIntakeSession: vi.fn(),
   },
 }));
 
@@ -45,12 +47,12 @@ const session = {
   detections: [], validation: null, commit: null, failure_reason: null, recommended_next_action: null,
 };
 
-function renderWizard() {
+function renderWizard(initialEntry = "/new/session-123") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/new/session-123"]}>
-        <Routes><Route path="/new/:sessionId" element={<NewExperimentWizardPage />} /></Routes>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes><Route path="/new/:sessionId?" element={<NewExperimentWizardPage />} /></Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -62,6 +64,35 @@ describe("multi-file experiment intake", () => {
     clientMock.getIntakeSession.mockResolvedValue({ data: session, meta: {} });
     clientMock.uploadIntakeAsset.mockResolvedValue({
       data: { ...session.assets[0], intake_asset_id: "new-asset" }, meta: {},
+    });
+  });
+
+  it("records the declared experiment protocol, condition and time bounds", async () => {
+    const user = userEvent.setup();
+    clientMock.createExperiment.mockResolvedValue({
+      data: { battery_id: "CELL_X", experiment_id: "EXP_002" },
+      meta: {},
+    });
+    clientMock.createIntakeSession.mockResolvedValue({ data: session, meta: {} });
+    renderWizard("/new");
+
+    await user.type(screen.getByTestId("wiz-battery"), "CELL_X");
+    await user.type(screen.getByTestId("wiz-experiment-id"), "EXP_002");
+    await user.type(screen.getByTestId("wiz-name"), "25 C discharge");
+    await user.type(screen.getByTestId("wiz-protocol"), "CCCV-v2");
+    await user.type(screen.getByTestId("wiz-condition-id"), "TEMP_25C_RATE_1C");
+    await user.type(screen.getByTestId("wiz-condition-description"), "25 C chamber, 1 C discharge");
+    await user.type(screen.getByTestId("wiz-start-time"), "2026-10-07T09:00");
+    await user.type(screen.getByTestId("wiz-end-time"), "2026-10-07T11:00");
+    await user.click(screen.getByTestId("wiz-continue-info"));
+
+    await waitFor(() => expect(clientMock.createExperiment).toHaveBeenCalledOnce());
+    expect(clientMock.createExperiment.mock.calls[0]?.[0]).toMatchObject({
+      protocol: "CCCV-v2",
+      condition_id: "TEMP_25C_RATE_1C",
+      condition_description: "25 C chamber, 1 C discharge",
+      start_time: "2026-10-07T09:00",
+      end_time: "2026-10-07T11:00",
     });
   });
 

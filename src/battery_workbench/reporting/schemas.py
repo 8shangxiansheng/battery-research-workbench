@@ -92,6 +92,7 @@ class ReportSpec(BaseModel):
     sections: list[str] = Field(default_factory=list)
     output_formats: list[str] = Field(default_factory=lambda: ["json", "md", "html"])
     reporting_policy_version: str = "0.1.0"
+    analysis_plan_sha256: str | None = None
     report_id: str = ""
 
     @model_validator(mode="after")
@@ -105,6 +106,7 @@ class ReportSpec(BaseModel):
                     "source_artifact_ids": sorted(self.source_artifact_ids),
                     "sections": sorted(self.sections),
                     "reporting_policy_version": self.reporting_policy_version,
+                    "analysis_plan_sha256": self.analysis_plan_sha256,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

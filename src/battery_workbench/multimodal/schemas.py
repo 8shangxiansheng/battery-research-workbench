@@ -44,6 +44,7 @@ _ELECTRICAL_ENRICHMENT_FIELDS = [
     "energy_wh",
     "power_w",
     "temperature_c",
+    "temperature_channel_id",
     "soc_dod_percent",
     "contact_resistance_mohm",
     "dq_dv_raw",
@@ -68,7 +69,8 @@ class ScientificGuardConfig(BaseModel):
 
 
 class MeasurementEventConfig(BaseModel):
-    version: str = "0.3.0"
+    version: str = "0.5.1"
+    temperature_channel_id: str | None = None
     quality: QualityConfig = Field(default_factory=QualityConfig)
     electrical_enrichment: ElectricalEnrichmentConfig = Field(
         default_factory=ElectricalEnrichmentConfig
@@ -142,6 +144,7 @@ class CanonicalMeasurementEvent(BaseModel):
     energy_wh: float | None = None
     power_w: float | None = None
     temperature_c: float | None = None
+    temperature_channel_id: str | None = None
     soc_dod_percent: float | None = None
     contact_resistance_mohm: float | None = None
     dq_dv_raw: float | None = None
@@ -177,7 +180,10 @@ class MeasurementEventCandidate(BaseModel):
 
 class MeasurementEventManifest(BaseModel):
     builder_name: str = "measurement_event_builder"
-    builder_version: str = "0.3.0"
+    builder_version: str = "0.5.1"
+    # Requested setting (None means auto-resolve only if exactly one channel exists).
+    temperature_channel_id: str | None = None
+    resolved_temperature_channel_id: str | None = None
     battery_id: str
     experiment_id: str
     input_paths: dict[str, str] = Field(default_factory=dict)

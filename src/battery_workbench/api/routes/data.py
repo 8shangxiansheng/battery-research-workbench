@@ -18,8 +18,18 @@ from fastapi import APIRouter, Query, Request
 
 from battery_workbench.api.dependencies import get_service
 from battery_workbench.api.errors import APIError, ErrorCode
+from battery_workbench.api.integrity import (
+    assert_current_timebase_chain as _assert_current_timebase_chain,
+)
+from battery_workbench.api.integrity import (
+    assert_processed_artifact_integrity as _assert_processed_artifact_integrity,
+)
 from battery_workbench.api.routes.intake import _experiment_summary
 from battery_workbench.api.service import validate_id
+from battery_workbench.provenance.parser_manifest import (
+    invalid_parser_source_modalities,
+    parser_output_integrity_reasons,
+)
 
 router = APIRouter(tags=["experiments", "data"])
 
@@ -28,24 +38,114 @@ def _processed(request: Request) -> Path:
     return get_service(request).processed_root
 
 
+def _assert_cross_modal_source_integrity(
+    processed_root: Path,
+    raw_root: Path,
+    battery_id: str,
+    experiment_id: str,
+) -> None:
+    invalid_modalities = invalid_parser_source_modalities(
+        processed_root, raw_root, battery_id, experiment_id
+    )
+    if invalid_modalities:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "cross-modal source provenance is invalid; alignment-derived output is blocked",
+            {
+                "invalid_modalities": invalid_modalities,
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        )
+    output_reasons = parser_output_integrity_reasons(
+        processed_root, battery_id, experiment_id
+    )
+    invalid_outputs = {
+        modality: reasons for modality, reasons in output_reasons.items() if reasons
+    }
+    if invalid_outputs:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "parser output integrity is invalid; cross-modal reads are blocked",
+            {
+                "invalid_modalities": list(invalid_outputs),
+                "integrity_reasons": invalid_outputs,
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+            },
+        )
+
+
 @router.get("/experiments/{battery_id}/{experiment_id}/data-quality")
 def data_quality(request: Request, battery_id: str, experiment_id: str) -> dict[str, Any]:
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
-    processed = _processed(request)
+    service = get_service(request)
+    processed = service.processed_root
     out: dict[str, Any] = {
         "battery_id": battery_id,
         "experiment_id": experiment_id,
         "electrical": None,
         "ultrasound": None,
     }
+    invalid_modalities = set(
+        invalid_parser_source_modalities(
+            processed, service.raw_root, battery_id, experiment_id
+        )
+    )
+    output_integrity = parser_output_integrity_reasons(
+        processed, battery_id, experiment_id
+    )
+    invalid_outputs = {
+        modality: reasons for modality, reasons in output_integrity.items() if reasons
+    }
+    # Data quality is a cross-modal experiment summary. Do not let a damaged
+    # source manifest coexist with apparently usable statistics from that
+    # modality (or from a linked modality).
+    if invalid_modalities:
+        return {
+            "data": {
+                **out,
+                "status": "INTEGRITY_BLOCKED",
+                "invalid_modalities": sorted(invalid_modalities),
+                "recovery_action": "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE",
+                "electrical": {
+                    "status": "INTEGRITY_BLOCKED" if "electrical" in invalid_modalities else "NOT_EVALUATED",
+                    "records": None,
+                    "cycles": None,
+                    "steps": None,
+                    "duplicate_timestamps": None,
+                },
+                "ultrasound": {
+                    "status": "INTEGRITY_BLOCKED" if "ultrasound" in invalid_modalities else "NOT_EVALUATED",
+                    "frames": None,
+                    "frame_cadence_s": None,
+                    "sampling_rate_hz": None,
+                    "sampling_rate_status": "UNKNOWN",
+                    "note": "来源完整性无效，未展示实验级数据质量统计。",
+                },
+            },
+            "meta": {},
+        }
+    if invalid_outputs:
+        out["status"] = "INTEGRITY_BLOCKED"
+        out["invalid_outputs"] = invalid_outputs
+        out["recovery_action"] = "REPARSE_SOURCE_ASSETS_AND_REVIEW_LINEAGE"
     records_path = processed / "electrical" / battery_id / experiment_id / "records.parquet"
-    if records_path.is_file():
+    if "electrical" in invalid_outputs:
+        out["electrical"] = {
+            "status": "INTEGRITY_BLOCKED",
+            "records": None,
+            "cycles": None,
+            "steps": None,
+            "duplicate_timestamps": None,
+            "integrity_reasons": invalid_outputs["electrical"],
+        }
+    elif records_path.is_file():
         records = pd.read_parquet(records_path)
         duplicate_ts = (
             int(records["timestamp"].duplicated().sum()) if "timestamp" in records.columns else None
         )
         out["electrical"] = {
+            "status": "AVAILABLE",
             "records": len(records),
             "cycles": int(records["cycle_index_raw"].nunique())
             if "cycle_index_raw" in records.columns
@@ -56,10 +156,21 @@ def data_quality(request: Request, battery_id: str, experiment_id: str) -> dict[
             "duplicate_timestamps": duplicate_ts,
         }
     frames_path = processed / "ultrasound" / battery_id / experiment_id / "frames.parquet"
-    if frames_path.is_file():
+    if "ultrasound" in invalid_outputs:
+        out["ultrasound"] = {
+            "status": "INTEGRITY_BLOCKED",
+            "frames": None,
+            "frame_cadence_s": None,
+            "sampling_rate_hz": None,
+            "sampling_rate_status": "UNKNOWN",
+            "note": "来源完整性无效，未展示帧统计；frame cadence 不是 waveform sampling rate。",
+            "integrity_reasons": invalid_outputs["ultrasound"],
+        }
+    elif frames_path.is_file():
         frames = pd.read_parquet(frames_path)
         cadence = frames["elapsed_time_s"].diff().median() if "elapsed_time_s" in frames.columns else None
         out["ultrasound"] = {
+            "status": "AVAILABLE",
             "frames": len(frames),
             "frame_cadence_s": round(float(cadence), 4) if pd.notna(cadence) else None,
             "sampling_rate_hz": None,
@@ -74,11 +185,27 @@ def synchronization(request: Request, battery_id: str, experiment_id: str) -> di
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     processed = _processed(request)
+    _assert_cross_modal_source_integrity(
+        processed, get_service(request).raw_root, battery_id, experiment_id
+    )
+    _assert_current_timebase_chain(
+        processed,
+        get_service(request).raw_root,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+    )
     sync_dir = processed / "synchronization" / battery_id / experiment_id
     manifest_path = sync_dir / "synchronization_manifest.json"
     if not manifest_path.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "synchronization manifest not available")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = _assert_processed_artifact_integrity(
+        processed,
+        manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"aligned", "candidates"},
+        required_inputs={"ultrasound_timestamped", "electrical_records"},
+    )
     anchor_path = sync_dir / "time_anchors.json"
     anchors = json.loads(anchor_path.read_text(encoding="utf-8")) if anchor_path.is_file() else None
     metrics = manifest.get("quality_metrics") or {}
@@ -313,10 +440,41 @@ def measurement_events(
     validate_id(battery_id, "battery_id")
     validate_id(experiment_id, "experiment_id")
     processed = _processed(request)
+    _assert_cross_modal_source_integrity(
+        processed, get_service(request).raw_root, battery_id, experiment_id
+    )
+    manifest_path = processed / "multimodal" / battery_id / experiment_id / "measurement_event_manifest.json"
+    if not manifest_path.is_file():
+        raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement event manifest not available")
+    _assert_processed_artifact_integrity(
+        processed,
+        manifest_path,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
+        required_outputs={"events", "candidates"},
+        required_inputs={"aligned", "sync_candidates", "electrical_records"},
+    )
     events_path = processed / "multimodal" / battery_id / experiment_id / "measurement_events.parquet"
     if not events_path.is_file():
         raise APIError(ErrorCode.ARTIFACT_NOT_AVAILABLE, "measurement events not available")
     events = pd.read_parquet(events_path)
+    missing_identity_columns = [
+        column
+        for requested, column in (
+            (asset_id is not None, "ultrasound_asset_id"),
+            (frame_index is not None, "frame_index_raw"),
+        )
+        if requested and column not in events.columns
+    ]
+    if missing_identity_columns:
+        raise APIError(
+            ErrorCode.INTEGRITY_ERROR,
+            "requested identity filter cannot be applied to measurement events",
+            {
+                "missing_identity_columns": missing_identity_columns,
+                "recovery_action": "REBUILD_MEASUREMENT_EVENTS_FROM_CURRENT_INPUTS",
+            },
+        )
     # asset/frame scoping keeps the electrical context tied to the exact
     # ultrasound asset + frame being viewed (cross-asset context, not a
     # shared first-N preview)
@@ -357,8 +515,28 @@ def measurement_events(
     # column — join by measurement_event_id so the header never confuses it
     # with the raw electrical soc_dod. Ambiguous/unlabeled events stay null.
     label_source = "UNAVAILABLE"
-    labels_path = processed / "labels" / battery_id / experiment_id / "event_labels.parquet"
-    if labels_path.is_file():
+    labels_dir = processed / "labels" / battery_id / experiment_id
+    label_manifest_path = labels_dir / "label_manifest.json"
+    labels_path = labels_dir / "event_labels.parquet"
+    if label_manifest_path.exists() or labels_path.exists():
+        if not label_manifest_path.is_file() or not labels_path.is_file():
+            raise APIError(
+                ErrorCode.INTEGRITY_ERROR,
+                "Reference SOC label artifact is incomplete",
+                {
+                    "integrity_reasons": ["LABEL_MANIFEST_OR_EVENT_LABELS_MISSING"],
+                    "recovery_action": "REBUILD_LABELS_FROM_CURRENT_VERIFIED_INPUTS",
+                },
+            )
+        _assert_processed_artifact_integrity(
+            processed,
+            label_manifest_path,
+            battery_id=battery_id,
+            experiment_id=experiment_id,
+            required_outputs={"event_labels"},
+            required_inputs={"measurement_events", "records", "cycles", "steps"},
+            required_manifest_fields={"label_set_id"},
+        )
         lab = pd.read_parquet(
             labels_path, columns=["measurement_event_id", "soc_reference_percent"]
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -62,12 +63,113 @@ def generate_report_files(
     md_path.write_text(_render_markdown(report), encoding="utf-8")
     html_path = out_dir / "scientific_report.html"
     html_path.write_text(_render_html(report), encoding="utf-8")
+    manifest_path = out_dir / "scientific_report_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "scientific-report-integrity/1.0",
+                "report_id": report_id,
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "output_checksums": {
+                    path.name: _sha256_file(path)
+                    for path in (json_path, md_path, html_path)
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     return {
         "report_json": str(json_path),
         "report_md": str(md_path),
         "report_html": str(html_path),
+        "report_manifest": str(manifest_path),
     }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_report_outputs(
+    report_json_path: Path,
+    *,
+    battery_id: str | None = None,
+    experiment_id: str | None = None,
+    reports_root: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Verify a frozen report and its rendered copies; never repairs files."""
+    report_json_path = Path(report_json_path)
+    report_dir = report_json_path.parent
+    manifest_path = report_dir / "scientific_report_manifest.json"
+    if not manifest_path.is_file():
+        return "LEGACY", ["REPORT_OUTPUT_MANIFEST_MISSING"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_MANIFEST_INVALID"]
+    if not isinstance(manifest, dict):
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_MANIFEST_INVALID"]
+    expected_report_id = report_dir.name
+    if (
+        manifest.get("report_id") != expected_report_id
+        or (battery_id is not None and manifest.get("battery_id") != battery_id)
+        or (experiment_id is not None and manifest.get("experiment_id") != experiment_id)
+    ):
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_IDENTITY_MISMATCH"]
+    checksums = manifest.get("output_checksums")
+    required = {"scientific_report.json", "scientific_report.md", "scientific_report.html"}
+    if not isinstance(checksums, dict):
+        return "LEGACY", ["REPORT_OUTPUT_CHECKSUMS_MISSING"]
+    if set(checksums) != required:
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_CHECKSUM_SET_INVALID"]
+    reasons: list[str] = []
+    root = report_dir.resolve()
+    if reports_root is not None:
+        try:
+            relative_dir = root.relative_to(Path(reports_root).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_OUTSIDE_ROOT"]
+        if len(relative_dir.parts) != 1 or relative_dir.name != expected_report_id:
+            return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_PATH_IDENTITY_MISMATCH"]
+    try:
+        manifest_path.resolve(strict=True).relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_MANIFEST_OUTSIDE_ROOT"]
+    for name in sorted(required):
+        expected = checksums.get(name)
+        if (
+            not isinstance(expected, str)
+            or len(expected) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in expected)
+        ):
+            reasons.append(f"REPORT_OUTPUT_CHECKSUM_INVALID:{name}")
+            continue
+        path = report_dir / name
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+            if not resolved.is_file() or _sha256_file(resolved) != expected.lower():
+                reasons.append(f"REPORT_OUTPUT_CHECKSUM_MISMATCH:{name}")
+        except (OSError, RuntimeError, ValueError):
+            reasons.append(f"REPORT_OUTPUT_MISSING_OR_OUTSIDE:{name}")
+    if reasons:
+        return "INTEGRITY_BLOCKED", reasons
+    try:
+        report = json.loads(report_json_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_JSON_INVALID"]
+    if not isinstance(report, dict) or report.get("report_id") != expected_report_id:
+        return "INTEGRITY_BLOCKED", ["REPORT_OUTPUT_IDENTITY_MISMATCH"]
+    return "CURRENT", []
 
 
 def _render_markdown(report: dict[str, Any]) -> str:

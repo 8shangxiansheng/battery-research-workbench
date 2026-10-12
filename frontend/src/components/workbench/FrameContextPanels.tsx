@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { TriangleAlert } from "lucide-react";
 import { client, type PhysicalFeatureBlock } from "../../api/client";
+import { Link } from "react-router-dom";
 import { Badge } from "../ui/badge";
 import { LoadingState, ErrorState } from "./shared";
 import { numberText } from "../../lib/presentation";
@@ -24,6 +25,7 @@ export function PhysicalFeatureCards({ batteryId, experimentId, frameIndex, ultr
   if (phys.isLoading) return <LoadingState />;
   if (phys.error) return <ErrorState error={phys.error} retry={() => void phys.refetch()} />;
   const blocks = phys.data?.data.features ?? [];
+  const sourceIntegrityWarning = phys.data?.meta?.source_integrity_warning;
   const valueAt = (b: PhysicalFeatureBlock) => {
     if (frameIndex == null || !ultrasoundAssetId || !b.frame_locators) return null;
     const index = b.frame_locators.findIndex(
@@ -31,7 +33,11 @@ export function PhysicalFeatureCards({ batteryId, experimentId, frameIndex, ultr
     );
     return index >= 0 ? b.values[index] ?? null : null;
   };
-  return <div className="grid md:grid-cols-5 gap-3 mt-4" data-testid="physical-features" aria-label="物理特征（当前帧）">
+  return <div className="mt-4" data-testid="physical-features" aria-label="物理特征（当前帧）">
+    {sourceIntegrityWarning && <p role="status" className="notice mb-3 text-sm" data-testid="feature-lineage-warning">
+      {sourceIntegrityWarning} 请先 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/runs`}>重新解析并复核电学来源</Link>。
+    </p>}
+    <div className="grid md:grid-cols-5 gap-3">
     {blocks.map(b => {
       const v = valueAt(b);
       const blocked = v == null;
@@ -44,6 +50,7 @@ export function PhysicalFeatureCards({ batteryId, experimentId, frameIndex, ultr
         <p className="text-[10px] muted mt-2 truncate" title={b.method}>{b.gate_template_id}</p>
       </div>;
     })}
+    </div>
   </div>;
 }
 

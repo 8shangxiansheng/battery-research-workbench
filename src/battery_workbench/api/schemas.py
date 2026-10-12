@@ -97,6 +97,188 @@ class FeatureInfo(BaseModel):
     missing_reason: str | None = None
 
 
+class CorrelationAlignmentAssessment(BaseModel):
+    status: Literal["VALIDATED", "PROVISIONAL", "UNKNOWN"]
+    validated_sync: bool
+    association_scope: Literal["EXPLORATORY_ONLY"]
+    confirmatory_inference_allowed: Literal[False]
+    limitation: str
+
+
+class CycleCorrelationComponent(BaseModel):
+    coefficient: float | None
+    method: str
+    n_events: int | None = None
+    n_cycle_groups: int
+
+
+class CycleCorrelationDecomposition(BaseModel):
+    policy: str
+    status: str
+    interpretation: str
+    n_input_events: int
+    n_events: int
+    n_cycle_groups: int
+    n_batteries: int
+    declared_battery_group_count: int
+    physical_battery_count: int | None = None
+    battery_identity_status: Literal["NOT_ASSESSED"] = "NOT_ASSESSED"
+    group_count_semantics: Literal["DECLARED_BATTERY_ID"] = "DECLARED_BATTERY_ID"
+    missing_feature_count: int
+    missing_state_count: int
+    excluded_ineligible_count: int
+    within_cycle: CycleCorrelationComponent
+    between_cycle: CycleCorrelationComponent
+    limitations: list[str] = Field(default_factory=list)
+
+
+class DeclaredConditionCorrelation(BaseModel):
+    feature_code: str
+    policy: str
+    feature_variant: str
+    gate_id: str | None
+    condition_axis_id: str
+    condition_value: str
+    unit: str | None
+    declaration_status: Literal["OPERATOR_DECLARED"]
+    absolute_timebase_status: Literal["NOT_ASSESSED"]
+    synchronization_status: Literal["NOT_ASSESSED"]
+    method: Literal["pearson", "spearman"]
+    coefficient: float | None
+    n_input_events: int
+    n_valid_pairs: int
+    missing_feature_count: int
+    missing_state_count: int
+    excluded_ineligible_count: int
+    battery_count: int
+    group_count_semantics: Literal["DECLARED_BATTERY_ID"] = "DECLARED_BATTERY_ID"
+    battery_identity_status: Literal["NOT_ASSESSED"] = "NOT_ASSESSED"
+    physical_battery_count: int | None = None
+    cycle_count: int
+    segment_ids: list[str]
+    time_reference_asset_ids: list[str]
+    analysis_mode: Literal["EXPLORATORY"]
+    status: str
+    limitations: list[str]
+
+
+class DeclaredConditionAnalysis(BaseModel):
+    status: Literal["AVAILABLE", "NOT_CONFIGURED", "NO_SEGMENTS"]
+    declaration_status: Literal["OPERATOR_DECLARED", "NOT_CONFIGURED", "NOT_APPLICABLE"]
+    absolute_timebase_status: Literal["NOT_ASSESSED"]
+    synchronization_status: Literal["NOT_ASSESSED"]
+    segment_count: int
+    events_assessed: int
+    assignment_status_counts: dict[str, int]
+    results: list[DeclaredConditionCorrelation]
+    limitations: list[str]
+
+
+class CorrelationInferenceAssessment(BaseModel):
+    analysis_mode: Literal["EXPLORATORY"]
+    claim_scope: Literal["ASSOCIATION_ONLY"]
+    independent_unit: Literal["BATTERY"]
+    group_count_semantics: Literal["DECLARED_BATTERY_ID"]
+    group_identity_status: Literal["NOT_ASSESSED"]
+    physical_battery_count: int | None = None
+    correlation_results_included: bool
+    study_protocol_status: str
+    analysis_plan: dict[str, Any]
+    confidence_interval: dict[str, Any]
+    p_value: dict[str, Any]
+    multiple_comparison: dict[str, Any]
+    confounder_adjustment: dict[str, Any]
+
+
+class FeatureCorrelationResult(BaseModel):
+    battery_id: str | None = None
+    state_scope: str | None = Field(
+        default=None,
+        description=(
+            "Electrochemical phase slice: overall, charge, discharge, or rest; "
+            "not an experiment condition_id."
+        ),
+    )
+    analysis_id: str
+    feature_code: str
+    gate_id: str | None
+    feature_variant: str
+    state_variable: str
+    scope: str
+    method: str
+    coefficient: float | None
+    n_input: int
+    n_input_unit: str
+    n_valid: int
+    n_valid_unit: str
+    independent_group_count: int | None = None
+    independent_unit: str | None = None
+    group_identity_status: str = "NOT_ASSESSED"
+    distinct_state_count: int | None = None
+    missing_feature_count: int
+    missing_state_count: int
+    missing_count_unit: str
+    excluded_ineligible_count: int
+    excluded_ineligible_unit: str
+    analysis_mode: str
+    ml_safe_selection: bool
+    limitations: list[str] = Field(default_factory=list)
+    status: str
+
+
+class FeatureCorrelationsData(BaseModel):
+    feature_code: str
+    n_events: int
+    soc: list[FeatureCorrelationResult]
+    soc_battery_decomposition: dict[str, Any]
+    soc_diagnostic_scatter: dict[str, Any]
+    soc_by_battery_condition: list[FeatureCorrelationResult] = Field(
+        description=(
+            "Backward-compatible property name. Rows are Battery × "
+            "overall/charge/discharge/rest slices, not experiment condition slices."
+        ),
+    )
+    soc_by_cycle: list[FeatureCorrelationResult]
+    soc_cycle_decomposition: CycleCorrelationDecomposition
+    alignment_assessment: CorrelationAlignmentAssessment
+    inference_assessment: CorrelationInferenceAssessment
+    temperature: FeatureCorrelationResult
+    soh: FeatureCorrelationResult
+    soh_cycle_summary: list[dict[str, Any]]
+    declared_condition_analysis: DeclaredConditionAnalysis
+
+
+class CorrelationPolicyVersions(BaseModel):
+    feature_state_correlation: str
+    feature_state_join: str
+    battery_decomposition: str
+    cycle_within_between_correlation: str
+    condition_stratification: str
+    battery_scatter_diagnostic: str
+
+
+class FeatureCorrelationAnalysisScope(BaseModel):
+    diagnostic_point_limit: int = Field(ge=1)
+    analyzed_event_rows: int = Field(ge=0)
+    diagnostic_points_returned: int = Field(ge=0)
+    join_key: Literal["measurement_event_id"]
+    coefficient_eligibility: Literal["analysis_eligible=true"]
+    analysis_mode: Literal["EXPLORATORY"]
+
+
+class FeatureCorrelationsMeta(BaseModel):
+    policy: str
+    policy_versions: CorrelationPolicyVersions
+    analysis_scope: FeatureCorrelationAnalysisScope
+    gate_calibration_id: str | None = None
+    note: str
+
+
+class FeatureCorrelationsEnvelope(BaseModel):
+    data: FeatureCorrelationsData
+    meta: FeatureCorrelationsMeta
+
+
 class LimitationInfo(BaseModel):
     code: str
     severity: str

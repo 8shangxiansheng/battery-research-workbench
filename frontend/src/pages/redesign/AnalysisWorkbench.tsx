@@ -13,9 +13,12 @@ import {
 import { FeatureLabelTablePreview, TARGET_LABELS } from "../../components/workbench/FeatureLabelTable";
 import { FeatureRankingTable } from "../../components/workbench/FeatureTargetWorkbench";
 import { DatasetBuildButtons } from "../../components/workbench/DatasetXYPreview";
+import { TargetSourcePreflight } from "../../components/workbench/TargetSourcePreflight";
+import { TemperatureChannelSelectionPanel } from "../../components/workbench/TemperatureChannelSelectionPanel";
 import { useDraftGuard } from "../../hooks/useDraftGuard";
 import { useInvalidateWorkflow, useWorkflowContext } from "../../hooks/useWorkflowContext";
 import { deriveAnalysisDraft } from "../../lib/workflow-draft";
+import { startGroupedSplitRun } from "../../lib/grouped-split";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 
@@ -96,9 +99,15 @@ export function AnalysisWorkbench() {
     enabled: mode === "TRAIN_ONLY_ML_SAFE",
   });
   const canonicalDatasetId = (experimentQ.data?.data.latest_canonical_artifacts as { dataset_id?: string } | undefined)?.dataset_id ?? null;
+  const committedDatasetFeatures = ((workflow.data?.steps.DATASET?.committed as { selected_features?: string[] } | undefined)?.selected_features ?? []);
+  const splitFeatures = features.length ? features : committedDatasetFeatures;
   const createSplitMut = useMutation({
-    mutationFn: () => client.createSplit({ battery_id: batteryId, experiment_id: experimentId, dataset_id: canonicalDatasetId! }),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] }); },
+    mutationFn: () => startGroupedSplitRun(batteryId, experimentId, splitFeatures),
+    onSuccess: () => {
+      invalidateWorkflow(batteryId, experimentId);
+      void queryClient.invalidateQueries({ queryKey: ["splits", batteryId, experimentId] });
+      void queryClient.invalidateQueries({ queryKey: ["experiment", batteryId, experimentId] });
+    },
   });
 
   // ML-safe split/fold choice: user selection wins, then the matching
@@ -182,6 +191,7 @@ export function AnalysisWorkbench() {
       <h2 className="text-xl">Synchronization & Alignment / 同步对齐</h2>
       <p className="muted text-sm mt-1">所有映射来自 canonical MeasurementEvent；禁止 gate/cycle/timestamp 重新匹配。</p>
       <AlignmentSummary batteryId={batteryId} experimentId={experimentId} targetId={targetId} />
+      <TemperatureChannelSelectionPanel batteryId={batteryId} experimentId={experimentId} />
       <AlignmentSamplesPanel batteryId={batteryId} experimentId={experimentId} />
       <AlignmentExclusionsPanel batteryId={batteryId} experimentId={experimentId} />
       <div className="mt-5 flex gap-3">
@@ -237,11 +247,12 @@ export function AnalysisWorkbench() {
       {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && !readyAnalysis && <p className="notice text-sm mt-3" role="status">{effectiveSplitId
         ? "未找到与该特征集完全匹配的已物化分析，但 grouped split 可用 — 下方 ranking/preview 直接按所选 fold 的 TRAIN 子集计算（ML-safe）。"
         : <>ML-safe selection requires grouped split first. / 模型安全特征筛选需要先建立分组划分。{canonicalDatasetId
-          ? <> 可直接为当前 canonical 数据集创建（按 cycle 分组）：{" "}<Button variant="outline" size="sm" data-testid="create-split-btn"
-              disabled={createSplitMut.isPending}
-              onClick={() => createSplitMut.mutate()}>{createSplitMut.isPending ? "创建中…" : "创建分组划分 / Create grouped split"}</Button>
-              {createSplitMut.isSuccess && <span className="ml-2">已就绪（{String((createSplitMut.data as { data?: { split_id?: string } })?.data?.split_id ?? "").slice(0, 20)}…）</span>}
-              {createSplitMut.error && <span className="ml-2 text-[#9b782e]">创建失败，可到 Advanced 页处理。</span>}
+          ? <> 可直接为当前选择运行按 cycle 分组的正式流水线：{" "}<Button variant="outline" size="sm" data-testid="create-split-btn"
+              disabled={createSplitMut.isPending || !splitFeatures.length}
+              onClick={() => createSplitMut.mutate()}>{createSplitMut.isPending ? "运行中…" : "运行分组划分 / Build grouped split"}</Button>
+              {!splitFeatures.length && <span className="ml-2 text-xs muted">先选择候选特征。</span>}
+              {createSplitMut.isSuccess && <span className="ml-2" role="status">分组划分已物化（{String(createSplitMut.data.readinessStatus ?? "SUCCEEDED")}）；工作流状态正在刷新。</span>}
+              {createSplitMut.error && <span className="ml-2 text-[#9b782e]" role="alert">分组划分未完成：{(createSplitMut.error as Error).message} <Link className="underline" to="/runs">查看运行</Link></span>}
             </>
           : <> 请到 <Link className="underline" to={`/experiments/${batteryId}/${experimentId}/advanced/dataset-split`}>Advanced → Dataset Split</Link>。</>}</>}</p>}
       {mode === "TRAIN_ONLY_ML_SAFE" && mlSafeTargetOk && effectiveSplitId && <div className="mt-3 flex flex-wrap gap-2 items-center" data-testid="fold-picker" role="group" aria-label="选择 split 与 fold">
@@ -271,6 +282,7 @@ export function AnalysisWorkbench() {
     {step === "dataset" && <section data-testid="step-dataset">
       <h2 className="text-xl">Dataset / 数据集</h2>
       <p className="muted text-sm mt-1">Predictors (X) = 所选超声特征（{features.length}）；Target (y) = {targetId ? TARGET_LABELS[targetId] : "—"}。先预览 X/y，再选择构建方式。</p>
+      <TargetSourcePreflight batteryId={batteryId} experimentId={experimentId} target={target} features={features} />
       {preview.isLoading && <LoadingState />}
       {preview.error && <ErrorState error={preview.error} retry={() => void preview.refetch()} />}
       {summary && <div className="notice mt-4" data-testid="dataset-xy-inline">

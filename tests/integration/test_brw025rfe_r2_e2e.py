@@ -98,11 +98,25 @@ class TestFeatureLabelE2E:
         assert all("never auto-nearest" in a["note"] for a in amb)
 
     def test_g_held_out_backend_redaction_train_visible(self, client: TestClient) -> None:
+        split_status = client.app.state.workbench_service.get_artifact(SPLIT)
+        if split_status.get("availability") != "AVAILABLE":
+            pytest.skip(
+                "held-out redaction requires a current Dataset/Split chain; "
+                "the isolated backend redaction contract is tested separately"
+            )
         for fold, held_first in (("fold1", True), ("fold2", False)):
-            d = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",
-                            json={"target_id": "reference_soc_percent", "features": ["SWA"],
-                                  "limit": 500, "split_id": SPLIT, "fold_index": fold}
-                            ).json()["data"]
+            response = client.post(
+                f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+                json={
+                    "target_id": "reference_soc_percent",
+                    "features": ["SWA"],
+                    "limit": 500,
+                    "split_id": SPLIT,
+                    "fold_index": fold,
+                },
+            )
+            assert response.status_code == 200, response.text
+            d = response.json()["data"]
             held = [x for x in d["rows"] if x.get("split_role") == "HELD_OUT"]
             train = [x for x in d["rows"] if x.get("split_role") == "TRAIN"]
             if held:
@@ -110,6 +124,29 @@ class TestFeatureLabelE2E:
             if train:
                 assert all(x["target"] is not None and not x["y_redacted"] for x in train)
             assert d["redaction_summary"]["fold"] == fold
+
+    def test_g_stale_split_blocks_preview_with_recovery_action(self, client: TestClient) -> None:
+        split_status = client.app.state.workbench_service.get_artifact(SPLIT)
+        if split_status.get("availability") == "AVAILABLE":
+            pytest.skip("the real Split is current; stale-path behavior is covered by unit tests")
+
+        response = client.post(
+            f"/api/v1/experiments/{B}/{E}/feature-label-preview",
+            json={
+                "target_id": "reference_soc_percent",
+                "features": ["SWA"],
+                "limit": 5,
+                "split_id": SPLIT,
+                "fold_index": "fold1",
+            },
+        )
+
+        assert response.status_code == 409, response.text
+        error = response.json()["error"]
+        assert error["code"] == "SCIENTIFIC_READINESS_BLOCKED"
+        assert error["details"]["status"] == "STALE_SOURCE"
+        assert "LABEL_SET_MANIFEST_PROVENANCE_MISSING" in str(error["details"])
+        assert error["details"].get("recovery_action") == "BUILD_DATASET"
 
     def test_h_tof_provenance_brw017r2_brw018r2(self, client: TestClient) -> None:
         d = client.post(f"/api/v1/experiments/{B}/{E}/feature-label-preview",

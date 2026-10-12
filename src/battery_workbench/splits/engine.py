@@ -22,8 +22,28 @@ def _group_counts(frame: pd.DataFrame, group_column: str) -> dict[str, int]:
         raise ValueError(f"group column {group_column!r} missing from dataset frame")
     if frame[group_column].isna().any():
         raise ValueError("null group id in dataset — every row must belong to a group")
+    if any(
+        not isinstance(value, str) or not value or value != value.strip()
+        for value in frame[group_column]
+    ):
+        raise ValueError("group ids must be non-empty trimmed strings")
     counts = frame.groupby(group_column).size()
     return {str(k): int(v) for k, v in counts.items()}
+
+
+def _validate_measurement_event_ids(frame: pd.DataFrame) -> None:
+    if "measurement_event_id" not in frame.columns:
+        raise ValueError("measurement_event_id missing from dataset frame")
+    event_ids = frame["measurement_event_id"]
+    if event_ids.isna().any():
+        raise ValueError("null measurement_event_id in dataset frame")
+    if any(
+        not isinstance(value, str) or not value or value != value.strip()
+        for value in event_ids
+    ):
+        raise ValueError("measurement_event_id values must be non-empty trimmed strings")
+    if not event_ids.is_unique:
+        raise ValueError("measurement_event_id values must be unique in dataset frame")
 
 
 def _legal_options(group_count: int) -> list[dict[str, Any]]:
@@ -57,6 +77,7 @@ def feasibility_check(
     require_roles: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Raise SplitInfeasibleError (with legal options) when impossible."""
+    _validate_measurement_event_ids(frame)
     counts = _group_counts(frame, spec.group_column)
     group_count = len(counts)
     roles = tuple(require_roles or spec.require_roles)

@@ -34,10 +34,126 @@ def _sha256(path: Path) -> str:
     if not path.exists():
         return ""
     digest = hashlib.sha256()
+    if path.is_dir():
+        for child in sorted(path.rglob("*")):
+            if child.is_symlink():
+                raise ValueError(f"artifact directory contains a symlink: {child}")
+            if not child.is_file():
+                continue
+            digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            with child.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return digest.hexdigest()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _resolve_processed_path(root: Path, reference: Any) -> Path | None:
+    if not isinstance(reference, str) or not reference.strip():
+        return None
+    root = Path(root).resolve()
+    candidate = Path(reference)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            normalized = reference.replace("\\", "/").split("/")
+            marker = next(
+                (
+                    index
+                    for index in range(len(normalized) - 1)
+                    if normalized[index : index + 2] == ["data", "processed"]
+                ),
+                None,
+            )
+            if marker is None:
+                return None
+            parts = normalized[marker + 2 :]
+    else:
+        parts = candidate.parts
+        if parts[:2] == ("data", "processed"):
+            parts = parts[2:]
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+    resolved = root.joinpath(*parts).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def verify_feature_set_artifact(
+    processed_root: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    battery_id: str,
+    experiment_id: str,
+) -> list[str]:
+    """Verify feature outputs and their slice/waveform inputs before cache reuse."""
+    from battery_workbench.provenance.processed_manifest import (
+        verify_output_checksums_in_directory,
+    )
+
+    root = Path(processed_root).resolve()
+    manifest_file = Path(manifest_path)
+    try:
+        directory = manifest_file.resolve(strict=True).parent
+        directory.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return ["FEATURE_SET_MANIFEST_INVALID"]
+    reasons: list[str] = []
+    if manifest.get("battery_id") != battery_id:
+        reasons.append("FEATURE_SET_BATTERY_ID_MISMATCH")
+    if manifest.get("experiment_id") != experiment_id:
+        reasons.append("FEATURE_SET_EXPERIMENT_ID_MISMATCH")
+    if manifest.get("feature_set_id") != directory.name:
+        reasons.append("FEATURE_SET_ID_MISMATCH")
+    if manifest.get("analysis_slice_id") != directory.parent.name:
+        reasons.append("FEATURE_SET_SLICE_ID_MISMATCH")
+    reasons.extend(
+        verify_output_checksums_in_directory(
+            root,
+            directory,
+            manifest.get("output_checksums"),
+            {
+                "features": "ultrasound_features.parquet",
+                "definitions": "feature_definitions.json",
+            },
+        )
+    )
+    inputs = (
+        ("analysis_slice_path", "analysis_slice_checksum", "FEATURE_SET_SLICE"),
+        ("waveform_store_path", "waveform_store_checksum", "FEATURE_SET_WAVEFORM"),
+    )
+    for path_key, checksum_key, reason_prefix in inputs:
+        reference = manifest.get(path_key)
+        expected = manifest.get(checksum_key)
+        if not isinstance(expected, str) or len(expected) != 64:
+            reasons.append(f"{reason_prefix}_CHECKSUM_MISSING")
+            continue
+        path = _resolve_processed_path(root, reference)
+        if path is None:
+            reasons.append(f"{reason_prefix}_PATH_INVALID")
+            continue
+        if not path.exists() or path.is_symlink() or not (path.is_dir() or path.is_file()):
+            reasons.append(f"{reason_prefix}_MISSING")
+            continue
+        try:
+            actual = _sha256(path)
+        except (OSError, ValueError):
+            reasons.append(f"{reason_prefix}_UNREADABLE")
+            continue
+        if actual.lower() != expected.lower():
+            reasons.append(f"{reason_prefix}_CHECKSUM_MISMATCH")
+    return list(dict.fromkeys(reasons))
 
 
 def _json_scalar(value: Any) -> Any:
@@ -121,6 +237,8 @@ def write_feature_payload(
 
     manifest = FeatureSetManifest(
         feature_set_id=feature_set_id,
+        battery_id=battery_id,
+        experiment_id=experiment_id,
         analysis_slice_id=analysis_slice_id,
         analysis_slice_path=str(analysis_slice_path),
         analysis_slice_checksum=slice_checksum,
@@ -140,13 +258,11 @@ def write_feature_payload(
             "definitions": str(out_dir / "feature_definitions.json"),
             "manifest": str(out_dir / "feature_set_manifest.json"),
         },
-        output_checksums={"features": _sha256(features_path)},
+        output_checksums={},
         feature_missing_counts=missing,
         warnings=warnings or [],
         limitations=[],
     )
-    manifest_path = out_dir / "feature_set_manifest.json"
-    _write_json(manifest_path, manifest.model_dump(mode="json"))
     defs_path = out_dir / "feature_definitions.json"
     _write_json(
         defs_path,
@@ -155,6 +271,12 @@ def write_feature_payload(
             "features": FEATURE_DEFINITIONS,
         },
     )
+    manifest.output_checksums = {
+        "features": _sha256(features_path),
+        "definitions": _sha256(defs_path),
+    }
+    manifest_path = out_dir / "feature_set_manifest.json"
+    _write_json(manifest_path, manifest.model_dump(mode="json"))
 
     report = UltrasoundFeatureReport(
         feature_set_id=feature_set_id,

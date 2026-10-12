@@ -120,6 +120,23 @@ def test_t08_experiment_record(tmp_path: Path) -> None:
     assert len(rec.limitations) == 2
 
 
+def test_report_identity_changes_when_registered_plan_changes() -> None:
+    common = {
+        "target": "soc_reference_percent",
+        "battery_id": "CELL_A",
+        "experiment_id": "EXP_1",
+        "source_artifact_ids": ["DS::1"],
+        "sections": ["Feature–Label Analysis"],
+    }
+
+    without_plan = ReportSpec(**common)
+    with_plan = ReportSpec(**common, analysis_plan_sha256="a" * 64)
+    changed_plan = ReportSpec(**common, analysis_plan_sha256="b" * 64)
+
+    assert without_plan.report_id != with_plan.report_id
+    assert with_plan.report_id != changed_plan.report_id
+
+
 # --- T10: ResultRecord ---
 
 
@@ -164,6 +181,84 @@ def test_t11_limitation_registry() -> None:
     severities = {l["code"]: l["severity"] for l in DEFAULT_LIMITATIONS}
     assert severities["ONE_BATTERY_ONLY"] == "BLOCKING_FOR_CLAIM"
     assert severities["PROVISIONAL_TIMEBASE"] in {"INFO", "LIMITATION"}
+
+
+def test_experiment_limitation_registry_blocks_legacy_tof_manifest(tmp_path: Path) -> None:
+    import pandas as pd
+
+    from battery_workbench.reporting.collector import collect_limitation_registry
+
+    root = tmp_path / "processed"
+    battery, experiment = "CELL_MULTI", "EXP_MULTI"
+    dataset_id, split_id = "DS::multi", "SPLIT::multi"
+    dataset_dir = root / "datasets" / battery / experiment / "SOC" / dataset_id
+    split_dir = root / "splits" / battery / experiment / dataset_id / split_id
+    model_dir = root / "models" / battery / experiment / dataset_id / split_id
+    for directory in (dataset_dir, split_dir, model_dir):
+        directory.mkdir(parents=True)
+    (dataset_dir / "dataset_manifest.json").write_text(
+        json.dumps({
+            "dataset_id": dataset_id,
+            "battery_group_count": 4,
+            "cycle_group_count": 6,
+            "soc_label_temporality": "INDEPENDENT_REFERENCE",
+        }),
+        encoding="utf-8",
+    )
+    soh_dir = root / "datasets" / battery / experiment / "SOH_CAPACITY" / "DS::soh"
+    soh_dir.mkdir(parents=True)
+    (soh_dir / "dataset_manifest.json").write_text(
+        json.dumps({
+            "dataset_status": "NOT_READY_FOR_MODEL_EVALUATION",
+            "independent_soh_state_count": 2,
+        }),
+        encoding="utf-8",
+    )
+    (split_dir / "split_manifest.json").write_text(
+        json.dumps({
+            "split_id": split_id,
+            "evaluation_scope": "CROSS_BATTERY_LOBO",
+            "role_semantics": {"independent_validation_groups": 1},
+        }),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {"strategy": "RIDGE", "fold_index": 1, "selected_features": "x"},
+            {"strategy": "RIDGE", "fold_index": 2, "selected_features": "x"},
+        ]
+    ).to_parquet(model_dir / "model_comparison.parquet", index=False)
+    physical = root / "features_physical" / battery / experiment
+    physical.mkdir(parents=True)
+    (physical / "canonical_tof_manifest.json").write_text(
+        json.dumps({"sampling_rate_verified": True, "canonical_tof_valid": 12}),
+        encoding="utf-8",
+    )
+    (physical / "tof_activation_manifest.json").write_text(
+        json.dumps({"tof_status": "BLOCKED", "tof_block_reason": "NONPHYSICAL_FLIGHT_TIME"}),
+        encoding="utf-8",
+    )
+    sync_dir = root / "synchronization" / battery / experiment
+    sync_dir.mkdir(parents=True)
+    (sync_dir / "synchronization_manifest.json").write_text(
+        json.dumps({"validated_sync": True}), encoding="utf-8"
+    )
+
+    limitations = collect_limitation_registry(root, battery, experiment)
+    codes = {item["code"] for item in limitations}
+
+    assert "ONE_BATTERY_ONLY" not in codes
+    assert "TWO_CYCLES_ONLY" not in codes
+    assert "PROVISIONAL_TIMEBASE" not in codes
+    assert "FEATURE_SELECTION_STABILITY_LIMITED" not in codes
+    assert "TOF_UNAVAILABLE_OR_BLOCKED" in codes
+    assert "ABSOLUTE_ARRIVAL_TOF_BLOCKED" in codes
+    assert "NO_CROSS_BATTERY_EVALUATION" in codes
+    assert "NO_HYPERPARAMETER_TUNING" in codes
+    soh_limitation = next(
+        item for item in limitations if item["code"] == "SOH_INDEPENDENT_STATES_TOO_FEW"
+    )
+    assert "2 independent SOH state groups" in soh_limitation["description"]
 
 
 # --- T12: lineage snapshot ---
@@ -277,6 +372,85 @@ def test_t18_json_report(tmp_path: Path) -> None:
     assert Path(paths["report_json"]).exists()
     data = json.loads(Path(paths["report_json"]).read_text())
     assert "report_id" in data
+
+
+def test_exploratory_inference_assessment_survives_json_and_markdown_export(
+    tmp_path: Path,
+) -> None:
+    from battery_workbench.features.state_correlation import exploratory_inference_assessment
+    from battery_workbench.reporting.report import generate_report_files
+
+    assessment = exploratory_inference_assessment(
+        correlation_results_included=False,
+        study_protocol_assessment={
+            "status": "INCOMPLETE",
+            "study_id": "STUDY_A",
+            "plan_sha256": "a" * 64,
+            "matching_study_ids": ["STUDY_A"],
+            "invalid_plan_file_count": 0,
+            "unresolved_fields": ["primary_analysis.endpoint.unit"],
+        },
+    )
+    paths = generate_report_files(
+        report={
+            "report_id": "REPORT::inference",
+            "inference_assessment": assessment,
+            "sections": {"Feature–Label Analysis": {"inference_assessment": assessment}},
+        },
+        battery_id="CELL_001",
+        experiment_id="EXP_001",
+        report_id="REPORT::inference",
+        output_root=tmp_path,
+    )
+
+    json_report = json.loads(Path(paths["report_json"]).read_text(encoding="utf-8"))
+    markdown_report = Path(paths["report_md"]).read_text(encoding="utf-8")
+    assert json_report["inference_assessment"]["multiple_comparison"]["status"] == "NOT_ASSESSED"
+    assert json_report["inference_assessment"]["correlation_results_included"] is False
+    assert json_report["inference_assessment"]["analysis_plan"]["status"] == "INCOMPLETE"
+    assert json_report["inference_assessment"]["analysis_plan"]["confirmatory_inference_enabled"] is False
+    assert json_report["sections"]["Feature–Label Analysis"]["inference_assessment"] == assessment
+    assert "NO_PREREGISTERED_GROUPED_RESAMPLING_PLAN" in markdown_report
+    assert "NO_PREDECLARED_TEST_FAMILY" in markdown_report
+
+
+def test_self_declared_approval_boundary_survives_report_exports(tmp_path: Path) -> None:
+    from battery_workbench.features.state_correlation import exploratory_inference_assessment
+    from battery_workbench.reporting.report import generate_report_files
+
+    assessment = exploratory_inference_assessment(
+        correlation_results_included=False,
+        study_protocol_assessment={
+            "status": "DECLARATION_COMPLETE_REQUIRES_EVIDENCE_REVIEW",
+            "study_id": "STUDY_A",
+            "plan_sha256": "b" * 64,
+            "matching_study_ids": ["STUDY_A"],
+            "invalid_plan_file_count": 0,
+            "unresolved_fields": [],
+            "approval_identity_status": "SELF_DECLARED_NOT_AUTHENTICATED",
+            "approval_evidence_status": "NOT_VERIFIED",
+        },
+    )
+    paths = generate_report_files(
+        report={
+            "report_id": "REPORT::approval-boundary",
+            "inference_assessment": assessment,
+            "sections": {"Feature–Label Analysis": {"inference_assessment": assessment}},
+        },
+        battery_id="CELL_A",
+        experiment_id="EXP_1",
+        report_id="REPORT::approval-boundary",
+        output_root=tmp_path,
+    )
+
+    json_report = json.loads(Path(paths["report_json"]).read_text(encoding="utf-8"))
+    markdown_report = Path(paths["report_md"]).read_text(encoding="utf-8")
+    frozen_assessment = json_report["inference_assessment"]["analysis_plan"]
+    assert frozen_assessment["approval_identity_status"] == "SELF_DECLARED_NOT_AUTHENTICATED"
+    assert frozen_assessment["approval_evidence_status"] == "NOT_VERIFIED"
+    assert frozen_assessment["confirmatory_inference_enabled"] is False
+    assert "SELF_DECLARED_NOT_AUTHENTICATED" in markdown_report
+    assert "NOT_VERIFIED" in markdown_report
 
 
 def test_t19_markdown_report(tmp_path: Path) -> None:

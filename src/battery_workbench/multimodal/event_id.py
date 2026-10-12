@@ -7,6 +7,39 @@ result, the output row ordinal, and any candidate selection.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+
+class MeasurementEventIdentityError(ValueError):
+    """A canonical event-key column is malformed or non-unique."""
+
+    def __init__(self, reason_code: str, artifact_name: str) -> None:
+        self.reason_code = reason_code
+        self.artifact_name = artifact_name
+        super().__init__(
+            f"{artifact_name} measurement_event_id is invalid: {reason_code}"
+        )
+
+
+def validate_measurement_event_ids(
+    values: Iterable[object], *, artifact_name: str
+) -> None:
+    """Require event IDs to be non-empty, trimmed strings and unique."""
+    event_ids = list(values)
+    if any(not isinstance(value, str) for value in event_ids):
+        raise MeasurementEventIdentityError(
+            "MEASUREMENT_EVENT_ID_INVALID", artifact_name
+        )
+    string_ids = [value for value in event_ids if isinstance(value, str)]
+    if any(not value or value.strip() != value for value in string_ids):
+        raise MeasurementEventIdentityError(
+            "MEASUREMENT_EVENT_ID_INVALID", artifact_name
+        )
+    if len(set(string_ids)) != len(string_ids):
+        raise MeasurementEventIdentityError(
+            "MEASUREMENT_EVENT_ID_DUPLICATE", artifact_name
+        )
+
 
 def build_measurement_event_id(
     battery_id: str,

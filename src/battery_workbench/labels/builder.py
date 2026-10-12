@@ -30,6 +30,12 @@ from battery_workbench.labels.validation import (
     validate_no_silent_clip,
     validate_no_ultrasound_features,
 )
+from battery_workbench.multimodal.electrical_index import (
+    LocatorError,
+    build_electrical_index,
+    normalize_locator,
+)
+from battery_workbench.multimodal.event_id import validate_measurement_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +55,73 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_source_cycle_identity(
+    cycles: pd.DataFrame,
+    steps: pd.DataFrame,
+    *,
+    events: pd.DataFrame | None = None,
+    records: pd.DataFrame | None = None,
+) -> None:
+    """Reject raw Cycle IDs reused by multiple source assets.
+
+    Cycle/Step numbers are source-local. Until an explicit cross-asset mapping
+    exists, aggregating the same raw cycle number across assets is ambiguous.
+    """
+    frames = [frame for frame in (events, records, cycles, steps) if frame is not None]
+    source_assets: set[str] = set()
+    for frame in frames:
+        if "electrical_asset_id" not in frame.columns:
+            continue
+        source_assets.update(
+            str(value).strip()
+            for value in frame["electrical_asset_id"].dropna().tolist()
+            if str(value).strip()
+        )
+    if len(source_assets) > 1:
+        for name, frame in (("cycles", cycles), ("steps", steps)):
+            if "electrical_asset_id" not in frame.columns:
+                raise ValueError(
+                    "electrical_asset_id is required for cycle identity when multiple "
+                    f"electrical assets are present ({name})"
+                )
+            has_cycle = frame.get("cycle_index_raw", pd.Series(index=frame.index)).notna()
+            asset = frame["electrical_asset_id"]
+            missing_asset = asset.isna() | asset.astype(str).str.strip().eq("")
+            if (has_cycle & missing_asset).any():
+                raise ValueError(
+                    "electrical_asset_id is required for every source cycle identity "
+                    f"when multiple electrical assets are present ({name})"
+                )
+
+    conflicts: set[tuple[str, str, str]] = set()
+    for frame in (cycles, steps):
+        identity_columns = {
+            "battery_id",
+            "experiment_id",
+            "electrical_asset_id",
+            "cycle_index_raw",
+        }
+        if not identity_columns.issubset(frame.columns):
+            continue
+        scoped = frame.dropna(
+            subset=["battery_id", "experiment_id", "electrical_asset_id", "cycle_index_raw"]
+        )
+        asset_counts = scoped.groupby(
+            ["battery_id", "experiment_id", "cycle_index_raw"], dropna=False
+        )["electrical_asset_id"].nunique()
+        for battery_id, experiment_id, cycle in asset_counts[asset_counts > 1].index:
+            conflicts.add((str(battery_id), str(experiment_id), str(cycle)))
+    if conflicts:
+        examples = ", ".join(
+            f"{battery}/{experiment}/cycle {cycle}"
+            for battery, experiment, cycle in sorted(conflicts)[:5]
+        )
+        raise ValueError(
+            "ambiguous cycle identity across electrical assets; an explicit "
+            f"cross-asset cycle mapping is required before label generation ({examples})"
+        )
 
 
 def _cycle_complete(steps: pd.DataFrame) -> dict[tuple, bool]:
@@ -72,6 +145,204 @@ def _charge_offsets(steps: pd.DataFrame) -> dict[tuple, float]:
     return offsets
 
 
+def _validate_event_electrical_values(events: pd.DataFrame, records: pd.DataFrame) -> None:
+    """Require selected Event electrical values to match their exact source record."""
+    required_event_fields = {
+        "match_status",
+        "electrical_asset_id",
+        "electrical_record_locator",
+    }
+    if not required_event_fields.issubset(events.columns):
+        carries_locator = (
+            "electrical_record_locator" in events.columns
+            and events["electrical_record_locator"].notna().any()
+        )
+        claims_unique_match = (
+            "match_status" in events.columns and events["match_status"].eq("MATCHED_UNIQUE").any()
+        )
+        if carries_locator or claims_unique_match:
+            raise ValueError("electrical identity mismatch: selected record contract is incomplete")
+        return
+    if records.empty:
+        raise ValueError("electrical records are empty for selected MeasurementEvents")
+    try:
+        record_index = build_electrical_index(
+            records, locator_col="source_row_index", asset_col="electrical_asset_id"
+        )
+    except LocatorError as exc:
+        raise ValueError(f"electrical records identity is invalid: {exc}") from exc
+    field_pairs = {
+        "cycle_index_raw": "cycle_index_raw",
+        "step_index_raw": "step_index_raw",
+        "step_type": "step_type_raw",
+        "voltage_v": "voltage_v",
+        "current_a": "current_a",
+        "capacity_ah": "capacity_ah",
+        "charge_capacity_ah": "charge_capacity_ah",
+        "discharge_capacity_ah": "discharge_capacity_ah",
+        "energy_wh": "energy_wh",
+        "power_w": "power_w",
+        "soc_dod_percent": "soc_dod_percent",
+        "contact_resistance_mohm": "contact_resistance_mohm",
+        "dq_dv_raw": "dqdv_mah_per_v",
+    }
+    missing_source_columns = sorted(
+        {
+            record_column
+            for event_column, record_column in field_pairs.items()
+            if event_column in events.columns
+            and record_column not in records.columns
+            and events.loc[events["match_status"].eq("MATCHED_UNIQUE"), event_column].notna().any()
+        }
+    )
+    if missing_source_columns and events["match_status"].eq("MATCHED_UNIQUE").any():
+        raise ValueError(
+            "electrical identity mismatch: records are missing source value columns: "
+            + ", ".join(missing_source_columns)
+        )
+    available_pairs = {
+        event_column: record_column
+        for event_column, record_column in field_pairs.items()
+        if event_column in events.columns and record_column in records.columns
+    }
+    numeric_pairs = set(available_pairs) - {"step_type"}
+    for _, event in events.iterrows():
+        locator = event.get("electrical_record_locator")
+        asset_id = event.get("electrical_asset_id")
+        matched = event.get("match_status") == "MATCHED_UNIQUE"
+        has_locator = locator is not None and pd.notna(locator) and str(locator).strip() != ""
+        if not matched:
+            continue
+        if not has_locator:
+            raise ValueError("electrical identity mismatch: MATCHED_UNIQUE event has no locator")
+        try:
+            key = (str(asset_id).strip(), normalize_locator(locator))
+        except LocatorError as exc:
+            raise ValueError(
+                f"electrical identity mismatch: invalid selected locator: {exc}"
+            ) from exc
+        record = record_index.get(key)
+        if record is None:
+            raise ValueError(f"electrical identity mismatch: selected record not found for {key}")
+        for event_column, record_column in available_pairs.items():
+            event_value = event.get(event_column)
+            record_value = record.get(record_column)
+            if pd.isna(event_value) and pd.isna(record_value):
+                continue
+            if event_column in numeric_pairs:
+                try:
+                    equal = bool(
+                        abs(float(event_value) - float(record_value))
+                        <= 1e-12 * max(1.0, abs(float(record_value)))
+                    )
+                except (TypeError, ValueError):
+                    equal = False
+            else:
+                equal = str(event_value) == str(record_value)
+            if not equal:
+                raise ValueError(
+                    "electrical value mismatch for selected record "
+                    f"{key}: {event_column} differs from {record_column}"
+                )
+
+
+def _validate_non_unique_events_have_no_locator(events: pd.DataFrame) -> None:
+    """Reject selected locators on non-unique events before loading other artifacts."""
+    required = {"match_status", "electrical_record_locator"}
+    if not required.issubset(events.columns):
+        return
+    selected = events["electrical_record_locator"].notna() & events[
+        "electrical_record_locator"
+    ].astype(str).str.strip().ne("")
+    invalid = selected & events["match_status"].ne("MATCHED_UNIQUE")
+    if invalid.any():
+        raise ValueError("electrical identity mismatch: non-unique event carries a locator")
+
+
+def _validate_event_locator_contract(events: pd.DataFrame) -> None:
+    """Require a complete composite identity for every declared unique match."""
+    if "match_status" not in events.columns:
+        if (
+            "electrical_record_locator" in events.columns
+            and events["electrical_record_locator"].notna().any()
+        ):
+            raise ValueError("electrical identity mismatch: selected record contract is incomplete")
+        return
+    unique = events["match_status"].eq("MATCHED_UNIQUE")
+    if not unique.any():
+        return
+    required = {"electrical_asset_id", "electrical_record_locator"}
+    if not required.issubset(events.columns):
+        raise ValueError("electrical identity mismatch: selected record contract is incomplete")
+    locator = events["electrical_record_locator"]
+    asset = events["electrical_asset_id"]
+    invalid = unique & (
+        locator.isna()
+        | locator.astype(str).str.strip().eq("")
+        | asset.isna()
+        | asset.astype(str).str.strip().eq("")
+    )
+    if invalid.any():
+        raise ValueError(
+            "electrical identity mismatch: MATCHED_UNIQUE event has incomplete locator"
+        )
+
+
+def validate_reference_label_inputs(
+    *,
+    measurement_events_path: Path,
+    records_path: Path,
+    cycles_path: Path,
+    steps_path: Path,
+    expected_battery_id: str | None = None,
+    expected_experiment_id: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
+    """Load and validate source tables before label generation or cache reuse."""
+    events = pd.read_parquet(measurement_events_path)
+    if "measurement_event_id" not in events.columns:
+        raise ValueError("MeasurementEvent artifact is missing measurement_event_id")
+    validate_measurement_event_ids(
+        events["measurement_event_id"].tolist(), artifact_name="MeasurementEvent"
+    )
+    identity_columns = ("battery_id", "experiment_id")
+    missing_identity = [column for column in identity_columns if column not in events.columns]
+    if missing_identity:
+        raise ValueError(
+            "MeasurementEvent artifact is missing identity columns: " + ", ".join(missing_identity)
+        )
+    if events.empty or events[list(identity_columns)].isna().any().any():
+        raise ValueError("MeasurementEvent identity is empty or contains null values")
+    identities = events[list(identity_columns)].drop_duplicates()
+    if len(identities) != 1:
+        raise ValueError("MeasurementEvent identity is mixed across Battery/Experiment")
+    actual_battery, actual_experiment = (str(value) for value in identities.iloc[0].tolist())
+    if (expected_battery_id is not None and actual_battery != expected_battery_id) or (
+        expected_experiment_id is not None and actual_experiment != expected_experiment_id
+    ):
+        raise ValueError("MeasurementEvent identity does not match expected Battery/Experiment")
+    _validate_non_unique_events_have_no_locator(events)
+    _validate_event_locator_contract(events)
+    cycles = pd.read_parquet(cycles_path)
+    steps = pd.read_parquet(steps_path)
+    for artifact_name, frame in (("cycles", cycles), ("steps", steps)):
+        absent = [column for column in identity_columns if column not in frame.columns]
+        if absent:
+            raise ValueError(
+                f"{artifact_name} artifact is missing identity columns: {', '.join(absent)}"
+            )
+        if frame[list(identity_columns)].isna().any().any():
+            raise ValueError(f"{artifact_name} identity contains null values")
+        artifact_identities = frame[list(identity_columns)].drop_duplicates()
+        if len(artifact_identities) != 1 or tuple(
+            str(value) for value in artifact_identities.iloc[0].tolist()
+        ) != (actual_battery, actual_experiment):
+            raise ValueError(f"{artifact_name} identity does not match MeasurementEvent identity")
+    records = pd.read_parquet(records_path)
+    _validate_source_cycle_identity(cycles, steps, events=events, records=records)
+    _validate_event_electrical_values(events, records)
+    return events, cycles, steps, records, actual_battery, actual_experiment
+
+
 def build_reference_labels(
     *,
     measurement_events_path: Path,
@@ -80,6 +351,8 @@ def build_reference_labels(
     steps_path: Path,
     ultrasound_manifest_path: Path,
     output_root: Path,
+    expected_battery_id: str | None = None,
+    expected_experiment_id: str | None = None,
     config: LabelConfig | None = None,
     supersedes_label_set_id: str | None = None,
 ) -> LabelReport:
@@ -90,9 +363,14 @@ def build_reference_labels(
     output_root = Path(output_root)
     config = config or LabelConfig()
 
-    events = pd.read_parquet(measurement_events_path)
-    cycles = pd.read_parquet(cycles_path)
-    steps = pd.read_parquet(steps_path)
+    events, cycles, steps, _, actual_battery, actual_experiment = validate_reference_label_inputs(
+        measurement_events_path=measurement_events_path,
+        records_path=records_path,
+        cycles_path=cycles_path,
+        steps_path=steps_path,
+        expected_battery_id=expected_battery_id,
+        expected_experiment_id=expected_experiment_id,
+    )
 
     # --- Cycle-level SOH labels (unchanged formula) ---
     reference = select_reference_capacity(cycles, rpt_capacity_ah=config.soh.rpt_capacity_ah)
@@ -282,6 +560,7 @@ def build_reference_labels(
                 "measurement_event_id": ev["measurement_event_id"],
                 "battery_id": ctx["battery"],
                 "experiment_id": ctx["experiment"],
+                "electrical_asset_id": ev.get("electrical_asset_id"),
                 "cycle_index_raw": ctx["cycle"],
                 "step_index_raw": ctx["step"],
                 "event_order_index": ev["event_order_index"],
@@ -396,8 +675,8 @@ def build_reference_labels(
         event_labels=event_labels,
         cycle_labels=cycle_labels,
         tof=tof,
-        battery_id=str(events["battery_id"].iloc[0]) if not events.empty else "",
-        experiment_id=str(events["experiment_id"].iloc[0]) if not events.empty else "",
+        battery_id=actual_battery,
+        experiment_id=actual_experiment,
         label_set_id=label_set_id,
         measurement_events_path=measurement_events_path,
         records_path=Path(records_path),

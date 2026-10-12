@@ -38,6 +38,13 @@ beforeEach(() => {
     target_id: "reference_soc_percent", display_name_en: "Reference SOC", display_name_zh: "参考 SOC",
     semantic_type: "DERIVED_REFERENCE_LABEL", source: "Electrical XLSX", coverage: { valid: 2, total: 2 },
     range: [0, 100], readiness: "READY_FOR_LIMITED_EVALUATION", limitation: "retrospective", unit: "%",
+    provenance: {
+      target_grain: "MEASUREMENT_EVENT", independent_unit: "BATTERY",
+      method_id: "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED", method_version: "0.2.0",
+      definition: "Reference SOC from charge throughput.",
+      source_assets: [{ asset_id: "E001", source_reference: "batteries/CELL_001/EXP_001/electrical/source.xlsx", sha256: "a".repeat(64) }],
+      uncertainty: { status: "UNKNOWN", reason: "No validated uncertainty estimate." },
+    },
   }] }, meta: {} });
   clientMock.listFeatures.mockResolvedValue({ data: { features: [
     { feature_name: "tof_us", availability: "AVAILABLE" }, { feature_name: "amplitude_a_u", availability: "AVAILABLE" },
@@ -73,5 +80,7 @@ describe("AnalysisWorkbench committed draft hydration", () => {
     await waitFor(() => expect(screen.getByTestId("step-dataset")).toBeInTheDocument());
     expect(screen.getByTestId("step-dataset")).toHaveTextContent("Target (y) = Reference SOC / 参考 SOC");
     expect(screen.getByTestId("step-dataset")).toHaveTextContent("所选超声特征（2）");
+    expect(screen.getByRole("button", { name: "核验目标来源文件" })).toBeEnabled();
+    expect(screen.getByTestId("target-source-preflight")).toHaveTextContent("不创建或修改数据集");
   });
 });

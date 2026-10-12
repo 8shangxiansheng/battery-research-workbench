@@ -83,6 +83,14 @@ def clean_root(tmp_path_factory) -> Path:
         if not actions:
             break
         action = actions[0]
+        if action["action_type"] == "CONFIRM_FEATURE_SELECTION":
+            assert "matching dataset artifacts may be reused" in action["message"]
+            assert "changed selections require a new dataset" in action["message"]
+            reason = action["scientific_reason"]
+            assert "TRAIN_ONLY_ML_SAFE target=soc_reference_percent" in reason
+            assert "split_id=" in reason and "fold=2" in reason
+            locators = reason.split("selected feature locators: ", 1)[1].split(".", 1)[0]
+            assert locators.strip()
         if action["action_type"] == "MISSING_SAMPLING_RATE":
             # BRW-018R2: canonical-TOF readiness gate — official channel,
             # explicit provenance, no guessing.

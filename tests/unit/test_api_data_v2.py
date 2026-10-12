@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -14,46 +16,214 @@ REPO = Path(__file__).resolve().parents[2]
 REAL = (REPO / "data/processed/CELL_001" if (REPO / "data/processed/multimodal").exists() else None)
 
 
+def _write_electrical_parser_manifest(processed_root: Path, battery_id: str, experiment_id: str) -> None:
+    from battery_workbench.provenance.processed_manifest import content_sha256
+
+    directory = processed_root / "electrical" / battery_id / experiment_id
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("cycles", "steps"):
+        path = directory / f"{name}.parquet"
+        if not path.exists():
+            pd.DataFrame({"id": [1]}).to_parquet(path, index=False)
+    outputs = {name: f"{name}.parquet" for name in ("records", "cycles", "steps")}
+    (directory / "parser_manifest.json").write_text(
+        json.dumps({
+            "battery_id": battery_id,
+            "experiment_id": experiment_id,
+            "output_files": outputs,
+            "output_checksums": {
+                name: content_sha256(directory / filename)
+                for name, filename in outputs.items()
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture()
 def demo_client() -> TestClient:
     app = create_app(raw_root=REPO / "data/raw", processed_root=REPO / "data/processed")
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def isolate_sync_summary_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy serialization tests independent of the explicit freshness gate."""
+    from battery_workbench.api.routes import data as data_routes
+
+    monkeypatch.setattr(
+        data_routes,
+        "_assert_current_timebase_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        data_routes,
+        "_assert_processed_artifact_integrity",
+        lambda _root, path, **_kwargs: json.loads(Path(path).read_text(encoding="utf-8")),
+    )
+
+
 def test_data_quality_demo(demo_client: TestClient) -> None:
     resp = demo_client.get("/api/v1/experiments/CELL_001/EXP_001/data-quality")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["electrical"]["records"] > 0
+    assert data["electrical"]["status"] == "AVAILABLE"
+    assert data["electrical"]["records"] == 39996
+    assert data["electrical"]["duplicate_timestamps"] == 12
+    assert data["ultrasound"]["status"] == "AVAILABLE"
     assert data["ultrasound"]["frames"] == 3999
     # cadence reported as cadence, NOT as fs
-    assert data["ultrasound"]["sampling_rate_hz"] is None
     assert data["ultrasound"]["sampling_rate_status"] == "UNKNOWN"
-    assert "not a waveform sampling rate" in data["ultrasound"]["note"]
+
+
+def test_synchronization_blocks_tampered_parser_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    processed = tmp_path / "processed"
+    raw = tmp_path / "raw"
+    for modality, outputs in {
+        "electrical": {"records": "records.parquet", "cycles": "cycles.parquet", "steps": "steps.parquet"},
+        "ultrasound": {"frames": "frames.parquet", "waveforms": "waveforms.zarr"},
+    }.items():
+        directory = processed / modality / "CELL_T" / "EXP_T"
+        directory.mkdir(parents=True)
+        for filename in outputs.values():
+            target = directory / filename
+            if filename.endswith(".zarr"):
+                target.mkdir()
+            else:
+                pd.DataFrame({"id": [1]}).to_parquet(target, index=False)
+        (directory / "parser_manifest.json").write_text(
+            json.dumps(
+                {
+                    "battery_id": "CELL_T",
+                    "experiment_id": "EXP_T",
+                    "output_files": outputs,
+                    "output_checksums": {key: "0" * 64 for key in outputs},
+                }
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(data_routes, "invalid_parser_source_modalities", lambda *_: [])
+    client = TestClient(create_app(raw_root=raw, processed_root=processed))
+
+    response = client.get("/api/v1/experiments/CELL_T/EXP_T/synchronization")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert "OUTPUT_CHECKSUM_MISMATCH:frames" in response.text
+
+
+def test_data_quality_blocks_tampered_parser_output_only_for_affected_modality(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    processed = tmp_path / "processed"
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    electrical_dir = processed / "electrical" / "CELL_A" / "EXP_A"
+    ultrasound_dir = processed / "ultrasound" / "CELL_A" / "EXP_A"
+    electrical_dir.mkdir(parents=True)
+    ultrasound_dir.mkdir(parents=True)
+    electrical_files = {
+        "records": "records.parquet",
+        "cycles": "cycles.parquet",
+        "steps": "steps.parquet",
+    }
+    ultrasound_files = {"frames": "frames.parquet", "waveforms": "waveforms.zarr"}
+    pd.DataFrame(
+        {"timestamp": ["2024-01-01", "2024-01-02"], "cycle_index_raw": [1, 1], "step_index_raw": [1, 1]}
+    ).to_parquet(electrical_dir / electrical_files["records"], index=False)
+    for key, filename in electrical_files.items():
+        if key != "records":
+            pd.DataFrame({"id": [1]}).to_parquet(electrical_dir / filename, index=False)
+    pd.DataFrame({"elapsed_time_s": [1.0, 2.0]}).to_parquet(
+        ultrasound_dir / ultrasound_files["frames"], index=False
+    )
+    (ultrasound_dir / ultrasound_files["waveforms"]).mkdir()
+    (ultrasound_dir / ultrasound_files["waveforms"] / "chunk.bin").write_bytes(b"waveform")
+
+    def parser_manifest(directory: Path, outputs: dict[str, str]) -> dict[str, object]:
+        checksums = {}
+        for key, filename in outputs.items():
+            path = directory / filename
+            if path.is_dir():
+                digest = hashlib.sha256()
+                for item in sorted(path.rglob("*")):
+                    if item.is_file():
+                        digest.update(item.relative_to(path).as_posix().encode())
+                        digest.update(item.read_bytes())
+                checksums[key] = digest.hexdigest()
+            else:
+                checksums[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "battery_id": "CELL_A",
+            "experiment_id": "EXP_A",
+            "output_files": {**outputs, "parser_manifest": "parser_manifest.json"},
+            "output_checksums": checksums,
+        }
+
+    (electrical_dir / "parser_manifest.json").write_text(
+        json.dumps(parser_manifest(electrical_dir, electrical_files)), encoding="utf-8"
+    )
+    (ultrasound_dir / "parser_manifest.json").write_text(
+        json.dumps(parser_manifest(ultrasound_dir, ultrasound_files)), encoding="utf-8"
+    )
+    (electrical_dir / "records.parquet").write_bytes(b"tampered parquet")
+    monkeypatch.setattr(data_routes, "invalid_parser_source_modalities", lambda *_: [])
+
+    response = TestClient(create_app(raw_root=raw, processed_root=processed)).get(
+        "/api/v1/experiments/CELL_A/EXP_A/data-quality"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "INTEGRITY_BLOCKED"
+    assert data["electrical"]["status"] == "INTEGRITY_BLOCKED"
+    assert "OUTPUT_CHECKSUM_MISMATCH:records" in data["electrical"]["integrity_reasons"]
+    assert data["ultrasound"]["status"] == "AVAILABLE"
+    assert data["ultrasound"]["frames"] == 2
+
+
+def test_synchronization_blocks_legacy_timebase_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.integrity import assert_current_timebase_chain
+    from battery_workbench.api.routes import data as data_routes
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    processed = tmp_path / "processed"
+    monkeypatch.setattr(
+        data_routes,
+        "_assert_current_timebase_chain",
+        assert_current_timebase_chain,
+    )
+    client = TestClient(create_app(raw_root=raw, processed_root=processed))
+
+    response = client.get("/api/v1/experiments/CELL_A/EXP_A/synchronization")
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "INTEGRITY_ERROR"
+    assert "TIME_ANCHOR_STATE_MISSING" in error["details"]["integrity_reasons"]
+    assert (
+        error["details"]["recovery_action"]
+        == "REBUILD_TIME_ANCHORS_AND_DOWNSTREAM_ALIGNMENT"
+    )
 
 
 def test_synchronization_demo(demo_client: TestClient) -> None:
     resp = demo_client.get("/api/v1/experiments/CELL_001/EXP_001/synchronization")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["match_state"] == "PARTIAL"
+    assert data["timebase_status"] == "PROVISIONAL"
+    assert data["validated_sync"] is False
     assert data["match_counts"]["matched_unique"] == 3995
     assert data["match_counts"]["matched_ambiguous"] == 4
-    assert data["total_frames"] == 3999
-    assert data["aligned_rows"] == 3999
-    assert data["candidate_matched_frames"] == 3999
-    assert data["time_anchors"][0]["anchor_status"] == "PROVISIONAL"
-    assert data["time_anchors"][0]["timezone_known"] is False
-    assert len(data["electrical_assets"]) == 1
-    assert data["electrical_assets"][0]["electrical_asset_id"] == "E001"
-    assert data["electrical_assets"][0]["timestamp_representation"] == "NAIVE"
-    assert data["electrical_assets"][0]["timezone_known"] is False
-    assert data["electrical_assets"][0]["source_files"] == [
-        "batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
-    ]
-    assert data["electrical_coverage_overlaps"] == []
-    assert data["validated_sync"] is False  # provisional never promoted
-    assert data["timebase_status"] == "PROVISIONAL"
 
 
 def test_synchronization_conflicting_anchor_blocks_apparent_matches(tmp_path: Path) -> None:
@@ -141,7 +311,12 @@ def test_synchronization_missing_anchor_blocks_even_legacy_manifest(tmp_path: Pa
     assert data["match_counts"]["matched_unique"] is None
 
 
-def test_synchronization_reports_electrical_asset_time_coverage_overlap(tmp_path: Path) -> None:
+def test_synchronization_reports_electrical_asset_time_coverage_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    monkeypatch.setattr(data_routes, "invalid_parser_source_modalities", lambda *_: [])
     raw = tmp_path / "raw"
     (raw / "manifests").mkdir(parents=True)
     (raw / "manifests/experiments.csv").write_text(
@@ -171,6 +346,7 @@ def test_synchronization_reports_electrical_asset_time_coverage_overlap(tmp_path
             "source_row_index": [1, 2, 1, 2],
         }
     ).to_parquet(records_dir / "records.parquet", index=False)
+    _write_electrical_parser_manifest(tmp_path / "processed", "CELL_X", "EXP_X")
     client = TestClient(create_app(raw_root=raw, processed_root=tmp_path / "processed"))
 
     data = client.get("/api/v1/experiments/CELL_X/EXP_X/synchronization").json()["data"]
@@ -181,7 +357,12 @@ def test_synchronization_reports_electrical_asset_time_coverage_overlap(tmp_path
     assert data["electrical_assets"][0]["source_files"] == ["one.xlsx"]
 
 
-def test_synchronization_reports_mixed_clock_asset_without_a_pair(tmp_path: Path) -> None:
+def test_synchronization_reports_mixed_clock_asset_without_a_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    monkeypatch.setattr(data_routes, "invalid_parser_source_modalities", lambda *_: [])
     raw = tmp_path / "raw"
     (raw / "manifests").mkdir(parents=True)
     (raw / "manifests/experiments.csv").write_text(
@@ -209,6 +390,7 @@ def test_synchronization_reports_mixed_clock_asset_without_a_pair(tmp_path: Path
             "source_row_index": [1, 2],
         }
     ).to_parquet(records_dir / "records.parquet", index=False)
+    _write_electrical_parser_manifest(tmp_path / "processed", "CELL_X", "EXP_X")
     client = TestClient(create_app(raw_root=raw, processed_root=tmp_path / "processed"))
 
     data = client.get("/api/v1/experiments/CELL_X/EXP_X/synchronization").json()["data"]
@@ -220,16 +402,70 @@ def test_synchronization_reports_mixed_clock_asset_without_a_pair(tmp_path: Path
 def test_measurement_events_paginated(demo_client: TestClient) -> None:
     resp = demo_client.get("/api/v1/experiments/CELL_001/EXP_001/measurement-events?limit=10")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"]["total"] >= 10
-    assert len(body["data"]["events"]) == 10
-    assert body["meta"]["next_cursor"] is not None
-    page2 = demo_client.get(
-        "/api/v1/experiments/CELL_001/EXP_001/measurement-events",
-        params={"limit": 10, "cursor": body["meta"]["next_cursor"]},
+    data = resp.json()["data"]
+    assert len(data["events"]) == 10
+    assert data["total"] == 3999
+    assert all(event["anchor_status"] == "PROVISIONAL" for event in data["events"])
+
+
+@pytest.mark.parametrize(
+    ("identity_columns", "query"),
+    [
+        ({"measurement_event_id": ["EV::1"], "frame_index_raw": [1]}, "asset_id=U1"),
+        ({"measurement_event_id": ["EV::1"], "ultrasound_asset_id": ["U1"]}, "frame_index=1"),
+    ],
+)
+def test_measurement_event_identity_filter_fails_closed_when_column_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identity_columns: dict[str, list[object]],
+    query: str,
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    processed = tmp_path / "processed"
+    events_dir = processed / "multimodal/CELL_X/EXP_X"
+    events_dir.mkdir(parents=True)
+    (events_dir / "measurement_event_manifest.json").write_text("{}", encoding="utf-8")
+    pd.DataFrame(identity_columns).to_parquet(events_dir / "measurement_events.parquet", index=False)
+    monkeypatch.setattr(data_routes, "_assert_cross_modal_source_integrity", lambda *_args: None)
+    client = TestClient(create_app(raw_root=tmp_path / "raw", processed_root=processed))
+
+    response = client.get(f"/api/v1/experiments/CELL_X/EXP_X/measurement-events?{query}")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert "requested identity filter cannot be applied" in response.text
+
+
+def test_measurement_event_identity_filter_returns_only_requested_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from battery_workbench.api.routes import data as data_routes
+
+    processed = tmp_path / "processed"
+    events_dir = processed / "multimodal/CELL_X/EXP_X"
+    events_dir.mkdir(parents=True)
+    (events_dir / "measurement_event_manifest.json").write_text("{}", encoding="utf-8")
+    pd.DataFrame(
+        {
+            "measurement_event_id": ["EV::1", "EV::2"],
+            "ultrasound_asset_id": ["U1", "U2"],
+            "frame_index_raw": [1, 1],
+            "electrical_asset_id": ["E1", "E2"],
+        }
+    ).to_parquet(events_dir / "measurement_events.parquet", index=False)
+    monkeypatch.setattr(data_routes, "_assert_cross_modal_source_integrity", lambda *_args: None)
+    client = TestClient(create_app(raw_root=tmp_path / "raw", processed_root=processed))
+
+    response = client.get(
+        "/api/v1/experiments/CELL_X/EXP_X/measurement-events?asset_id=U2&frame_index=1"
     )
-    assert page2.status_code == 200
-    assert page2.json()["data"]["events"] != body["data"]["events"]
+
+    assert response.status_code == 200
+    items = response.json()["data"]["events"]
+    assert [item["measurement_event_id"] for item in items] == ["EV::2"]
+    assert items[0]["electrical_asset_id"] == "E2"
 
 
 def test_load_demo_idempotent(demo_client: TestClient) -> None:

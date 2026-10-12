@@ -20,6 +20,7 @@ from battery_workbench.electrical.qa.schemas import (
 )
 from battery_workbench.electrical.qa.steps import analyze_steps
 from battery_workbench.electrical.qa.temporal import analyze_temporal
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
 
 REQUIRED_TABLES = ("records", "cycles", "steps")
 OPTIONAL_TABLES = ("aux_temperature", "aux_voltage")
@@ -57,6 +58,26 @@ def run_electrical_qa(
     manifest = (
         json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
     )
+    if (
+        input_path.name == experiment_id
+        and input_path.parent.name == battery_id
+        and input_path.parent.parent.name == "electrical"
+    ):
+        output_integrity = parser_output_integrity_reasons(
+            input_path.parents[2], battery_id, experiment_id
+        ).get("electrical", [])
+    else:
+        output_integrity = ["PARSER_OUTPUT_DIRECTORY_NONCANONICAL"]
+    if output_integrity:
+        issues.append(
+            anomaly(
+                "PARSER_OUTPUT_INTEGRITY_INVALID",
+                "critical",
+                "parser_outputs",
+                "Parser-derived Electrical outputs fail integrity verification",
+                metadata={"integrity_reasons": output_integrity},
+            )
+        )
     if manifest.get("battery_id") not in (None, battery_id) or manifest.get(
         "experiment_id"
     ) not in (None, experiment_id):

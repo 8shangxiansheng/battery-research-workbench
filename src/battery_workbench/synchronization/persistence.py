@@ -32,6 +32,7 @@ def _state_payload(state: TimeAnchorState) -> dict:
         "assets": [asset.model_dump(mode="json") for asset in state.assets],
         "warnings": list(state.warnings),
         "limitations": list(state.limitations),
+        "timebase_validation_id": state.timebase_validation_id,
         "validated_sync": state.validated_sync,
     }
 

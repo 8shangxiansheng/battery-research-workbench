@@ -11,4 +11,6 @@ class Experiment(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     protocol: str | None = None
+    condition_id: str | None = None
+    condition_description: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)

@@ -14,6 +14,7 @@ router = APIRouter(tags=["runs"])
 _PROFILES = (
     "INGEST_TO_MEASUREMENT_EVENTS",
     "SCIENTIFIC_ANALYSIS",
+    "EVALUATION_SPLIT",
     "BUILD_DATASET",
     "FULL_PRE_MODEL",
 )
@@ -27,6 +28,7 @@ _PLAN_FIELD_ALLOWLIST = (
     "target",
     "features",
     "analysis_slice",
+    "measurement_events",
     "split",
     "gates",
     "feature_analysis",

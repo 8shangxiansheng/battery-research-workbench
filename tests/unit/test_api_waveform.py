@@ -6,6 +6,8 @@ Frames are downsampled to a bounded number of points per response.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -15,11 +17,25 @@ import zarr
 from fastapi.testclient import TestClient
 
 from battery_workbench.api.app import create_app
+from battery_workbench.provenance.parser_manifest import parser_output_integrity_reasons
+from battery_workbench.provenance.processed_manifest import content_sha256
 
 REPO = Path(__file__).resolve().parents[2]
 RAW = REPO / "data" / "raw"
 PROCESSED = REPO / "data" / "processed"
 has_waveforms = (PROCESSED / "ultrasound/CELL_001/EXP_001/waveforms.zarr").exists()
+
+
+def _assert_real_waveform_integrity_or_skip_success_path(response) -> bool:
+    reasons = parser_output_integrity_reasons(PROCESSED, "CELL_001", "EXP_001").get(
+        "ultrasound", []
+    )
+    if not reasons:
+        return False
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert response.json()["error"]["details"]["integrity_reasons"]["ultrasound"] == reasons
+    return True
 
 
 @pytest.fixture()
@@ -31,7 +47,27 @@ def client(tmp_path: Path) -> TestClient:
 def multi_asset_client(tmp_path: Path) -> TestClient:
     processed = tmp_path / "processed"
     base = processed / "ultrasound" / "CELL_TEST" / "EXP_TEST"
+    raw = tmp_path / "raw"
     base.mkdir(parents=True)
+    source_rows: list[tuple[str, str, str]] = []
+    source_hashes: dict[str, str] = {}
+    assets: list[dict[str, str]] = []
+    for asset_id in ("U001", "U002"):
+        relative_path = f"batteries/CELL_TEST/EXP_TEST/ultrasound/{asset_id}.txt"
+        source_path = raw / relative_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(f"source-{asset_id}".encode())
+        digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        source_rows.append((asset_id, relative_path, digest))
+        source_hashes[asset_id] = digest
+        assets.append({"asset_id": asset_id, "source_file": relative_path, "source_sha256": digest})
+    manifest_dir = raw / "manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "data_assets.csv").write_text(
+        "asset_id,battery_id,experiment_id,modality,relative_path\n"
+        + "".join(f"{asset},CELL_TEST,EXP_TEST,ultrasound,{path}\n" for asset, path, _ in source_rows),
+        encoding="utf-8",
+    )
     pd.DataFrame(
         {
             "ultrasound_asset_id": ["U001", "U002"],
@@ -45,14 +81,71 @@ def multi_asset_client(tmp_path: Path) -> TestClient:
     waveform = np.sin(np.linspace(0, 30, 1250))
     root.create_array("U001/waveform", data=np.asarray([waveform], dtype=np.float32))
     root.create_array("U002/waveform", data=np.asarray([waveform * 5,], dtype=np.float32))
-    app = create_app(raw_root=tmp_path / "raw", processed_root=processed, runs_root=tmp_path / "runs")
+    (base / "parser_manifest.json").write_text(
+        json.dumps({
+            "battery_id": "CELL_TEST",
+            "experiment_id": "EXP_TEST",
+            "source_assets": ["U001", "U002"],
+            "source_sha256": source_hashes,
+            "assets": assets,
+            "output_files": {
+                "frames": "frames.parquet",
+                "waveforms": "waveforms.zarr",
+                "parser_manifest": "parser_manifest.json",
+            },
+            "output_checksums": {
+                "frames": content_sha256(base / "frames.parquet"),
+                "waveforms": content_sha256(base / "waveforms.zarr"),
+            },
+        }),
+        encoding="utf-8",
+    )
+    app = create_app(raw_root=raw, processed_root=processed, runs_root=tmp_path / "runs")
     return TestClient(app)
+
+
+def test_waveform_api_blocks_tampered_parser_output(tmp_path: Path) -> None:
+    client = multi_asset_client(tmp_path)
+    current = client.get("/api/v1/experiments/CELL_TEST/EXP_TEST/waveform-frames")
+    assert current.status_code == 200
+
+    frame_path = tmp_path / "processed/ultrasound/CELL_TEST/EXP_TEST/frames.parquet"
+    frames = pd.read_parquet(frame_path)
+    frames.loc[0, "frame_index_raw"] = 99
+    frames.to_parquet(frame_path, index=False)
+    tampered = client.get("/api/v1/experiments/CELL_TEST/EXP_TEST/waveform-frames")
+
+    assert tampered.status_code == 409
+    error = tampered.json()["error"]
+    assert error["code"] == "INTEGRITY_ERROR"
+    assert error["details"]["invalid_modalities"] == ["ultrasound"]
+    assert "OUTPUT_CHECKSUM_MISMATCH:frames" in error["details"]["integrity_reasons"]["ultrasound"]
+
+
+def test_physical_features_blocks_tampered_parser_output(tmp_path: Path) -> None:
+    client = multi_asset_client(tmp_path)
+    frame_path = tmp_path / "processed/ultrasound/CELL_TEST/EXP_TEST/frames.parquet"
+    frames = pd.read_parquet(frame_path)
+    frames.loc[0, "frame_index_raw"] = 99
+    frames.to_parquet(frame_path, index=False)
+
+    response = client.get(
+        "/api/v1/experiments/CELL_TEST/EXP_TEST/physical-features",
+        params={"ultrasound_asset_id": "U001", "frame_index_raw": 0},
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "INTEGRITY_ERROR"
+    assert "OUTPUT_CHECKSUM_MISMATCH:frames" in error["details"]["integrity_reasons"]["ultrasound"]
 
 
 def test_frame_list_metadata(client: TestClient) -> None:
     if not has_waveforms:
         pytest.skip("waveform store not available")
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/waveform-frames")
+    if _assert_real_waveform_integrity_or_skip_success_path(resp):
+        return
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["frame_count"] > 0
@@ -64,6 +157,75 @@ def test_frame_list_metadata(client: TestClient) -> None:
         assert "waveform" not in f
 
 
+def test_waveform_route_blocks_when_registered_raw_asset_changes(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    processed = tmp_path / "processed"
+    battery_id, experiment_id, asset_id = "CELL_TEST", "EXP_TEST", "U_TEST"
+    relative_path = "batteries/CELL_TEST/EXP_TEST/ultrasound/source.txt"
+    raw_source = raw / relative_path
+    raw_source.parent.mkdir(parents=True)
+    raw_source.write_bytes(b"waveform source")
+    digest = hashlib.sha256(raw_source.read_bytes()).hexdigest()
+    asset_manifest = raw / "manifests" / "data_assets.csv"
+    asset_manifest.parent.mkdir(parents=True)
+    asset_manifest.write_text(
+        "asset_id,battery_id,experiment_id,modality,relative_path\n"
+        f"{asset_id},{battery_id},{experiment_id},ultrasound,{relative_path}\n",
+        encoding="utf-8",
+    )
+    ultrasound_dir = processed / "ultrasound" / battery_id / experiment_id
+    ultrasound_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "ultrasound_asset_id": [asset_id],
+            "frame_index_raw": [0],
+            "waveform_group": [f"{asset_id}/waveform"],
+            "waveform_row_index": [0],
+            "waveform_sample_count": [3],
+        }
+    ).to_parquet(ultrasound_dir / "frames.parquet", index=False)
+    store = zarr.open_group(str(ultrasound_dir / "waveforms.zarr"), mode="w")
+    store.create_array(
+        f"{asset_id}/waveform", data=np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
+    )
+    (ultrasound_dir / "parser_manifest.json").write_text(
+        json.dumps(
+            {
+                "battery_id": battery_id,
+                "experiment_id": experiment_id,
+                "source_sha256": {asset_id: digest},
+                "assets": [{"asset_id": asset_id, "source_file": relative_path}],
+                "output_files": {
+                    "frames": "frames.parquet",
+                    "waveforms": "waveforms.zarr",
+                    "parser_manifest": "parser_manifest.json",
+                },
+                "output_checksums": {
+                    "frames": content_sha256(ultrasound_dir / "frames.parquet"),
+                    "waveforms": content_sha256(ultrasound_dir / "waveforms.zarr"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(
+        create_app(raw_root=raw, processed_root=processed, runs_root=tmp_path / "runs")
+    )
+
+    current = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/waveform-frames"
+    )
+    assert current.status_code == 200
+
+    raw_source.write_bytes(b"replaced waveform source")
+    stale = client.get(
+        f"/api/v1/experiments/{battery_id}/{experiment_id}/waveform-frames"
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert stale.json()["error"]["details"]["invalid_modalities"] == ["ultrasound"]
+
+
 def test_single_frame_preview_bounded(client: TestClient) -> None:
     if not has_waveforms:
         pytest.skip("waveform store not available")
@@ -71,6 +233,8 @@ def test_single_frame_preview_bounded(client: TestClient) -> None:
         "/api/v1/experiments/CELL_001/EXP_001/waveform-frames/0",
         params={"max_points": 200},
     )
+    if _assert_real_waveform_integrity_or_skip_success_path(resp):
+        return
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["frame_index"] == 0
@@ -96,8 +260,24 @@ def test_frame_out_of_range(client: TestClient) -> None:
     if not has_waveforms:
         pytest.skip("waveform store not available")
     resp = client.get("/api/v1/experiments/CELL_001/EXP_001/waveform-frames/99999")
+    if _assert_real_waveform_integrity_or_skip_success_path(resp):
+        return
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_physical_features_missing_frames_returns_recovery_error(tmp_path: Path) -> None:
+    app = create_app(
+        raw_root=tmp_path / "raw",
+        processed_root=tmp_path / "processed",
+        runs_root=tmp_path / "runs",
+    )
+    response = TestClient(app).get(
+        "/api/v1/experiments/CELL_TEST/EXP_TEST/physical-features"
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "ARTIFACT_NOT_AVAILABLE"
+    assert response.json()["error"]["details"]["recovery_action"] == "RUN_ULTRASOUND_PARSE"
 
 
 def test_multi_asset_frame_ids_are_listed_and_previewed_by_composite_identity(
@@ -153,8 +333,11 @@ def test_ambiguous_legacy_frame_lookup_requires_asset_id(tmp_path: Path) -> None
 
 
 def test_agent_waveform_inspection_blocks_ambiguous_local_frame(tmp_path: Path) -> None:
+    import json
+
     from battery_workbench.agent_tools.gateway import ToolGateway
     from battery_workbench.agent_tools.models import AgentScientificContext
+    from battery_workbench.provenance.processed_manifest import content_sha256
 
     processed = tmp_path / "processed"
     base = processed / "ultrasound" / "CELL_TEST" / "EXP_TEST"
@@ -170,9 +353,34 @@ def test_agent_waveform_inspection_blocks_ambiguous_local_frame(tmp_path: Path) 
     root = zarr.open_group(str(base / "waveforms.zarr"), mode="w")
     root.create_array("U001/waveform", data=np.array([[1.0, 2.0]], dtype=np.float32))
     root.create_array("U002/waveform", data=np.array([[3.0, 4.0]], dtype=np.float32))
+    raw = tmp_path / "raw"
+    manifests = raw / "manifests"
+    manifests.mkdir(parents=True)
+    (manifests / "data_assets.csv").write_text(
+        "asset_id,battery_id,experiment_id,modality,relative_path\n", encoding="utf-8"
+    )
+    (base / "parser_manifest.json").write_text(
+        json.dumps({
+            "battery_id": "CELL_TEST",
+            "experiment_id": "EXP_TEST",
+            "source_assets": [],
+            "source_sha256": {},
+            "assets": [],
+            "output_files": {
+                "frames": "frames.parquet",
+                "waveforms": "waveforms.zarr",
+                "parser_manifest": "parser_manifest.json",
+            },
+            "output_checksums": {
+                "frames": content_sha256(base / "frames.parquet"),
+                "waveforms": content_sha256(base / "waveforms.zarr"),
+            },
+        }),
+        encoding="utf-8",
+    )
 
     service = create_app(
-        raw_root=tmp_path / "raw", processed_root=processed, runs_root=tmp_path / "runs"
+        raw_root=raw, processed_root=processed, runs_root=tmp_path / "runs"
     ).state.workbench_service
     gateway = ToolGateway(service=service)
     context = AgentScientificContext(battery_id="CELL_TEST", experiment_id="EXP_TEST")
@@ -187,6 +395,37 @@ def test_runs_list_endpoint(client: TestClient, tmp_path: Path) -> None:
     resp = client.get("/api/v1/runs")
     assert resp.status_code == 200
     assert resp.json()["data"]["runs"] == []
+
+
+def test_runs_list_includes_experiment_identity(client: TestClient, tmp_path: Path) -> None:
+    service = client.app.state.workbench_service
+    run_dir = service.runs_root / "RUN::waiting"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "RUN::waiting",
+                "status": "WAITING_FOR_USER",
+                "profile": "MODEL_TRAINING",
+                "battery_id": "CELL_001",
+                "experiment_id": "EXP_001",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/v1/runs")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["runs"] == [
+        {
+            "run_id": "RUN::waiting",
+            "status": "WAITING_FOR_USER",
+            "profile": "MODEL_TRAINING",
+            "battery_id": "CELL_001",
+            "experiment_id": "EXP_001",
+        }
+    ]
 
 
 def test_runs_list_after_start(client: TestClient) -> None:

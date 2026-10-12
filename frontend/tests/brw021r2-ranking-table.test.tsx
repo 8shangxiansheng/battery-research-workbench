@@ -45,6 +45,15 @@ function fullResponse(overrides: Partial<FeatureRankingResponse> = {}): FeatureR
         pearson_charge: 0.47, spearman_charge: 0.47, pearson_discharge: -0.56, spearman_discharge: -0.56,
         direction_status: "DIRECTION_DEPENDENT", direction_dependent: true,
         status: "VALID", commit_eligible: true, n_valid: 3995, n_missing: 0,
+        estimate_audit: [{
+          analysis_id: "amplitude:pearson:overall", scope: "overall", method: "pearson",
+          coefficient: 0.2, n_input: 3999, n_input_unit: "MEASUREMENT_EVENT",
+          n_valid: 3995, n_valid_unit: "FEATURE_STATE_PAIR", independent_group_count: 1,
+          distinct_state_count: 12,
+          independent_unit: "BATTERY", missing_feature_count: 0, missing_state_count: 0,
+          excluded_ineligible_count: 4, status: "VALID",
+          limitations: ["Frames are temporally correlated; no independent-event inference."],
+        }],
       }),
       rankEntry("surface_tof_us", { family: "tof", units: "µs", commit_eligible: false }),
       rankEntry("swa_source_movmean5", { exploratory_only: true, legacy_diagnostic: true }),
@@ -62,6 +71,18 @@ function fullResponse(overrides: Partial<FeatureRankingResponse> = {}): FeatureR
       gate_calibration_window_matches_current: true, waveform_valid_rows: 3995,
     },
     limitations: ["EXPLORATORY_NOT_ML_SAFE", "RANKING_DESCRIBES_ASSOCIATION_ONLY"],
+    inference_assessment: {
+      analysis_mode: "EXPLORATORY", claim_scope: "ASSOCIATION_ONLY", independent_unit: "BATTERY",
+      confidence_interval: { status: "NOT_ESTIMATED", reason: "NO_PREDECLARED_PLAN" },
+      p_value: { status: "NOT_ESTIMATED", reason: "REPEATED_MEASURES" },
+      multiple_comparison: { status: "NOT_ASSESSED", reason: "NO_PREDECLARED_FAMILY" },
+      confounder_adjustment: { status: "NOT_ASSESSED", reason: "NO_PREDECLARED_CONFOUNDERS" },
+    },
+    alignment_assessment: {
+      status: "PROVISIONAL", validated_sync: false, association_scope: "EXPLORATORY_ONLY",
+      confirmatory_inference_allowed: false,
+      limitation: "acoustic/electrical absolute timebase is not validated",
+    },
     ...overrides,
   };
 }
@@ -142,6 +163,18 @@ describe("FeatureRankingTable render flow (EXPLORATORY)", () => {
     expect(summary).toHaveTextContent("3995");
     expect(summary).toHaveTextContent("EXPLORATORY_NOT_ML_SAFE");
     expect(screen.getByTestId("ranking-mode-badge")).toHaveTextContent("EXPLORATORY");
+    expect(screen.getByTestId("ranking-alignment-assessment")).toHaveTextContent("PROVISIONAL");
+    expect(screen.getByTestId("ranking-alignment-assessment")).toHaveTextContent("确认性推断不允许");
+    const estimateAudit = screen.getByTestId("ranking-estimate-audit-amplitude_a_u");
+    await user.click(within(estimateAudit).getByText(/相关估计样本审计/));
+    expect(estimateAudit).toHaveTextContent("有效配对 3995 FEATURE_STATE_PAIR");
+    expect(estimateAudit).toHaveTextContent("输入 3999 MEASUREMENT_EVENT");
+    expect(estimateAudit).toHaveTextContent("不同状态 12");
+    expect(estimateAudit).toHaveTextContent("Frames are temporally correlated");
+    expect(estimateAudit).toHaveTextContent("声明分组 1 BATTERY");
+    expect(estimateAudit).toHaveTextContent("组身份 NOT_ASSESSED");
+    expect(estimateAudit).toHaveTextContent("同步排除 4");
+    expect(estimateAudit).toHaveTextContent("区间 NOT_ESTIMATED");
   });
 });
 
@@ -157,6 +190,33 @@ describe("Selection checkboxes", () => {
     expect(screen.getByTestId("select-surface_tof_us")).toBeDisabled();
     await user.click(screen.getByTestId("select-amplitude_a_u"));
     expect(onSelectedChange).toHaveBeenCalledWith(["amplitude_a_u"], "EXPLORATORY_RELATIONSHIP_RANKING");
+  });
+
+  it("keeps validation-blocked temperature rankings exploratory and non-selectable", async () => {
+    clientMock.postFeatureTargetRanking.mockResolvedValue(envelope(fullResponse({
+      target_id: "temperature_c",
+      target_readiness: "BLOCKED_BY_VALIDATION",
+      target_limitation: "sensor calibration evidence is not verified",
+      ranking: [rankEntry("SWA", {
+        target_readiness: "BLOCKED_BY_VALIDATION",
+        exploratory_only: true,
+        commit_eligible: false,
+      })],
+    })));
+    const user = userEvent.setup();
+    renderTable({
+      ...baseProps,
+      targetId: "temperature_c",
+      features: ["SWA"],
+      selected: [],
+      onSelectedChange: vi.fn(),
+    });
+    await user.click(screen.getByTestId("run-ranking-btn"));
+    await screen.findByTestId("rank-SWA");
+
+    expect(screen.getByTestId("ranking-target-validation-notice")).toHaveTextContent("仅用于探索性查看");
+    expect(screen.getByTestId("ranking-target-validation-notice")).toHaveTextContent("sensor calibration evidence is not verified");
+    expect(screen.getByTestId("select-SWA")).toBeDisabled();
   });
 });
 
