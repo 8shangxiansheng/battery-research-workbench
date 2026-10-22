@@ -2168,7 +2168,7 @@ class DatasetNode(WorkflowNode):
                 ok=True,
                 reason=(
                     "SOH descriptive dataset may be materialized with NOT_READY status; "
-                    "model evaluation remains blocked until independent-state readiness"
+                    "model evaluation is separately gated by independent-state readiness"
                 ),
             )
         if target == "temperature_c":
@@ -2179,14 +2179,6 @@ class DatasetNode(WorkflowNode):
                     "dataset path does not yet enforce sensor location/calibration evidence"
                 ),
                 deferable=False,
-            )
-        if target == "soh_capacity_reference_percent":
-            return Readiness(
-                ok=False,
-                reason=(
-                    "soh_capacity_reference_percent dataset is NOT_READY: independent "
-                    "SOH-state readiness is not satisfied by the current modeling contract"
-                ),
             )
         return Readiness(
             ok=False,
@@ -2920,8 +2912,28 @@ def _confirmed_fold_fingerprint(
     return out
 
 
+# Modeling targets this node is allowed to fit. Reference SOC is the
+# established contract; capacity-ratio SOH is additionally gated by
+# independent-state readiness (see _SOH_MIN_INDEPENDENT_STATES), never by target
+# name alone.
+_MODELING_SUPPORTED_TARGETS = frozenset(
+    {"soc_reference_percent", "soh_capacity_reference_percent"}
+)
+_SOH_TARGET = "soh_capacity_reference_percent"
+# SOH event rows are not independent states: one cycle may contribute thousands
+# of frames sharing one reference SOH value. A supervised evaluation needs at
+# least this many distinct reference values, matching the FeatureAnalysis
+# ``UA::SOH_NOT_READY`` gate.
+_SOH_MIN_INDEPENDENT_STATES = 3
+
+
 class SocModelingNode(WorkflowNode):
-    """BRW-022 node: leakage-safe limited within-battery SOC baseline modeling."""
+    """BRW-022 node: leakage-safe limited within-battery baseline modeling.
+
+    Supports the Reference SOC contract and, once independent-state readiness is
+    satisfied, the capacity-ratio SOH target. The node id stays ``SOC_MODELING``
+    for artifact/manifest backward compatibility.
+    """
 
     node_type = "SOC_MODELING"
 
@@ -2950,9 +2962,11 @@ class SocModelingNode(WorkflowNode):
     @staticmethod
     def _target_block_reason(plan) -> str | None:
         target = plan.target or "soc_reference_percent"
-        if target != "soc_reference_percent":
+        if target not in _MODELING_SUPPORTED_TARGETS:
             return (
-                f"SOC_MODELING only supports soc_reference_percent; requested target was {target!r}"
+                "modeling only supports "
+                + " and ".join(sorted(_MODELING_SUPPORTED_TARGETS))
+                + f"; requested target was {target!r}"
             )
         return None
 
@@ -3105,14 +3119,38 @@ class SocModelingNode(WorkflowNode):
     def output_rel_dir(self, plan):
         return f"models/{plan.project.battery_id}/{plan.project.experiment_id}"
 
+    @staticmethod
+    def _independent_soh_states(inputs) -> int | None:
+        """Independent SOH state count from the current dataset manifest.
+
+        Counts distinct SOH reference values, matching the FeatureAnalysis
+        ``UA::SOH_NOT_READY`` gate and the dataset readiness notion: event rows
+        within one cycle are not independent states. The count is persisted by
+        the dataset builder, so this stays a manifest read rather than a
+        parquet scan. Returns ``None`` when the dataset artifact is unavailable
+        or does not record the count.
+        """
+        dataset_ref = inputs.get("DATASET")
+        if dataset_ref is None:
+            return None
+        manifest = _load_json(Path(dataset_ref.manifest_path)) or {}
+        count = manifest.get("distinct_target_values")
+        return int(count) if isinstance(count, int) else None
+
     def validate_readiness(self, plan, inputs):
         target_reason = self._target_block_reason(plan)
         if target_reason:
-            target = plan.target or "soc_reference_percent"
-            if target == "soh_capacity_reference_percent":
+            return Readiness(ok=False, reason=target_reason, deferable=False)
+        if (plan.target or "soc_reference_percent") == _SOH_TARGET:
+            states = self._independent_soh_states(inputs)
+            if states is None or states < _SOH_MIN_INDEPENDENT_STATES:
                 return Readiness(
                     ok=False,
-                    reason=target_reason,
+                    reason=(
+                        "SOH modeling needs at least "
+                        f"{_SOH_MIN_INDEPENDENT_STATES} distinct SOH reference "
+                        f"values; observed {states}"
+                    ),
                     user_action=UserActionRequired(
                         action_id=_action_id(self.node_type, "SOH_MODELING_NOT_READY"),
                         node_id=self.node_type,
@@ -3122,12 +3160,15 @@ class SocModelingNode(WorkflowNode):
                             "and target-specific evaluation are established"
                         ),
                         required_fields=[{"field": "none"}],
-                        scientific_reason=target_reason,
+                        scientific_reason=(
+                            "SOH event rows are not independent states; a supervised "
+                            "evaluation requires at least "
+                            f"{_SOH_MIN_INDEPENDENT_STATES} distinct SOH reference values"
+                        ),
                         blocking=True,
                     ),
                     deferable=False,
                 )
-            return Readiness(ok=False, reason=target_reason, deferable=False)
         # selection confirmation is decided by the on-disk FA artifact
         # (commit_status=CONFIRMED), not by the plan kwargs.
         return Readiness(ok=True, reason="modeling spec present")
@@ -3187,19 +3228,31 @@ class SocModelingNode(WorkflowNode):
         assignments = pd.read_parquet(split_assignments_path)
         split_id = split_ref.artifact_id
 
-        if plan.target == "soh_capacity_reference_percent":
-            raise UserInputNeededError(
-                node_id=self.node_type,
-                action="UA::SOH_MODELING_NOT_READY",
-                action_type="SOH_MODELING_NOT_READY",
-                message="SOH modeling blocked: only 2 independent SOH states",
-                required_fields=[{"field": "none"}],
-                scientific_reason=(
-                    "SOH event rows are not independent states; readiness is "
-                    "NOT_READY_FOR_MODEL_EVALUATION"
-                ),
-            )
         target = str(plan.target or "soc_reference_percent")
+        if target == _SOH_TARGET:
+            states = self._independent_soh_states(inputs)
+            if states is None or states < _SOH_MIN_INDEPENDENT_STATES:
+                raise UserInputNeededError(
+                    node_id=self.node_type,
+                    action="UA::SOH_MODELING_NOT_READY",
+                    action_type="SOH_MODELING_NOT_READY",
+                    message=(
+                        "SOH modeling blocked: "
+                        f"{states} independent SOH states, "
+                        f"need {_SOH_MIN_INDEPENDENT_STATES}"
+                    ),
+                    required_fields=[{"field": "none"}],
+                    scientific_reason=(
+                        "SOH event rows are not independent states; a supervised "
+                        "evaluation requires at least "
+                        f"{_SOH_MIN_INDEPENDENT_STATES} distinct SOH reference values"
+                    ),
+                )
+        # Reported fold groups must name the independent evaluation unit: SOH
+        # evaluates cycle-level states, SOC evaluates cycle groups.
+        group_column = (
+            "independent_soh_group_id" if target == _SOH_TARGET else "cycle_group_id"
+        )
 
         # confirmed fold selections (BRW-021)
         fa_dir = (
@@ -3280,7 +3333,8 @@ class SocModelingNode(WorkflowNode):
             sel_info = fold_selections[fold_index]
             features = sel_info["selected_features"]
             view = build_fold_training_view(
-                dataset, assignments, fold=fold, features=features, target=target
+                dataset, assignments, fold=fold, features=features, target=target,
+                group_column=group_column,
             )
             for strategy in strategies:
                 spec = ModelSpec(
@@ -3305,7 +3359,9 @@ class SocModelingNode(WorkflowNode):
                     y_held.to_numpy(),
                     preds,
                     step_type=step_held.to_numpy() if step_held is not None else None,
-                    soc_bins=True,
+                    # SOC bin diagnostics are specific to the SOC target scale;
+                    # SOH reports overall metrics only.
+                    soc_bins=target != _SOH_TARGET,
                 )
                 metrics["fold_index"] = fold_index
                 metrics["fold"] = fold
@@ -3377,7 +3433,12 @@ class SocModelingNode(WorkflowNode):
                     "limited_evaluation_note": (
                         "LOWEST_MACRO_MAE_AMONG_FIXED_BASELINES — "
                         + (
-                            "LIMITED_TWO_CYCLE_EVALUATION, no cross-battery claim"
+                            (
+                                "LIMITED_CYCLE_STATE_EVALUATION, SOH folds are "
+                                "cycle-level independent states; no cross-battery claim"
+                                if target == _SOH_TARGET
+                                else "LIMITED_TWO_CYCLE_EVALUATION, no cross-battery claim"
+                            )
                             if coverage["complete"]
                             else "PARTIAL_FOLD_COVERAGE; not a complete split evaluation"
                         )

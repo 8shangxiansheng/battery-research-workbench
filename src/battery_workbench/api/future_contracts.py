@@ -499,13 +499,21 @@ def build_extension_readiness(
         ),
         BoundaryReadiness(
             code="SOH_MODELING",
-            status="NOT_IMPLEMENTED" if soh_data_ready else "BLOCKED_BY_DATA",
-            can_resolve_with_current_data=False,
+            status=(
+                "PARTIALLY_READY" if soh_data_ready else "BLOCKED_BY_DATA"
+            ),
+            can_resolve_with_current_data=soh_data_ready,
             reason=(
-                f"{independent_soh_states} independent SOH states are present, but the "
-                "current modeling implementation only supports Reference SOC"
+                (
+                    f"{independent_soh_states} independent SOH states meet the minimum; "
+                    "SOH modeling is implemented and gated by this count, but the "
+                    "threshold is a minimum, not sufficient cross-state evidence"
+                )
                 if soh_data_ready
-                else f"{independent_soh_states} independent SOH states; event rows are not independent states"
+                else (
+                    f"{independent_soh_states} independent SOH states; event rows are "
+                    "not independent states"
+                )
             ),
             requirements=[
                 "at least 3 independent SOH states",

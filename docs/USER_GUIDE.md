@@ -179,6 +179,8 @@ ML-safe Review 会依据分组 split 处理训练集与 held-out 数据。held-o
 
 生成报告前确认报告引用的是当前 dataset、split 和模型评估，而不是旧版本 artifact。报告中的数值应与其证据来源和数据限制一起解释。
 
+选择目标时，Reference SOC 是已建立的评估契约；容量比 SOH（`soh_capacity_reference_percent`）也已接入同一建模入口，但受独立状态门约束：至少需要 3 个去重 SOH 参考值才会放行，否则页面显示 `SOH_MODELING_NOT_READY` 阻断原因。SOH 的独立单位是 cycle 级状态——同一 cycle 的大量事件行只算一个状态，不能当作多个独立样本；SOH 评估按 cycle 状态分组做 leave-one-group-out，不使用 SOC 的分箱诊断。该门槛只是最低要求，不构成跨老化状态的充分证据。
+
 ### 4.8 跨电池 Cohort 与 LOBO
 
 Models 页面另有“建立跨电池队列”和“Battery-level LOBO”入口。只有在至少准备好 2 块不同电池、且每块都有 manifest-backed SOC 数据集后，才有条件建立队列。还必须核对参考标签的公式/时间语义、特征定义版本和单位；系统不做单位换算。创建队列时需填写 harmonization policy 和 evidence references，服务端会再校验来源和 checksum。来源变化后旧队列会过期，应基于最新 source datasets 新建版本。

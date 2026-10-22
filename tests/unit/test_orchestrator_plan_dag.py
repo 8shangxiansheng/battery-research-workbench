@@ -129,8 +129,8 @@ def test_soh_target_remains_descriptive_dataset_but_is_not_model_ready() -> None
     assert "/SOH_CAPACITY" in DatasetNode().output_rel_dir(plan)
 
 
-@pytest.mark.parametrize("target", ["temperature_c", "soh_capacity_reference_percent", "other"])
-def test_soc_modeling_node_rejects_non_soc_targets_before_cache_lookup(
+@pytest.mark.parametrize("target", ["temperature_c", "other"])
+def test_modeling_node_rejects_unsupported_targets_before_cache_lookup(
     target: str, tmp_path
 ) -> None:
     plan = _plan(target=target)
@@ -140,9 +140,32 @@ def test_soc_modeling_node_rejects_non_soc_targets_before_cache_lookup(
     ref, reason = node.resolve_existing_output(plan, {}, tmp_path)
 
     assert not readiness.ok
-    assert "only supports soc_reference_percent" in readiness.reason
+    assert "only supports" in readiness.reason
+    assert "soc_reference_percent" in readiness.reason
     assert ref is None
-    assert "only supports soc_reference_percent" in reason
+    assert "only supports" in reason
+
+
+def test_soh_modeling_is_gated_by_independent_states_not_by_target_name(
+    tmp_path,
+) -> None:
+    """SOH is a supported target gated by independent cycle-level state count.
+
+    Without a dataset artifact the observed count is unknown, so the node must
+    block with the SOH-specific user action instead of reporting an
+    unsupported target.
+    """
+    plan = _plan(target="soh_capacity_reference_percent")
+    node = SocModelingNode()
+
+    readiness = node.validate_readiness(plan, {})
+    ref, _reason = node.resolve_existing_output(plan, {}, tmp_path)
+
+    assert not readiness.ok
+    assert "distinct SOH reference values" in readiness.reason
+    assert readiness.user_action is not None
+    assert readiness.user_action.action_type == "SOH_MODELING_NOT_READY"
+    assert ref is None
 
 
 # --- T05-T07: DAG ---
