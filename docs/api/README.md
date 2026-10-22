@@ -11,7 +11,7 @@ All endpoints live under `/api/v1`. OpenAPI spec: `docs/api/openapi-v1.json` (al
 | Group | Endpoints |
 |---|---|
 | system | `GET /health`, `GET /capabilities`, `GET /version`, `GET /modeling/strategies` (canonical fixed-baseline registry and configurations) |
-| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment); `POST /target-datasets/validate-source-evidence` (read-only manifest identity + raw checksum preflight only; does not assess target readiness or materialize); `POST .../timebase-evidence-preflight` (`timebase-evidence-preflight/1.0`; read-only raw-relative path and SHA-256/size preflight for filling source hashes); `POST/GET /experiments/{battery_id}/{experiment_id}/timebase-validations`, `GET .../timebase-validations/{validation_id}`, `POST .../timebase-validations/{validation_id}/review` (timebase-validation/1.1; evidence refs must resolve to files beneath `data/raw/`; anchor hashes are recomputed and compared; ACCEPT requires review refs and SHA-256 values distinct from proposal evidence. These checks verify file integrity/separation only, not scientific evidence adequacy or reviewer identity/independence. Acceptance requires explicit recompute and does not set `validated_sync=true`) |
+| future readiness | `GET /experiments/{battery_id}/{experiment_id}/extension-readiness` (read-only boundary assessment); `POST /target-datasets` (immutable target dataset from verified label sources; deterministic `TDS::` id, `target_readiness`/`scientific_validity` fixed `NOT_ASSESSED`); `POST /target-datasets/validate-source-evidence` (read-only manifest identity + raw checksum preflight only; does not assess target readiness or materialize); `POST .../timebase-evidence-preflight` (`timebase-evidence-preflight/1.0`; read-only raw-relative path and SHA-256/size preflight for filling source hashes); `POST/GET /experiments/{battery_id}/{experiment_id}/timebase-validations`, `GET .../timebase-validations/{validation_id}`, `POST .../timebase-validations/{validation_id}/review` (timebase-validation/1.1; evidence refs must resolve to files beneath `data/raw/`; anchor hashes are recomputed and compared; ACCEPT requires review refs and SHA-256 values distinct from proposal evidence. These checks verify file integrity/separation only, not scientific evidence adequacy or reviewer identity/independence. Acceptance requires explicit recompute and does not set `validated_sync=true`) |
 | experiments | `POST /experiments` (register Battery/Experiment and operator-declared protocol/condition/time metadata), `GET /experiments`, `PATCH /experiments/{battery_id}/{experiment_id}`, `GET /experiments/{battery_id}/{experiment_id}`, `/status`, `/workspace-summary`, `/lineage`, `/results`, `/limitations`, `/evidence`, `/research-overview`, `/workflow-context` |
 | runs | `POST /runs/plan`, `POST /runs/dry-run`, `POST /runs`, `GET /runs/{run_id}`, `GET /runs/{run_id}/events`, `POST /runs/{run_id}/resume`, `POST /runs/{run_id}/retry/{node_id}` |
 | user-actions | `GET /runs/{run_id}/user-actions`, `POST /runs/{run_id}/user-actions/{action_id}` (typed values required; API never fills scientific values) |
@@ -69,8 +69,26 @@ explicit uncertainty state. Example:
 `UNKNOWN` is not zero uncertainty. A parser source checksum identifies the input
 file; it is not calibration evidence. For CELL_001, Temperature remains blocked
 without sensor-location/calibration validation, and SOH remains not ready with
-only two independent cycle states. The generic `target-datasets` write endpoint
-is not implemented. `POST /target-datasets/validate-source-evidence` only
+only two independent cycle states. `POST /target-datasets` materializes an
+immutable target dataset once every declared label source resolves to exactly one
+requested Battery/Experiment in the DataAsset manifest, is an electrical asset, and
+matches the current raw file checksum. It reuses the same verification code as the
+read-only preflight, so the write path can never be weaker than
+`POST /target-datasets/validate-source-evidence`; a checksum or parser-manifest
+conflict returns `INTEGRITY_ERROR` and writes nothing. The artifact carries a
+deterministic `TDS::<sha256>` id (identical requests reuse it as `REUSED` without
+rewriting the manifest), the frozen label definitions, the verified sources, and
+`materialization_status=VERIFIED_SOURCE_EVIDENCE_ONLY`. Its
+`target_readiness` and `scientific_validity` are fixed to `NOT_ASSESSED`: proving
+source integrity is not a scientific readiness verdict, and a target that fails its
+data gate stays blocked for modeling regardless of this artifact existing.
+Multiple temperature channels must be selected explicitly through
+`temperature_channel_id`; an unresolved multi-channel input is rejected rather than
+silently collapsed to one channel. The contract also fixes each target's grain,
+semantic type and unit (SOH additionally requires `minimum_independent_states`, which
+repeated event rows do not satisfy).
+
+`POST /target-datasets/validate-source-evidence` only
 verifies that provenance references match requested manifest-registered
 DataAssets and current raw file checksums. It returns
 `source_integrity=VERIFIED` but `label_source_semantics=NOT_ASSESSED` and

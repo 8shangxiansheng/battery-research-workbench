@@ -187,19 +187,45 @@ def test_real_cell001_targets_expose_grain_method_sources_and_unknown_uncertaint
     assert soh["readiness"] == "NOT_READY"
 
 
-def _source_validation_request(*, sha256: str, source_reference: str) -> dict:
-    return {
+def _source_validation_request(
+    *,
+    sha256: str,
+    source_reference: str,
+    target_id: str = "reference_soc_percent",
+    minimum_independent_states: int | None = None,
+) -> dict:
+    body = {
         "battery_ids": ["CELL_001"],
         "experiment_ids": ["EXP_001"],
-        "target_id": "reference_soc_percent",
-        "target_grain": "MEASUREMENT_EVENT",
+        "target_id": target_id,
+        "target_grain": "MEASUREMENT_EVENT"
+        if target_id == "reference_soc_percent"
+        else "CYCLE"
+        if target_id == "soh_capacity_reference_percent"
+        else "MEASUREMENT_EVENT",
         "feature_locators": [{"feature_name": "tof_us"}],
         "label_provenance": {
-            "semantic_type": "DERIVED_REFERENCE_LABEL",
-            "method_id": "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED",
-            "method_version": "0.2.0",
-            "definition": "Reference SOC is segment-normalized from charge throughput.",
-            "unit": "percent",
+            "semantic_type": "DERIVED_REFERENCE_LABEL"
+            if target_id == "reference_soc_percent"
+            else "DERIVED_HEALTH_STATE"
+            if target_id == "soh_capacity_reference_percent"
+            else "DIRECT_MEASUREMENT",
+            "method_id": "PROTOCOL_ANCHORED_SEGMENT_NORMALIZED"
+            if target_id == "reference_soc_percent"
+            else "CAPACITY_BASELINE_RATIO"
+            if target_id == "soh_capacity_reference_percent"
+            else "AUX_TEMP_RECORD_INDEX_JOIN",
+            "method_version": "0.2.0"
+            if target_id != "soh_capacity_reference_percent"
+            else "0.1.0",
+            "definition": "Reference SOC is segment-normalized from charge throughput."
+            if target_id == "reference_soc_percent"
+            else "SOH is the measured discharge capacity divided by the reference capacity."
+            if target_id == "soh_capacity_reference_percent"
+            else "Temperature is the selected auxiliary channel record.",
+            "unit": "percent"
+            if target_id != "temperature_c"
+            else "celsius",
             "independent_unit": "BATTERY",
             "source_references": [
                 {
@@ -214,6 +240,9 @@ def _source_validation_request(*, sha256: str, source_reference: str) -> dict:
             },
         },
     }
+    if minimum_independent_states is not None:
+        body["minimum_independent_states"] = minimum_independent_states
+    return body
 
 
 def test_target_source_evidence_preflight_matches_manifest_and_raw_checksum(tmp_path: Path) -> None:
@@ -752,3 +781,158 @@ def test_target_source_preflight_blocks_tampered_parser_outputs(tmp_path: Path) 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "INTEGRITY_ERROR"
     assert "parser output" in response.json()["error"]["message"].lower()
+
+
+# ---------- target-dataset materialization (P3) ----------
+
+
+def _materialization_request(
+    *,
+    sha256: str,
+    source_reference: str,
+    target_id: str = "reference_soc_percent",
+    battery_ids: list[str] | None = None,
+    experiment_ids: list[str] | None = None,
+    minimum_independent_states: int | None = None,
+) -> dict:
+    body = _source_validation_request(
+        sha256=sha256,
+        source_reference=source_reference,
+        target_id=target_id,
+        minimum_independent_states=minimum_independent_states,
+    )
+    if battery_ids is not None:
+        body["battery_ids"] = battery_ids
+    if experiment_ids is not None:
+        body["experiment_ids"] = experiment_ids
+    return body
+
+
+def test_target_dataset_materialization_writes_immutable_manifest(tmp_path: Path) -> None:
+    """Verified sources produce a deterministic, reusable artifact."""
+    source = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    processed_root = tmp_path / "processed"
+    app = create_app(
+        raw_root=REPO / "data/raw",
+        processed_root=processed_root,
+        runs_root=tmp_path / "runs",
+    )
+    body = _materialization_request(
+        sha256=checksum,
+        source_reference="batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx",
+    )
+
+    first = TestClient(app).post("/api/v1/target-datasets", json=body)
+    assert first.status_code == 200, first.text
+    payload = first.json()["data"]
+    assert payload["source_integrity"] == "VERIFIED"
+    assert payload["reuse_status"] == "CREATED"
+    # materialization proves source integrity only, never scientific usability
+    assert payload["target_readiness"] == "NOT_ASSESSED"
+    assert payload["scientific_validity"] == "NOT_ASSESSED"
+
+    manifest_path = Path(payload["manifest_path"])
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["target_dataset_id"] == payload["target_dataset_id"]
+    assert manifest["materialization_status"] == "VERIFIED_SOURCE_EVIDENCE_ONLY"
+    assert manifest["target_id"] == "reference_soc_percent"
+    assert manifest["independent_unit"] == "BATTERY"
+    assert manifest["label_provenance"]["uncertainty"]["status"] == "UNKNOWN"
+    # the frozen definition is referenced, not restated by the caller
+    assert "soc_reference_percent_charge" in manifest["label_definitions"]
+    assert manifest["label_definitions"]["soc_reference_percent_charge"]["formula"]
+
+    # a byte-identical repeat reuses the same artifact and never rewrites it
+    before = manifest_path.read_bytes()
+    second = TestClient(app).post("/api/v1/target-datasets", json=body)
+    assert second.status_code == 200
+    assert second.json()["data"]["reuse_status"] == "REUSED"
+    assert second.json()["data"]["target_dataset_id"] == payload["target_dataset_id"]
+    assert manifest_path.read_bytes() == before
+
+
+def test_target_dataset_id_is_deterministic_across_identical_requests(tmp_path: Path) -> None:
+    source = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    body = _materialization_request(
+        sha256=checksum,
+        source_reference="batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx",
+    )
+    ids = []
+    for index in range(2):
+        app = create_app(
+            raw_root=REPO / "data/raw",
+            processed_root=tmp_path / f"processed{index}",
+            runs_root=tmp_path / f"runs{index}",
+        )
+        response = TestClient(app).post("/api/v1/target-datasets", json=body)
+        assert response.status_code == 200, response.text
+        ids.append(response.json()["data"]["target_dataset_id"])
+    assert ids[0] == ids[1]
+    assert ids[0].startswith("TDS::")
+
+
+def test_target_dataset_materialization_rejects_bad_source_checksum(tmp_path: Path) -> None:
+    """The write path cannot inherit a weaker check than the read-only preflight."""
+    app = create_app(
+        raw_root=REPO / "data/raw",
+        processed_root=tmp_path / "processed",
+        runs_root=tmp_path / "runs",
+    )
+    body = _materialization_request(
+        sha256="0" * 64,
+        source_reference="batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx",
+    )
+
+    response = TestClient(app).post("/api/v1/target-datasets", json=body)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTEGRITY_ERROR"
+    assert not (tmp_path / "processed" / "target_datasets").exists()
+
+
+def test_target_dataset_soh_requires_independent_state_threshold(tmp_path: Path) -> None:
+    """SOH without minimum_independent_states is rejected by the contract."""
+    source = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    app = create_app(
+        raw_root=REPO / "data/raw",
+        processed_root=tmp_path / "processed",
+        runs_root=tmp_path / "runs",
+    )
+    body = _materialization_request(
+        sha256=checksum,
+        source_reference="batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx",
+        target_id="soh_capacity_reference_percent",
+    )
+    body["target_grain"] = "CYCLE"
+    body["label_provenance"]["semantic_type"] = "DERIVED_HEALTH_STATE"
+
+    response = TestClient(app).post("/api/v1/target-datasets", json=body)
+
+    assert response.status_code == 400
+    assert "minimum_independent_states" in response.text
+
+
+def test_target_dataset_grain_and_unit_must_match_target_semantics(tmp_path: Path) -> None:
+    """A target's grain, semantic type and unit cannot be declared freely."""
+    source = REPO / "data/raw/batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx"
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    app = create_app(
+        raw_root=REPO / "data/raw",
+        processed_root=tmp_path / "processed",
+        runs_root=tmp_path / "runs",
+    )
+    body = _materialization_request(
+        sha256=checksum,
+        source_reference="batteries/CELL_001/EXP_001/electrical/小-1-1-264.xlsx",
+    )
+    # reference SOC is an event-grain derived reference label in percent
+    body["target_grain"] = "CYCLE"
+
+    response = TestClient(app).post("/api/v1/target-datasets", json=body)
+
+    assert response.status_code == 400
+    assert "target_grain" in response.text

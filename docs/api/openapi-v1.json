@@ -1548,6 +1548,107 @@
         ],
         "type": "object"
       },
+      "TargetDatasetData": {
+        "description": "Immutable target-dataset identity after source-evidence verification.\n\n``target_readiness`` and ``scientific_validity`` are deliberately\n``NOT_ASSESSED``: materializing this artifact proves source integrity only,\nnever that the target is scientifically usable.",
+        "properties": {
+          "independent_unit": {
+            "const": "BATTERY",
+            "title": "Independent Unit",
+            "type": "string"
+          },
+          "manifest_path": {
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "reuse_status": {
+            "enum": [
+              "CREATED",
+              "REUSED"
+            ],
+            "title": "Reuse Status",
+            "type": "string"
+          },
+          "scientific_validity": {
+            "const": "NOT_ASSESSED",
+            "title": "Scientific Validity",
+            "type": "string"
+          },
+          "source_integrity": {
+            "const": "VERIFIED",
+            "title": "Source Integrity",
+            "type": "string"
+          },
+          "target_dataset_id": {
+            "pattern": "^TDS::[a-fA-F0-9]{24}$",
+            "title": "Target Dataset Id",
+            "type": "string"
+          },
+          "target_grain": {
+            "enum": [
+              "MEASUREMENT_EVENT",
+              "CYCLE",
+              "EXPERIMENT",
+              "BATTERY"
+            ],
+            "title": "Target Grain",
+            "type": "string"
+          },
+          "target_id": {
+            "enum": [
+              "reference_soc_percent",
+              "temperature_c",
+              "soh_capacity_reference_percent"
+            ],
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_readiness": {
+            "const": "NOT_ASSESSED",
+            "title": "Target Readiness",
+            "type": "string"
+          },
+          "verified_sources": {
+            "items": {
+              "$ref": "#/components/schemas/TargetSourceVerificationResult"
+            },
+            "title": "Verified Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "target_dataset_id",
+          "target_id",
+          "target_grain",
+          "independent_unit",
+          "source_integrity",
+          "target_readiness",
+          "scientific_validity",
+          "reuse_status",
+          "manifest_path",
+          "verified_sources"
+        ],
+        "title": "TargetDatasetData",
+        "type": "object"
+      },
+      "TargetDatasetEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TargetDatasetData"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "TargetDatasetEnvelope",
+        "type": "object"
+      },
       "TargetDatasetRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7606,6 +7707,48 @@
         "tags": [
           "scientific-resources",
           "artifacts"
+        ]
+      }
+    },
+    "/api/v1/target-datasets": {
+      "post": {
+        "description": "Materialize an immutable target dataset from verified label sources.\n\nSource evidence is re-verified against the raw DataAsset manifest and bytes,\nso this path can never inherit a weaker integrity check than the read-only\npreflight. Scientific target readiness (temperature calibration/location,\nSOH independent states) is *not* asserted here: it is reported from the\nexisting readiness surface, and a target that fails its data gate stays\nblocked for modeling regardless of this artifact existing.",
+        "operationId": "create_target_dataset_api_v1_target_datasets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetDatasetEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Target Dataset",
+        "tags": [
+          "scientific-resources"
         ]
       }
     },

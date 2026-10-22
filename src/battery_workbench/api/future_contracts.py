@@ -402,6 +402,34 @@ class TargetSourceEvidenceValidationEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TargetDatasetData(BaseModel):
+    """Immutable target-dataset identity after source-evidence verification.
+
+    ``target_readiness`` and ``scientific_validity`` are deliberately
+    ``NOT_ASSESSED``: materializing this artifact proves source integrity only,
+    never that the target is scientifically usable.
+    """
+
+    target_dataset_id: str = Field(pattern=r"^TDS::[a-fA-F0-9]{24}$")
+    target_id: Literal[
+        "reference_soc_percent", "temperature_c", "soh_capacity_reference_percent"
+    ]
+    target_grain: Literal["MEASUREMENT_EVENT", "CYCLE", "EXPERIMENT", "BATTERY"]
+    independent_unit: Literal["BATTERY"]
+    source_integrity: Literal["VERIFIED"]
+    target_readiness: Literal["NOT_ASSESSED"]
+    scientific_validity: Literal["NOT_ASSESSED"]
+    reuse_status: Literal["CREATED", "REUSED"]
+    manifest_path: str
+    verified_sources: list[TargetSourceVerificationResult]
+
+
+class TargetDatasetEnvelope(BaseModel):
+    data: TargetDatasetData
+    meta: dict[str, Any]
+    model_config = ConfigDict(extra="forbid")
+
+
 class TuningStudyRequest(BaseModel):
     contract_version: Literal["tuning-study/1.0"] = "tuning-study/1.0"
     dataset_id: str

@@ -221,9 +221,11 @@ def test_readiness_distinguishes_missing_comparison_from_failed_comparison() -> 
     assert by_code["MODEL_ADVANTAGE_OVER_DUMMY"].can_resolve_with_current_data is False
     assert "no comparable" in by_code["MODEL_ADVANTAGE_OVER_DUMMY"].reason
     assert by_code["CROSS_BATTERY_GENERALIZATION"].status == "BLOCKED_BY_DATA"
-    assert by_code["SOH_MODELING"].status == "NOT_IMPLEMENTED"
-    assert by_code["SOH_MODELING"].can_resolve_with_current_data is False
-    assert "only supports Reference SOC" in by_code["SOH_MODELING"].reason
+    # SOH modeling is implemented; the remaining gate is the independent-state
+    # threshold, which 3 states meets only minimally.
+    assert by_code["SOH_MODELING"].status == "PARTIALLY_READY"
+    assert by_code["SOH_MODELING"].can_resolve_with_current_data is True
+    assert "meet the minimum" in by_code["SOH_MODELING"].reason
 
 
 def test_temperature_readiness_requires_sensor_validation_evidence() -> None:

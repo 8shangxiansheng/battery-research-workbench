@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 
@@ -13,7 +14,10 @@ from battery_workbench.api.errors import APIError, ErrorCode
 from battery_workbench.api.future_contracts import (
     ExtensionReadiness,
     ExtensionReadinessEnvelope,
+    TargetDatasetData,
+    TargetDatasetEnvelope,
     TargetDatasetRequest,
+    TargetSourceEvidenceValidationData,
     TargetSourceEvidenceValidationEnvelope,
     TargetSourceVerificationResult,
     build_extension_readiness,
@@ -182,6 +186,32 @@ def validate_target_source_evidence(
     readiness, resolve feature availability, or materialize a dataset.
     """
     service = get_service(request)
+    verified_sources = _verify_target_sources(service, body)
+    return TargetSourceEvidenceValidationEnvelope(
+        data=TargetSourceEvidenceValidationData.model_validate(
+            {
+                "status": "SOURCE_EVIDENCE_VERIFIED",
+                "target_id": body.target_id,
+                "verified_sources": [item.model_dump() for item in verified_sources],
+                "source_integrity": "VERIFIED",
+                "label_source_semantics": "NOT_ASSESSED",
+                "target_readiness": "NOT_ASSESSED",
+                "feature_availability": "NOT_ASSESSED",
+                "materialization_enabled": False,
+            }
+        ),
+        meta={"read_only": True},
+    )
+
+
+def _verify_target_sources(
+    service: Any, body: TargetDatasetRequest
+) -> list[TargetSourceVerificationResult]:
+    """Verify every declared label source against the DataAsset manifest and raw bytes.
+
+    Shared by the read-only preflight and the materializing write path so the
+    two cannot drift apart on integrity checks.
+    """
     manifest_path = service.raw_root / "manifests" / "data_assets.csv"
     if not manifest_path.is_file():
         raise APIError(
@@ -310,18 +340,129 @@ def validate_target_source_evidence(
             "each requested Battery/Experiment requires at least one verified label source",
             {"missing_pairs": [list(pair) for pair in missing_pairs]},
         )
-    return TargetSourceEvidenceValidationEnvelope(
-        data={
-            "status": "SOURCE_EVIDENCE_VERIFIED",
+    return verified_sources
+
+
+@router.post("/target-datasets", response_model=TargetDatasetEnvelope)
+def create_target_dataset(
+    request: Request, body: TargetDatasetRequest
+) -> TargetDatasetEnvelope:
+    """Materialize an immutable target dataset from verified label sources.
+
+    Source evidence is re-verified against the raw DataAsset manifest and bytes,
+    so this path can never inherit a weaker integrity check than the read-only
+    preflight. Scientific target readiness (temperature calibration/location,
+    SOH independent states) is *not* asserted here: it is reported from the
+    existing readiness surface, and a target that fails its data gate stays
+    blocked for modeling regardless of this artifact existing.
+    """
+    import hashlib
+    import json
+
+    from battery_workbench.labels.definitions import LABEL_DEFINITIONS
+
+    service = get_service(request)
+    verified_sources = _verify_target_sources(service, body)
+
+    definitions = {
+        str(item.get("name")): item
+        for item in LABEL_DEFINITIONS
+        if isinstance(item, dict) and item.get("name")
+    }
+    definition_names = {
+        "reference_soc_percent": (
+            "soc_reference_percent_charge",
+            "soc_reference_percent_discharge",
+            "soc_reference_percent_rest",
+        ),
+        "temperature_c": ("temperature_c",),
+        "soh_capacity_reference_percent": ("soh_capacity_reference_percent",),
+    }[body.target_id]
+    known_definitions = {
+        name: definitions[name]
+        for name in definition_names
+        if name in definitions
+    }
+
+    canonical = json.dumps(
+        {
+            "contract_version": body.contract_version,
             "target_id": body.target_id,
-            "verified_sources": verified_sources,
-            "source_integrity": "VERIFIED",
-            "label_source_semantics": "NOT_ASSESSED",
-            "target_readiness": "NOT_ASSESSED",
-            "feature_availability": "NOT_ASSESSED",
-            "materialization_enabled": False,
+            "target_grain": body.target_grain,
+            "battery_ids": body.battery_ids,
+            "experiment_ids": body.experiment_ids,
+            "feature_locators": [item.locator for item in body.feature_locators],
+            "label_provenance": body.label_provenance.model_dump(mode="json"),
+            "minimum_independent_states": body.minimum_independent_states,
+            "verified_sources": [item.model_dump(mode="json") for item in verified_sources],
+            "definitions": {
+                name: item.get("formula") for name, item in sorted(known_definitions.items())
+            },
         },
-        meta={"read_only": True},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    target_dataset_id = "TDS::" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+    destination = (
+        service.processed_root
+        / "target_datasets"
+        / target_dataset_id
+        / "target_dataset_manifest.json"
+    )
+    manifest = {
+        "target_dataset_id": target_dataset_id,
+        "contract_version": body.contract_version,
+        "target_id": body.target_id,
+        "target_grain": body.target_grain,
+        "independent_unit": body.label_provenance.independent_unit,
+        "battery_ids": list(body.battery_ids),
+        "experiment_ids": list(body.experiment_ids),
+        "minimum_independent_states": body.minimum_independent_states,
+        "feature_locators": [item.locator for item in body.feature_locators],
+        "label_provenance": body.label_provenance.model_dump(mode="json"),
+        "label_definitions": {
+            name: {
+                "formula": item.get("formula"),
+                "method": item.get("method"),
+                "unit": item.get("unit"),
+                "temporality": item.get("temporality"),
+                "version": item.get("version"),
+                "leakage_notes": item.get("leakage_notes"),
+            }
+            for name, item in sorted(known_definitions.items())
+        },
+        "verified_sources": [item.model_dump(mode="json") for item in verified_sources],
+        "source_integrity": "VERIFIED",
+        "target_readiness": "NOT_ASSESSED",
+        "materialization_status": "VERIFIED_SOURCE_EVIDENCE_ONLY",
+        "scientific_validity": "NOT_ASSESSED",
+    }
+    reused = destination.is_file()
+    if not reused:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    return TargetDatasetEnvelope(
+        data=TargetDatasetData.model_validate(
+            {
+                "target_dataset_id": target_dataset_id,
+                "target_id": body.target_id,
+                "target_grain": body.target_grain,
+                "independent_unit": body.label_provenance.independent_unit,
+                "source_integrity": "VERIFIED",
+                "target_readiness": "NOT_ASSESSED",
+                "scientific_validity": "NOT_ASSESSED",
+                "reuse_status": "REUSED" if reused else "CREATED",
+                "manifest_path": str(destination),
+                "verified_sources": [item.model_dump() for item in verified_sources],
+            }
+        ),
+        meta={"read_only": False},
     )
 
 
