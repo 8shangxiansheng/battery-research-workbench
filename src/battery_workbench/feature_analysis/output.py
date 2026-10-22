@@ -159,6 +159,20 @@ def write_analysis_payload(
     sub_rows = [{**row} for group in (analysis.get("subgroups") or {}).values() for row in group]
     if sub_rows:
         written["subgroup_analysis"] = _df_to_file(sub_rows, "subgroup_analysis.parquet")
+    # P4: pseudo-replication diagnostic and the group/within effect split must
+    # persist so a report cannot claim independence the frame does not support.
+    if isinstance(analysis.get("pseudo_replication"), dict) and analysis["pseudo_replication"]:
+        written["pseudo_replication_diagnostic"] = _df_to_file(
+            [analysis["pseudo_replication"]], "pseudo_replication_diagnostic.parquet"
+        )
+    effect_rows = [
+        {**row, "feature_locator": locator}
+        for locator, row in (analysis.get("subgroup_effects") or {}).items()
+    ]
+    if effect_rows:
+        written["subgroup_effect_split"] = _df_to_file(
+            effect_rows, "subgroup_effect_split.parquet"
+        )
     gate_rows = [
         {**row, "feature_name": name}
         for name, group in (analysis.get("gate_comparison") or {}).items()

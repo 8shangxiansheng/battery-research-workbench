@@ -57,6 +57,14 @@ class FeatureAnalysisSpec(BaseModel):
     subgroup_by: list[str] = Field(default_factory=lambda: ["step_type", "cycle"])
     methods: list[str] = Field(default_factory=lambda: ["descriptive", "pearson", "spearman"])
     selection: SelectionRequest = Field(default_factory=SelectionRequest)
+    # P4 robustness protocol. Defaults stay conservative and deterministic:
+    # Fisher-z intervals and the pseudo-replication diagnostic are always
+    # reported; bootstrap intervals and per-unit aggregation are opt-in.
+    interval_method: str = "FISHER_Z"
+    bootstrap_seed: int | None = None
+    bootstrap_resamples: int = 1000
+    multiplicity_correction: str = "BENJAMINI_HOCHBERG"
+    pseudo_replication_group_column: str = "cycle_group_id"
     analysis_version: str = ANALYSIS_VERSION
     policy_version: str = POLICY_VERSION
     analysis_id: str = ""
@@ -75,6 +83,14 @@ class FeatureAnalysisSpec(BaseModel):
 
     @model_validator(mode="after")
     def _validate_and_id(self) -> FeatureAnalysisSpec:
+        if self.interval_method not in {"FISHER_Z", "BOOTSTRAP"}:
+            raise ValueError(f"unknown interval_method: {self.interval_method}")
+        if self.interval_method == "BOOTSTRAP" and self.bootstrap_seed is None:
+            raise ValueError("BOOTSTRAP interval_method requires an explicit bootstrap_seed")
+        if self.multiplicity_correction not in {"BENJAMINI_HOCHBERG", "NONE"}:
+            raise ValueError(
+                f"unknown multiplicity_correction: {self.multiplicity_correction}"
+            )
         if self.target in FORBIDDEN_CANDIDATES and not self.target.endswith(
             ("soc_reference_percent", "soh_capacity_reference_percent")
         ):

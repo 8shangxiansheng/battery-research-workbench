@@ -162,6 +162,56 @@ def test_t10_gated_locator_resolution() -> None:
     assert resolved[0]["gate_id"] == "GATE::abc"
 
 
+def test_run_analysis_reports_uncertainty_and_pseudo_replication() -> None:
+    """P4 wiring: intervals, BH-FDR and the row-to-unit gap reach the output.
+
+    The synthetic frame has 40 rows across only 2 cycle groups, so the
+    diagnostic must flag pseudo replication instead of treating 40 rows as
+    independent evidence.
+    """
+    from battery_workbench.feature_analysis.engine import run_analysis
+
+    spec = _spec()
+    result = run_analysis(spec, _frame())
+
+    correlations = result["correlations"]
+    assert correlations
+    for row in correlations:
+        assert "ci_low" in row and "ci_high" in row
+        assert row["interval_method"] == "FISHER_Z"
+        if row["status"] == "OK":
+            assert row["ci_low"] is not None and row["ci_high"] is not None
+            assert row["ci_low"] < row["coefficient"] < row["ci_high"]
+            assert row["p_value_adjusted"] is not None
+
+    diagnostic = result["pseudo_replication"]
+    assert diagnostic["status"] == "PSEUDO_REPLICATED"
+    assert diagnostic["nominal_rows"] == 40
+    assert diagnostic["independent_units"] == 2
+
+    effects = result["subgroup_effects"]
+    assert set(effects) >= {"amplitude_a_u", "waveform_rms_a_u"}
+    assert effects["amplitude_a_u"]["verdict"]
+
+
+def test_bootstrap_interval_requires_seed_in_spec() -> None:
+    with pytest.raises(ValueError, match="bootstrap_seed"):
+        _spec(interval_method="BOOTSTRAP")
+
+
+def test_run_analysis_bootstrap_mode_uses_declared_seed() -> None:
+    from battery_workbench.feature_analysis.engine import run_analysis
+
+    spec = _spec(interval_method="BOOTSTRAP", bootstrap_seed=5, bootstrap_resamples=50)
+    frame = _frame()
+    first = run_analysis(spec, frame)
+    second = run_analysis(spec, frame)
+
+    bounds = [(r["ci_low"], r["ci_high"]) for r in first["correlations"]]
+    assert bounds == [(r["ci_low"], r["ci_high"]) for r in second["correlations"]]
+    assert all(row["interval_method"] == "BOOTSTRAP" for row in first["correlations"])
+
+
 # --- T11: TOF unavailability ---
 
 

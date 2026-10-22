@@ -35,6 +35,7 @@ GET /api/v1/experiments/{battery_id}/{experiment_id}/extension-readiness
 - 跨电池泛化使用 `battery_id` 作为外层分组；禁止用随机帧、行、MeasurementEvent 或 SOC 分箱切分代替。
 - SOH 的独立样本单位是 cycle/battery 级状态，不能把帧行计作独立健康状态。现有标签构建/离线复用校验不等于 SOH 建模就绪。
 - SOH 建模已实现并按去重参考值门控：`SOC_MODELING` 节点接受 `soh_capacity_reference_percent`，要求至少 3 个去重 SOH 参考值（与 FeatureAnalysis 门同一口径），否则以 `SOH_MODELING_NOT_READY` 阻断；评估按 cycle 级独立状态分组（`independent_soh_group_id`）做 leave-one-group-out，事件行不重复计权，SOC 专属分箱诊断不应用于 SOH。该阈值是最低要求而非充分证据：真实跨状态结论仍需更多老化 cycle 与独立电池。
+- 关系分析的稳健性统计（P4 部分）：特征分析现给出相关系数置信区间（默认 Fisher-z 解析，bootstrap 需显式开启并带固定种子）、跨“特征 × 方法”族的 Benjamini-Hochberg FDR 校正（保留未校正值对照），以及伪重复诊断（名义行数 vs 独立单位数与复制倍数）和 pooled / 组间 / 组内三者分离（`GROUP_AND_WITHIN_DISAGREE` 暴露 Simpson 型方向冲突）。这些是**探索性**统计：不把相关写成因果，不构成确认性结论，也不能替代预声明方案、混杂调整或独立验证数据；区间无法计算时返回空值而不是伪造边界。
 - 温度只能来自实测通道；当前 target gate 还要求覆盖审计、至少 2 °C 观测范围及传感器位置/校准验证证据。CELL_001 的 T1 auxTemp 已按 `(electrical_asset_id, record_index_raw)` 关联，但尚无位置/校准证据，因此保持 `BLOCKED_BY_VALIDATION`。不得从超声或其他特征推算温度标签。
 - 调参若实现，特征选择与搜索须局限于训练数据中的独立分组验证角色；外层 held-out 标签不得参与选择。
 - 不能超过 Dummy 是诚实的科学结果，不是软件故障。增加更复杂的固定模型不构成调参，也不能弥补独立电池或验证数据缺失。
