@@ -222,6 +222,22 @@ class FeatureCorrelationResult(BaseModel):
     excluded_ineligible_unit: str
     analysis_mode: str
     ml_safe_selection: bool
+    # P4 exploratory uncertainty fields. Absent/None means "not estimated for
+    # this row"; they are never filled with a plausible-looking substitute.
+    ci_low: float | None = None
+    ci_high: float | None = None
+    interval_method: str | None = None
+    p_value_raw: float | None = None
+    p_value_adjusted: float | None = None
+    multiplicity_correction: str | None = None
+    replication_factor: float | None = Field(
+        default=None,
+        description=(
+            "Rows per independent unit (n_valid / independent_group_count). "
+            "Greater than 1 means event rows are repeated measures of the same unit."
+        ),
+    )
+    pseudo_replication_status: str | None = None
     limitations: list[str] = Field(default_factory=list)
     status: str
 
@@ -242,6 +258,13 @@ class FeatureCorrelationsData(BaseModel):
     soc_cycle_decomposition: CycleCorrelationDecomposition
     alignment_assessment: CorrelationAlignmentAssessment
     inference_assessment: CorrelationInferenceAssessment
+    uncertainty_summary: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Declared-family uncertainty read-out: interval method, family size and "
+            "how many intervals were estimable. Exploratory only."
+        ),
+    )
     temperature: FeatureCorrelationResult
     soh: FeatureCorrelationResult
     soh_cycle_summary: list[dict[str, Any]]

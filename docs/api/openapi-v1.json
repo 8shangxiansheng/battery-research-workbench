@@ -1074,6 +1074,28 @@
             ],
             "title": "Battery Id"
           },
+          "ci_high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci High"
+          },
+          "ci_low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Low"
+          },
           "coefficient": {
             "anyOf": [
               {
@@ -1150,6 +1172,17 @@
             ],
             "title": "Independent Unit"
           },
+          "interval_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Method"
+          },
           "limitations": {
             "items": {
               "type": "string"
@@ -1177,6 +1210,17 @@
             "title": "Ml Safe Selection",
             "type": "boolean"
           },
+          "multiplicity_correction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Multiplicity Correction"
+          },
           "n_input": {
             "title": "N Input",
             "type": "integer"
@@ -1192,6 +1236,51 @@
           "n_valid_unit": {
             "title": "N Valid Unit",
             "type": "string"
+          },
+          "p_value_adjusted": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P Value Adjusted"
+          },
+          "p_value_raw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P Value Raw"
+          },
+          "pseudo_replication_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pseudo Replication Status"
+          },
+          "replication_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rows per independent unit (n_valid / independent_group_count). Greater than 1 means event rows are repeated measures of the same unit.",
+            "title": "Replication Factor"
           },
           "scope": {
             "title": "Scope",
@@ -1310,6 +1399,19 @@
           },
           "temperature": {
             "$ref": "#/components/schemas/FeatureCorrelationResult"
+          },
+          "uncertainty_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Declared-family uncertainty read-out: interval method, family size and how many intervals were estimable. Exploratory only.",
+            "title": "Uncertainty Summary"
           }
         },
         "required": [

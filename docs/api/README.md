@@ -212,9 +212,23 @@ make Temperature a ready modeling target.
 complete Battery/Experiment/Cycle group count, event denominator, missingness, and
 sync-exclusion counts. Between-cycle coefficients are `null` when fewer than 3 complete
 cycle groups are available; cycle groups are nested within Battery and are not independent
-batteries. Neither this endpoint nor the Cycle decomposition provides p-values, confidence
-intervals, multiplicity correction, or confounder adjustment. These remain unavailable until
-an analysis plan is approved.
+batteries. The Cycle decomposition itself provides no p-values or confidence intervals;
+per-SOC-result exploratory uncertainty is reported separately (see below), and confounder
+adjustment remains unavailable until an analysis plan is approved.
+
+Each SOC correlation result now also carries exploratory uncertainty fields: `ci_low`,
+`ci_high`, `interval_method` (currently `FISHER_Z`, the deterministic Fisher z transform),
+`p_value_raw`, `p_value_adjusted`, `multiplicity_correction` (currently `BENJAMINI_HOCHBERG`
+over the declared method × scope family only), `replication_factor`
+(`n_valid / independent_group_count`), and `pseudo_replication_status`. A
+`replication_factor` greater than 1 means the event rows are repeated measures of the same
+independent unit and must not be read as additional independent evidence. All of these
+fields are optional and default to `null`; the point `coefficient` is never recomputed or
+adjusted. `data.uncertainty_summary` reports the family label, family size, and how many
+intervals were estimable. `data.inference_assessment.confidence_interval`,
+`p_value`, and `multiple_comparison` reflect this read-out, while
+`confirmatory_inference_enabled` stays `false`: an exploratorily estimated interval is not
+a pre-registered confirmatory analysis.
 
 The legacy property `soc_by_battery_condition` remains sliced by Battery and the electrochemical
 phase (`overall`, `charge`, `discharge`, `rest`); it does not represent experiment

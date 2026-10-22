@@ -1048,6 +1048,96 @@ def physical_features(
 # ---------- feature–state correlations (backend module) ----------
 
 
+def _attach_exploratory_uncertainty(
+    results: list[dict[str, Any]], *, family_label: str
+) -> dict[str, Any]:
+    """Attach analytic intervals, BH-FDR and repetition factors to one family.
+
+    The coefficient itself is never recomputed or adjusted here: only the
+    uncertainty read-out is added, so an existing value stays comparable to
+    previously published numbers. Intervals use the deterministic Fisher z
+    transform; p-values come from the same transform, and only the adjusted
+    ones account for the family of tests declared by ``family_label``.
+    """
+    from battery_workbench.feature_analysis.engine import (
+        benjamini_hochberg,
+        fisher_z_interval,
+    )
+
+    p_values: list[float | None] = []
+    for row in results:
+        coefficient = row.get("coefficient")
+        n_valid = int(row.get("n_valid") or 0)
+        low, high = fisher_z_interval(coefficient, n=n_valid)
+        row["ci_low"] = low
+        row["ci_high"] = high
+        row["interval_method"] = "FISHER_Z" if low is not None else None
+
+        if coefficient is None or n_valid < 4 or abs(coefficient) >= 1.0:
+            p_values.append(None)
+        else:
+            z_value = float(np.arctanh(coefficient)) * np.sqrt(n_valid - 3)
+            from scipy import stats
+
+            p_values.append(float(2.0 * stats.norm.sf(abs(z_value))))
+
+        # Event rows inside one group are repeated measures, not new evidence.
+        groups = row.get("independent_group_count")
+        if isinstance(groups, int) and groups > 0:
+            factor = n_valid / groups
+            row["replication_factor"] = factor
+            row["pseudo_replication_status"] = (
+                "PSEUDO_REPLICATED" if factor > 1.0 else "OK"
+            )
+        else:
+            row["replication_factor"] = None
+            row["pseudo_replication_status"] = "GROUP_COUNT_UNAVAILABLE"
+
+    for row, raw, adjusted in zip(results, p_values, benjamini_hochberg(p_values)):
+        row["p_value_raw"] = raw
+        row["p_value_adjusted"] = adjusted
+        row["multiplicity_correction"] = "BENJAMINI_HOCHBERG"
+
+    estimated = sum(1 for row in results if row.get("ci_low") is not None)
+    return {
+        "family_label": family_label,
+        "family_size": len([value for value in p_values if value is not None]),
+        "intervals_estimated": estimated,
+        "intervals_not_estimated": len(results) - estimated,
+        "interval_method": "FISHER_Z",
+        "multiplicity_correction": "BENJAMINI_HOCHBERG",
+        "exploratory_only": True,
+    }
+
+
+def _uncertainty_inference_assessment(base: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """Replace the three 'not estimated' slots with the exploratory read-out.
+
+    ``confirmatory_inference_enabled`` stays false: estimating an interval is
+    not the same as a pre-registered confirmatory analysis.
+    """
+    assessment = dict(base)
+    assessment["confidence_interval"] = {
+        "status": "ESTIMATED" if summary["intervals_estimated"] else "NOT_ESTIMATED",
+        "method": "FISHER_Z",
+        "family_label": summary["family_label"],
+        "reason": "EXPLORATORY_ONLY_NOT_A_PREREGISTERED_GROUPED_RESAMPLING_PLAN",
+    }
+    assessment["p_value"] = {
+        "status": "ESTIMATED" if summary["family_size"] else "NOT_ESTIMATED",
+        "method": "FISHER_Z",
+        "reason": "EXPLORATORY_ONLY_EVENT_ROWS_ARE_REPEATED_MEASURES",
+    }
+    assessment["multiple_comparison"] = {
+        "status": "ADJUSTED" if summary["family_size"] else "NOT_ASSESSED",
+        "method": "BENJAMINI_HOCHBERG",
+        "family_label": summary["family_label"],
+        "family_size": summary["family_size"],
+        "reason": "ADJUSTS_ONLY_THIS_DECLARED_FAMILY_OF_DESCRIPTIVE_TESTS",
+    }
+    return assessment
+
+
 @router.get(
     "/experiments/{battery_id}/{experiment_id}/feature-correlations",
     response_model=FeatureCorrelationsEnvelope,
@@ -1135,6 +1225,11 @@ def feature_correlations(
     diagnostic = battery_scatter_diagnostic(
         rows, feature_code=feature_code, max_points=limit
     )
+    # P4: explicit exploratory uncertainty read-out for the declared SOC family
+    # (2 methods x 4 electrochemical scopes). Coefficients are unchanged.
+    uncertainty_summary = _attach_exploratory_uncertainty(
+        soc_suite, family_label="SOC_FEATURE_ASSOCIATION_BY_METHOD_AND_SCOPE"
+    )
     return {
         "data": {
             "feature_code": feature_code,
@@ -1158,12 +1253,16 @@ def feature_correlations(
             "declared_condition_analysis": _declared_condition_analysis(
                 request, battery_id, experiment_id, rows
             ),
-            "inference_assessment": exploratory_inference_assessment(
-                correlation_results_included=True,
-                study_protocol_assessment=_experiment_analysis_plan_assessment(
-                    request, battery_id, experiment_id
+            "inference_assessment": _uncertainty_inference_assessment(
+                exploratory_inference_assessment(
+                    correlation_results_included=True,
+                    study_protocol_assessment=_experiment_analysis_plan_assessment(
+                        request, battery_id, experiment_id
+                    ),
                 ),
+                uncertainty_summary,
             ),
+            "uncertainty_summary": uncertainty_summary,
             "temperature": temp,
             "soh": soh,
             "soh_cycle_summary": soh_cycle_summary(rows),
@@ -1181,7 +1280,9 @@ def feature_correlations(
             },
             "gate_calibration_id": gate_context["gate_calibration_id"],
             "note": "SOC/temperature associations use eligible MeasurementEvents; "
-            "SOH associations use Battery/Experiment/Cycle summaries; no naive p-values; "
+            "SOH associations use Battery/Experiment/Cycle summaries; no naive p-values "
+            "(Fisher-z analytic intervals and Benjamini-Hochberg within the declared "
+            "family only; exploratory, not confirmatory); "
             "frontend never recomputes",
         },
     }

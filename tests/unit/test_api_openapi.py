@@ -99,3 +99,75 @@ def test_feature_correlations_contract_declares_alignment_guardrails() -> None:
     assert condition_schema["properties"]["status"]["enum"] == [
         "AVAILABLE", "NOT_CONFIGURED", "NO_SEGMENTS"
     ]
+
+
+def test_feature_correlations_contract_declares_exploratory_uncertainty() -> None:
+    """P4 fields must be published with honest, backward-compatible defaults.
+
+    The contract has to say the intervals are exploratory and that the
+    multiplicity correction covers one declared family only — otherwise a
+    caller could read a corrected p-value as a confirmatory result.
+    """
+    app = create_app()
+    spec = TestClient(app).get("/openapi.json").json()
+    schemas = spec["components"]["schemas"]
+
+    result_schema = schemas["FeatureCorrelationResult"]
+    for field in (
+        "ci_low",
+        "ci_high",
+        "interval_method",
+        "p_value_raw",
+        "p_value_adjusted",
+        "multiplicity_correction",
+        "replication_factor",
+        "pseudo_replication_status",
+    ):
+        assert field in result_schema["properties"], f"{field} missing from contract"
+        # additive only: an omitted value must stay optional for old callers
+        assert "default" in result_schema["properties"][field] or not result_schema[
+            "required"
+        ].count(field), f"{field} must not become required"
+
+    assert "replication_factor" in result_schema["properties"]
+    assert "independent unit" in result_schema["properties"]["replication_factor"][
+        "description"
+    ]
+
+    data_schema = schemas["FeatureCorrelationsData"]
+    assert "uncertainty_summary" in data_schema["properties"]
+    assert "Exploratory only" in data_schema["properties"]["uncertainty_summary"][
+        "description"
+    ]
+
+    # confirmatory inference must remain disabled even once intervals exist;
+    # analysis_plan is an open mapping in the contract, so the guard is verified
+    # on the runtime assessment instead of a typed sub-schema.
+    inference_ref = data_schema["properties"]["inference_assessment"]["$ref"]
+    inference_schema = schemas[inference_ref.split("/")[-1]]
+    assert "analysis_plan" in inference_schema["properties"]
+    assert inference_schema["properties"]["analysis_plan"]["type"] == "object"
+
+    from battery_workbench.api.routes.features_v2 import (
+        _uncertainty_inference_assessment,
+    )
+    from battery_workbench.features.state_correlation import (
+        exploratory_inference_assessment,
+    )
+
+    merged = _uncertainty_inference_assessment(
+        exploratory_inference_assessment(correlation_results_included=True),
+        {
+            "family_label": "FAMILY",
+            "family_size": 8,
+            "intervals_estimated": 8,
+            "intervals_not_estimated": 0,
+        },
+    )
+    assert merged["analysis_plan"]["confirmatory_inference_enabled"] is False
+    assert merged["confidence_interval"]["status"] == "ESTIMATED"
+    assert merged["multiple_comparison"]["method"] == "BENJAMINI_HOCHBERG"
+    assert merged["multiple_comparison"]["family_size"] == 8
+    # estimating intervals must never flip the assessment to confirmatory
+    assert merged["analysis_mode"] == "EXPLORATORY"
+    assert merged["claim_scope"] == "ASSOCIATION_ONLY"

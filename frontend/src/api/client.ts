@@ -624,6 +624,15 @@ export interface CorrelationResultEntry {
   missing_count_unit?: string;
   excluded_ineligible_count: number;
   excluded_ineligible_unit?: string;
+  // P4 exploratory uncertainty (backend-computed; the UI never recomputes).
+  ci_low?: number | null;
+  ci_high?: number | null;
+  interval_method?: string | null;
+  p_value_raw?: number | null;
+  p_value_adjusted?: number | null;
+  multiplicity_correction?: string | null;
+  replication_factor?: number | null;
+  pseudo_replication_status?: string | null;
   limitations: string[];
   status: string;
 }
@@ -771,6 +780,15 @@ export interface FeatureCorrelationsResponse {
     multiple_comparison: { status: "NOT_ASSESSED" | string; reason: string };
     confounder_adjustment: { status: "NOT_ASSESSED" | string; reason: string };
   };
+  uncertainty_summary?: {
+    family_label: string;
+    family_size: number;
+    intervals_estimated: number;
+    intervals_not_estimated: number;
+    interval_method: string;
+    multiplicity_correction: string;
+    exploratory_only: boolean;
+  } | null;
   temperature: CorrelationResultEntry;
   soh: CorrelationResultEntry;
   soh_cycle_summary: {
