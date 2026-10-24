@@ -63,11 +63,19 @@ def _validate_source_cycle_identity(
     *,
     events: pd.DataFrame | None = None,
     records: pd.DataFrame | None = None,
+    processed_root: Path | None = None,
+    raw_root: Path | None = None,
+    cycle_step_mapping_path: Path | None = None,
+    battery_id: str | None = None,
+    experiment_id: str | None = None,
 ) -> None:
-    """Reject raw Cycle IDs reused by multiple source assets.
+    """Reject raw Cycle IDs reused by multiple source assets without a reviewed mapping.
 
-    Cycle/Step numbers are source-local. Until an explicit cross-asset mapping
-    exists, aggregating the same raw cycle number across assets is ambiguous.
+    Cycle/Step numbers are source-local. Aggregating the same raw cycle number
+    across assets is ambiguous unless an operator-reviewed
+    ``cycle-step-mapping/1.0`` declaration resolves it; the declaration is fully
+    revalidated (structure, checksums, current parser artifacts) before use, and
+    rows outside it stay rejected.
     """
     frames = [frame for frame in (events, records, cycles, steps) if frame is not None]
     source_assets: set[str] = set()
@@ -111,17 +119,67 @@ def _validate_source_cycle_identity(
         asset_counts = scoped.groupby(
             ["battery_id", "experiment_id", "cycle_index_raw"], dropna=False
         )["electrical_asset_id"].nunique()
-        for battery_id, experiment_id, cycle in asset_counts[asset_counts > 1].index:
-            conflicts.add((str(battery_id), str(experiment_id), str(cycle)))
+        for group_battery, group_experiment, group_cycle in asset_counts[
+            asset_counts > 1
+        ].index:
+            conflicts.add((str(group_battery), str(group_experiment), str(group_cycle)))
     if conflicts:
-        examples = ", ".join(
-            f"{battery}/{experiment}/cycle {cycle}"
-            for battery, experiment, cycle in sorted(conflicts)[:5]
+        if cycle_step_mapping_path is None:
+            examples = ", ".join(
+                f"{battery}/{experiment}/cycle {cycle}"
+                for battery, experiment, cycle in sorted(conflicts)[:5]
+            )
+            raise ValueError(
+                "ambiguous cycle identity across electrical assets; an explicit "
+                f"cross-asset cycle mapping is required before label generation ({examples})"
+            )
+        if processed_root is None or raw_root is None or battery_id is None or experiment_id is None:
+            raise ValueError(
+                "consuming a cycle-step mapping requires processed_root, raw_root "
+                "and Battery/Experiment identity"
+            )
+        from battery_workbench.provenance.cycle_step_mapping import (
+            project_canonical_cycle_step,
         )
-        raise ValueError(
-            "ambiguous cycle identity across electrical assets; an explicit "
-            f"cross-asset cycle mapping is required before label generation ({examples})"
-        )
+
+        # The projection revalidates the full declaration (structure, evidence
+        # checksums, current parser artifacts) and rejects rows outside the
+        # reviewed mapping, so an unmapped source cycle stays fail-closed.
+        for name, frame in (("cycles", cycles), ("steps", steps)):
+            projected = project_canonical_cycle_step(
+                frame,
+                cycle_step_mapping_path,
+                raw_root=raw_root,
+                processed_root=processed_root,
+                battery_id=battery_id,
+                experiment_id=experiment_id,
+            )
+            frame["cycle_index_raw"] = projected["canonical_cycle_index"]
+            frame["step_index_raw"] = projected["canonical_step_index"]
+            frame["cycle_step_mapping_id"] = projected["cycle_step_mapping_id"]
+            frame["cycle_step_mapping_sha256"] = projected["cycle_step_mapping_sha256"]
+            frame["cycle_step_mapping_review_status"] = projected[
+                "cycle_step_mapping_review_status"
+            ]
+        projected_conflicts: set[tuple[str, str, str]] = set()
+        for frame in (cycles, steps):
+            scoped = frame.dropna(
+                subset=["battery_id", "experiment_id", "cycle_index_raw"]
+            )
+            asset_counts = scoped.groupby(
+                ["battery_id", "experiment_id", "cycle_index_raw"], dropna=False
+            )["electrical_asset_id"].nunique()
+            for battery, experiment, cycle in asset_counts[asset_counts > 1].index:
+                projected_conflicts.add((str(battery), str(experiment), str(cycle)))
+        if projected_conflicts:
+            examples = ", ".join(
+                f"{battery}/{experiment}/canonical cycle {cycle}"
+                for battery, experiment, cycle in sorted(projected_conflicts)[:5]
+            )
+            raise ValueError(
+                "cycle-step mapping still leaves cycle identity ambiguous across "
+                f"electrical assets; the declaration must be reviewed and corrected ({examples})"
+            )
 
 
 def _cycle_complete(steps: pd.DataFrame) -> dict[tuple, bool]:
@@ -296,6 +354,9 @@ def validate_reference_label_inputs(
     steps_path: Path,
     expected_battery_id: str | None = None,
     expected_experiment_id: str | None = None,
+    processed_root: Path | None = None,
+    raw_root: Path | None = None,
+    cycle_step_mapping_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
     """Load and validate source tables before label generation or cache reuse."""
     events = pd.read_parquet(measurement_events_path)
@@ -338,7 +399,17 @@ def validate_reference_label_inputs(
         ) != (actual_battery, actual_experiment):
             raise ValueError(f"{artifact_name} identity does not match MeasurementEvent identity")
     records = pd.read_parquet(records_path)
-    _validate_source_cycle_identity(cycles, steps, events=events, records=records)
+    _validate_source_cycle_identity(
+        cycles,
+        steps,
+        events=events,
+        records=records,
+        processed_root=processed_root,
+        raw_root=raw_root,
+        cycle_step_mapping_path=cycle_step_mapping_path,
+        battery_id=actual_battery,
+        experiment_id=actual_experiment,
+    )
     _validate_event_electrical_values(events, records)
     return events, cycles, steps, records, actual_battery, actual_experiment
 

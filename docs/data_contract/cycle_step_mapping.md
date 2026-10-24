@@ -42,8 +42,26 @@ successful preflight reports
 `label_generation_authorized=false`, and scientific continuity
 `NOT_ASSESSED`.
 
-The projection is deliberately not wired into Reference Label generation, SOH
-aggregation, Dataset construction, or modeling, so those consumers continue to
-fail closed on ambiguous multi-asset source Cycle identities. A later stage
-must wire the reviewed mapping into each relevant scientific join and add
-multi-XLSX golden validation. Never edit processed Parquet to mimic a mapping.
+The projection is wired into Reference Label input validation as a fail-closed
+consumer: when reference-label inputs show the same raw Cycle number across
+multiple Electrical DataAssets, `validate_reference_label_inputs` refuses
+label generation unless an optional reviewed mapping path is supplied. When it
+is supplied, each table is projected through
+`project_canonical_cycle_step` (which revalidates the full declaration and the
+current parser artifacts on every call, and rejects source steps outside the
+reviewed declaration), the canonical Cycle/Step keys replace the source-local
+keys for label aggregation, and the projected rows carry the mapping
+ID/checksum and review status for downstream audit. After projection a
+one-to-one re-check still rejects any canonical Cycle shared by multiple
+assets, so an incorrect declaration cannot silently merge independent Cycles.
+The single-asset path never reads a mapping and is byte-identical to the
+previous behavior.
+
+The mapping remains an operator-declared, byte-verified statement:
+`review_status=OPERATOR_DECLARED_ACCEPTED_UNAUTHENTICATED` does not
+authenticate the reviewer or prove physical Cycle continuity, and a reviewed
+mapping is not accepted as evidence that two source segments belong to one
+physical Cycle. SOH aggregation, Dataset construction and modeling inherit the
+projected keys through the label layer only; multi-XLSX golden validation on
+real data is still required before any cross-asset scientific claim. Never
+edit processed Parquet to mimic a mapping.
